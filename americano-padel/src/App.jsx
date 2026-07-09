@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Plus, X, Users, Clock, Trophy, Shuffle, ChevronLeft, ChevronRight,
   RotateCcw, Share2, BarChart3, Settings2, Check, Coffee,
-  ArrowLeft, Trash2, CalendarDays, ChevronRightCircle,
+  ArrowLeft, Trash2, CalendarDays, ChevronRightCircle, ClipboardList,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -766,6 +766,19 @@ function AmericanoPadel() {
         />
       )}
 
+      {screen === "recap" && engine && (
+        <RecapScreen
+          eventName={eventName}
+          engine={engine}
+          playerMap={playerMap}
+          scores={scores}
+          scoreFormat={scoreFormat}
+          tennisTarget={tennisTarget}
+          onNav={setScreen}
+          onBackToLobby={handleBackToLobby}
+        />
+      )}
+
       {screen === "stats" && engine && (
         <StatsScreen
           eventName={eventName}
@@ -787,6 +800,7 @@ function BottomNav({ active, onNav }) {
   const items = [
     { key: "session", label: "Jadwal", icon: Clock },
     { key: "leaderboard", label: "Klasemen", icon: Trophy },
+    { key: "recap", label: "Rekap", icon: ClipboardList },
     { key: "stats", label: "Statistik", icon: BarChart3 },
   ];
   return (
@@ -1331,12 +1345,9 @@ function SessionScreen(props) {
           const key = `${currentRound}-${cIdx}`;
           const s = scores[key] || {};
           const winner = winnerOf(s);
-          const scoreLabel =
-            scoreFormat === "tennis"
-              ? `${s.gamesA || 0} – ${s.gamesB || 0}`
-              : s.a !== undefined && s.b !== undefined
-              ? `${s.a} – ${s.b}`
-              : "Input skor";
+          const scoreA = scoreFormat === "tennis" ? s.gamesA || 0 : s.a ?? null;
+          const scoreB = scoreFormat === "tennis" ? s.gamesB || 0 : s.b ?? null;
+          const openModal = scoreFormat === "points" ? () => setScoreModal(cIdx) : undefined;
           return (
             <div key={cIdx} className="rounded-2xl border border-slate-800 overflow-hidden bg-slate-900/40">
               <div className="px-4 py-2 bg-slate-900 border-b border-slate-800">
@@ -1344,45 +1355,35 @@ function SessionScreen(props) {
                   Lapangan {cIdx + 1}
                 </span>
               </div>
-              <div className="grid grid-cols-[1fr_auto_1fr] items-center">
+              <div className="grid grid-cols-[1fr_auto_1fr] items-stretch">
                 <TeamSide
                   names={match.team1.map((id) => playerMap[id])}
                   align="right"
                   won={winner === "team1"}
+                  score={scoreA}
+                  onClick={openModal}
                 />
-                <div className="flex flex-col items-center px-3">
-                  <div className="w-px h-16 bg-gradient-to-b from-transparent via-lime-300/60 to-transparent" />
-                  <span className="font-display text-lg text-lime-300 -mt-9 bg-slate-950 px-1">
-                    VS
-                  </span>
+                <div className="flex flex-col items-center px-3 py-2">
+                  <div className="w-px flex-1 bg-gradient-to-b from-transparent via-lime-300/60 to-transparent" />
+                  <span className="font-display text-lg text-lime-300 bg-slate-950 px-1">VS</span>
+                  <div className="w-px flex-1 bg-gradient-to-t from-transparent via-lime-300/60 to-transparent" />
                 </div>
                 <TeamSide
                   names={match.team2.map((id) => playerMap[id])}
                   align="left"
                   won={winner === "team2"}
+                  score={scoreB}
+                  onClick={openModal}
                 />
               </div>
 
-              {scoreFormat === "tennis" ? (
+              {scoreFormat === "tennis" && (
                 <TennisScoreTracker
                   s={s}
                   target={tennisTarget}
                   onPoint={(side) => incrementTennisPoint(cIdx, side)}
                   onReset={() => resetTennisMatch(cIdx)}
                 />
-              ) : (
-                <div className="border-t border-slate-800 px-4 py-3 flex justify-center">
-                  <button
-                    onClick={() => setScoreModal(cIdx)}
-                    className={`px-6 py-2 rounded-xl font-mono2 text-lg border ${
-                      winner
-                        ? "bg-lime-400/10 border-lime-400/40 text-lime-300"
-                        : "bg-slate-900 border-slate-700 text-slate-300"
-                    }`}
-                  >
-                    {scoreLabel}
-                  </button>
-                </div>
               )}
             </div>
           );
@@ -1441,30 +1442,55 @@ function SessionScreen(props) {
   );
 }
 
-function TeamSide({ names, align, won }) {
+function TeamSide({ names, align, won, score, onClick }) {
   const isRight = align === "right";
-  return (
-    <div
-      className={`px-4 py-5 relative transition-colors ${isRight ? "text-right" : "text-left"} ${
-        won ? "bg-lime-400/10" : ""
-      }`}
-    >
-      {won && (
-        <div
-          className={`absolute top-2 ${isRight ? "left-2" : "right-2"} w-4 h-4 rounded-full bg-lime-300 flex items-center justify-center`}
-        >
-          <Check size={10} strokeWidth={3} className="text-slate-950" />
-        </div>
-      )}
+  const Wrapper = onClick ? "button" : "div";
+
+  const scoreBadge =
+    score !== null && score !== undefined ? (
+      <span
+        className={`shrink-0 font-mono2 text-lg px-2.5 py-1 rounded-lg border ${
+          won
+            ? "bg-lime-300 text-slate-950 border-lime-300"
+            : "bg-slate-900 text-slate-400 border-slate-700"
+        }`}
+      >
+        {score}
+      </span>
+    ) : null;
+
+  const nameBlock = (
+    <div className={`min-w-0 ${isRight ? "text-right" : "text-left"}`}>
       {names.map((n, i) => (
         <div
           key={i}
-          className={`font-semibold leading-tight ${won ? "text-lime-300" : "text-slate-100"}`}
+          className={`font-semibold leading-tight truncate ${won ? "text-lime-300" : "text-slate-100"}`}
         >
           {n}
         </div>
       ))}
     </div>
+  );
+
+  return (
+    <Wrapper
+      onClick={onClick}
+      className={`w-full flex items-center justify-between gap-2 px-3 py-4 text-left transition-colors ${
+        won ? "bg-lime-400/10" : ""
+      }`}
+    >
+      {isRight ? (
+        <>
+          {scoreBadge}
+          {nameBlock}
+        </>
+      ) : (
+        <>
+          {nameBlock}
+          {scoreBadge}
+        </>
+      )}
+    </Wrapper>
   );
 }
 
@@ -1584,25 +1610,15 @@ function TennisScoreTracker({ s, target, onPoint, onReset }) {
 
   return (
     <div className="border-t border-slate-800">
-      <div className="flex items-center justify-center gap-6 py-3">
-        <div className="text-center">
-          <div className="font-display text-4xl text-lime-300 leading-none">{gamesA}</div>
-          <div className="text-[10px] text-slate-500 uppercase tracking-wide mt-0.5">game</div>
-        </div>
-        <div className="text-center">
-          {finished ? (
-            <div className="font-display text-xl text-cyan-300">SELESAI</div>
-          ) : (
-            <div className="font-mono2 text-lg text-slate-300">
-              {labels.a} – {labels.b}
-              {labels.deuce && <div className="text-[10px] text-amber-300 mt-0.5">DEUCE</div>}
-            </div>
-          )}
-        </div>
-        <div className="text-center">
-          <div className="font-display text-4xl text-lime-300 leading-none">{gamesB}</div>
-          <div className="text-[10px] text-slate-500 uppercase tracking-wide mt-0.5">game</div>
-        </div>
+      <div className="flex items-center justify-center py-3">
+        {finished ? (
+          <div className="font-display text-xl text-cyan-300">SELESAI</div>
+        ) : (
+          <div className="font-mono2 text-lg text-slate-300">
+            {labels.a} – {labels.b}
+            {labels.deuce && <div className="text-[10px] text-amber-300 mt-0.5 text-center">DEUCE</div>}
+          </div>
+        )}
       </div>
       <div className="flex items-center gap-2 px-4 pb-3">
         <button
@@ -1649,6 +1665,26 @@ function LeaderboardScreen({ eventName, leaderboard, onNav, onBackToLobby }) {
     return arr;
   }, [leaderboard, sortBy]);
 
+  // Column that matches the active sort criterion always renders last (rightmost)
+  // and gets highlighted, so it's obvious what the table is currently ordered by.
+  const baseColumns = [
+    { key: "matches", sortKey: null, label: "M", render: (p) => p.matches },
+    { key: "wlt", sortKey: "wins", label: "W-L-T", render: (p) => `${p.wins}-${p.losses}-${p.ties}` },
+    {
+      key: "diff",
+      sortKey: "diff",
+      label: "+/-",
+      render: (p) => (p.diff > 0 ? `+${p.diff}` : `${p.diff}`),
+    },
+    { key: "points", sortKey: "points", label: "Poin", render: (p) => p.points },
+  ];
+  const activeColKey =
+    sortBy === "wins" ? "wlt" : sortBy === "diff" ? "diff" : "points";
+  const columns = [
+    ...baseColumns.filter((c) => c.key !== activeColKey),
+    ...baseColumns.filter((c) => c.key === activeColKey),
+  ];
+
   return (
     <div className="pb-24">
       <div className="px-6 pt-10 pb-6 border-b border-slate-800">
@@ -1667,7 +1703,7 @@ function LeaderboardScreen({ eventName, leaderboard, onNav, onBackToLobby }) {
         </div>
         <h1 className="font-display text-5xl text-slate-50">KLASEMEN</h1>
         <p className="text-slate-500 text-sm mt-2">
-          M = main, W-L-T = menang-kalah-seri, +/- = selisih poin.
+          M = main, W-L-T = menang-kalah-seri, +/- = selisih poin. Tap salah satu untuk urutkan.
         </p>
 
         <div className="flex gap-2 mt-4">
@@ -1691,42 +1727,205 @@ function LeaderboardScreen({ eventName, leaderboard, onNav, onBackToLobby }) {
         </div>
       </div>
 
-      <div className="px-6 pt-4 space-y-2">
+      <div className="px-6 pt-4">
         {sorted.length === 0 && <p className="text-slate-500 text-sm">Belum ada pemain.</p>}
-        {sorted.map((p, i) => (
-          <div
-            key={p.id}
-            className={`flex items-center gap-3 rounded-xl border px-4 py-3 ${
-              i === 0 ? "border-lime-400/40 bg-lime-400/5" : "border-slate-800 bg-slate-900/40"
-            }`}
-          >
-            <div
-              className={`font-display text-2xl w-8 text-center shrink-0 ${
-                i === 0 ? "text-lime-300" : i === 1 ? "text-slate-300" : "text-slate-500"
-              }`}
-            >
-              {i + 1}
+        {sorted.length > 0 && (
+          <div className="overflow-x-auto -mx-6 px-6">
+            <table className="w-full border-collapse min-w-[380px]">
+              <thead>
+                <tr className="text-[10px] text-slate-500 uppercase tracking-wide">
+                  <th className="text-center pb-2 w-7">#</th>
+                  <th className="text-left pb-2">Nama</th>
+                  {columns.map((c) => (
+                    <th
+                      key={c.key}
+                      className={`text-right pb-2 pl-3 ${
+                        c.key === activeColKey ? "text-lime-300" : ""
+                      }`}
+                    >
+                      {c.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((p, i) => (
+                  <tr
+                    key={p.id}
+                    className={`border-t border-slate-800 ${i === 0 ? "bg-lime-400/5" : ""}`}
+                  >
+                    <td
+                      className={`py-2.5 text-center font-display text-lg ${
+                        i === 0 ? "text-lime-300" : i === 1 ? "text-slate-300" : "text-slate-500"
+                      }`}
+                    >
+                      {i + 1}
+                    </td>
+                    <td className="py-2.5 font-semibold text-slate-100 truncate max-w-[110px]">
+                      {p.name}
+                    </td>
+                    {columns.map((c) => (
+                      <td
+                        key={c.key}
+                        className={`py-2.5 pl-3 text-right font-mono2 ${
+                          c.key === activeColKey
+                            ? "text-lime-300 font-bold text-base"
+                            : "text-slate-400"
+                        }`}
+                      >
+                        {c.render(p)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <BottomNav active="leaderboard" onNav={onNav} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// RECAP SCREEN (all scored matches, for monitoring rotation fairness)
+// ---------------------------------------------------------------------------
+
+function RecapScreen({ eventName, engine, playerMap, scores, scoreFormat, tennisTarget, onNav, onBackToLobby }) {
+  const rows = React.useMemo(() => {
+    if (!engine) return [];
+    const list = [];
+    engine.roundsData.forEach((rd, rIdx) => {
+      rd.courts.forEach((match, cIdx) => {
+        const key = `${rIdx}-${cIdx}`;
+        const s = scores[key];
+        if (!s) return;
+
+        let a, b;
+        if (s.format === "tennis") {
+          a = s.gamesA || 0;
+          b = s.gamesB || 0;
+          const touched = a > 0 || b > 0 || s.pointsA > 0 || s.pointsB > 0;
+          if (!touched) return;
+        } else {
+          a = s.a !== undefined && s.a !== "" ? Number(s.a) : null;
+          b = s.b !== undefined && s.b !== "" ? Number(s.b) : null;
+          if (a === null || b === null) return;
+        }
+
+        const partner1 = engine.partner[match.team1[0]]?.[match.team1[1]] || 0;
+        const partner2 = engine.partner[match.team2[0]]?.[match.team2[1]] || 0;
+        const oppMax = Math.max(
+          engine.opp[match.team1[0]]?.[match.team2[0]] || 0,
+          engine.opp[match.team1[0]]?.[match.team2[1]] || 0,
+          engine.opp[match.team1[1]]?.[match.team2[0]] || 0,
+          engine.opp[match.team1[1]]?.[match.team2[1]] || 0
+        );
+
+        list.push({
+          id: key,
+          round: rIdx + 1,
+          court: cIdx + 1,
+          team1: match.team1.map((id) => playerMap[id]),
+          team2: match.team2.map((id) => playerMap[id]),
+          a,
+          b,
+          winner: a === b ? null : a > b ? "team1" : "team2",
+          partner1,
+          partner2,
+          oppMax,
+        });
+      });
+    });
+    return list;
+  }, [engine, playerMap, scores]);
+
+  return (
+    <div className="pb-24">
+      <div className="px-6 pt-10 pb-6 border-b border-slate-800">
+        <button
+          onClick={onBackToLobby}
+          className="flex items-center gap-1 text-xs font-semibold text-slate-400 mb-4"
+        >
+          <ArrowLeft size={13} /> Lobby
+        </button>
+        {eventName && <div className="text-sm font-semibold text-slate-200 mb-1">{eventName}</div>}
+        <div className="flex items-center gap-2 mb-1">
+          <ClipboardList size={16} className="text-lime-300" />
+          <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
+            Match Log
+          </span>
+        </div>
+        <h1 className="font-display text-5xl text-slate-50">REKAP MATCH</h1>
+        <p className="text-slate-500 text-sm mt-2">
+          Semua match yang sudah diisi skornya. Badge kuning menandai partner/lawan yang sudah
+          pernah bertemu sebelumnya di sesi ini — makin jarang muncul, makin adil rotasinya.
+        </p>
+      </div>
+
+      <div className="px-6 pt-4 space-y-3">
+        {rows.length === 0 && (
+          <div className="rounded-2xl border border-dashed border-slate-700 p-6 text-center">
+            <p className="text-slate-500 text-sm">Belum ada match yang diisi skornya.</p>
+          </div>
+        )}
+
+        {rows.map((r) => (
+          <div key={r.id} className="rounded-2xl border border-slate-800 bg-slate-900/40 overflow-hidden">
+            <div className="px-4 py-2 bg-slate-900 border-b border-slate-800">
+              <span className="text-xs font-bold tracking-widest text-slate-400 uppercase">
+                Ronde {r.round} · Lapangan {r.court}
+              </span>
             </div>
-            <div className="flex-1 min-w-0">
-              <div className="font-semibold text-slate-100 truncate">{p.name}</div>
-              <div className="text-[11px] text-slate-500 mt-0.5">
-                {p.matches} main · {p.wins}-{p.losses}-{p.ties} (W-L-T) ·{" "}
-                <span className={p.diff > 0 ? "text-lime-400" : p.diff < 0 ? "text-red-400" : ""}>
-                  {p.diff > 0 ? "+" : ""}
-                  {p.diff}
-                </span>{" "}
-                diff
+            <div className="px-4 py-3 space-y-1.5">
+              <div className="flex items-center justify-between gap-3">
+                <span
+                  className={`text-sm truncate ${
+                    r.winner === "team1" ? "text-lime-300 font-semibold" : "text-slate-200"
+                  }`}
+                >
+                  {r.team1.join(" & ")}
+                </span>
+                <span
+                  className={`font-mono2 text-lg shrink-0 ${
+                    r.winner === "team1" ? "text-lime-300" : "text-slate-400"
+                  }`}
+                >
+                  {r.a}
+                </span>
               </div>
-            </div>
-            <div className="text-right shrink-0">
-              <div className="font-mono2 text-lg text-lime-300">{p.points}</div>
-              <div className="text-[10px] text-slate-500 uppercase">poin</div>
+              <div className="flex items-center justify-between gap-3">
+                <span
+                  className={`text-sm truncate ${
+                    r.winner === "team2" ? "text-lime-300 font-semibold" : "text-slate-200"
+                  }`}
+                >
+                  {r.team2.join(" & ")}
+                </span>
+                <span
+                  className={`font-mono2 text-lg shrink-0 ${
+                    r.winner === "team2" ? "text-lime-300" : "text-slate-400"
+                  }`}
+                >
+                  {r.b}
+                </span>
+              </div>
+
+              {(r.partner1 > 1 || r.partner2 > 1 || r.oppMax > 1) && (
+                <div className="flex flex-wrap gap-1.5 pt-1.5">
+                  {r.partner1 > 1 && <Chip tone="amber">partner kiri {r.partner1}x bareng</Chip>}
+                  {r.partner2 > 1 && <Chip tone="amber">partner kanan {r.partner2}x bareng</Chip>}
+                  {r.oppMax > 1 && <Chip tone="amber">vs sudah {r.oppMax}x</Chip>}
+                </div>
+              )}
             </div>
           </div>
         ))}
       </div>
 
-      <BottomNav active="leaderboard" onNav={onNav} />
+      <BottomNav active="recap" onNav={onNav} />
     </div>
   );
 }
