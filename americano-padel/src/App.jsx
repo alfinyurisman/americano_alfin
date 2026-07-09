@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Plus, X, Users, Clock, Trophy, Shuffle, ChevronLeft, ChevronRight,
-  Play, Pause, RotateCcw, Share2, BarChart3, Settings2, Check, Coffee,
+  RotateCcw, Share2, BarChart3, Settings2, Check, Coffee,
   ArrowLeft, Trash2, CalendarDays, ChevronRightCircle,
 } from "lucide-react";
 
@@ -193,13 +193,6 @@ function fmtClock(mins) {
   return `${pad(h)}:${pad(m)}`;
 }
 
-function fmtMMSS(totalSeconds) {
-  const s = Math.max(0, Math.round(totalSeconds));
-  const m = Math.floor(s / 60);
-  const sec = s % 60;
-  return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
-}
-
 // ---------------------------------------------------------------------------
 // UI PRIMITIVES
 // ---------------------------------------------------------------------------
@@ -281,9 +274,6 @@ function AmericanoPadel() {
   const [playerMap, setPlayerMap] = useState({});
   const [currentRound, setCurrentRound] = useState(0);
   const [scores, setScores] = useState({});
-  const [secondsLeft, setSecondsLeft] = useState(0);
-  const [timerRunning, setTimerRunning] = useState(false);
-  const timerRef = useRef(null);
 
   useEffect(() => {
     (async () => {
@@ -370,27 +360,6 @@ function AmericanoPadel() {
     [activeId, eventName, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, engine, playerMap, currentRound, scores]
   );
 
-  useEffect(() => {
-    if (timerRunning) {
-      timerRef.current = setInterval(() => {
-        setSecondsLeft((s) => {
-          if (s <= 1) {
-            setTimerRunning(false);
-            if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
-            return 0;
-          }
-          return s - 1;
-        });
-      }, 1000);
-    }
-    return () => clearInterval(timerRef.current);
-  }, [timerRunning]);
-
-  const resetTimerForRound = (mins) => {
-    setTimerRunning(false);
-    setSecondsLeft(mins * 60);
-  };
-
   const addPlayerFromInput = () => {
     const name = nameInput.trim();
     if (!name) return;
@@ -429,7 +398,6 @@ function AmericanoPadel() {
     setPlayerMap(map);
     setCurrentRound(0);
     setScores({});
-    resetTimerForRound(minutesPerRound);
     setActiveId(id);
     setEventName(finalName);
     setScreen("session");
@@ -463,7 +431,6 @@ function AmericanoPadel() {
     setPlayerMap({});
     setCurrentRound(0);
     setScores({});
-    setTimerRunning(false);
     setEventName("");
   };
 
@@ -492,7 +459,6 @@ function AmericanoPadel() {
     setPlayerMap(data.playerMap || {});
     setCurrentRound(data.currentRound || 0);
     setScores(data.scores || {});
-    if (data.engine) resetTimerForRound(data.minutesPerRound ?? 15);
     lastAppliedRef.current = data.updatedAt || Date.now();
     setActiveId(id);
     setScreen(data.engine ? "session" : "setup");
@@ -523,7 +489,6 @@ function AmericanoPadel() {
     if (!engine) return;
     const next = Math.min(Math.max(0, currentRound + delta), engine.roundsData.length - 1);
     setCurrentRound(next);
-    resetTimerForRound(minutesPerRound);
     persist({ currentRound: next });
   };
 
@@ -533,6 +498,25 @@ function AmericanoPadel() {
       const updated = {
         ...prev,
         [key]: { format: "points", ...(prev[key] || {}), [side]: value },
+      };
+      persist({ scores: updated });
+      return updated;
+    });
+  };
+
+  // Picks a score for one side (via the number helper) and auto-fills the
+  // other side with the remainder, based on the chosen point target.
+  const setPointsPair = (courtIdx, side, value) => {
+    const key = `${currentRound}-${courtIdx}`;
+    const other = Math.max(0, pointTarget - value);
+    setScores((prev) => {
+      const updated = {
+        ...prev,
+        [key]: {
+          format: "points",
+          a: side === "a" ? value : other,
+          b: side === "b" ? value : other,
+        },
       };
       persist({ scores: updated });
       return updated;
@@ -731,15 +715,9 @@ function AmericanoPadel() {
           playerMap={playerMap}
           currentRound={currentRound}
           goRound={goRound}
-          minutesPerRound={minutesPerRound}
-          breakMinutes={breakMinutes}
-          startTime={startTime}
-          secondsLeft={secondsLeft}
-          timerRunning={timerRunning}
-          setTimerRunning={setTimerRunning}
-          resetTimerForRound={() => resetTimerForRound(minutesPerRound)}
           scores={scores}
           setScore={setScore}
+          setPointsPair={setPointsPair}
           scoreFormat={scoreFormat}
           pointTarget={pointTarget}
           tennisTarget={tennisTarget}
@@ -1253,9 +1231,8 @@ function PreviewStat({ label, value }) {
 
 function SessionScreen(props) {
   const {
-    eventName, engine, playerMap, currentRound, goRound, minutesPerRound, breakMinutes,
-    startTime, secondsLeft, timerRunning, setTimerRunning, resetTimerForRound,
-    scores, setScore, scoreFormat, pointTarget, tennisTarget,
+    eventName, engine, playerMap, currentRound, goRound,
+    scores, setScore, setPointsPair, scoreFormat, pointTarget, tennisTarget,
     incrementTennisPoint, resetTennisMatch,
     onNav, onShare, onBackToLobby, onDelete,
   } = props;
@@ -1263,16 +1240,6 @@ function SessionScreen(props) {
   const totalRounds = engine.roundsData.length;
   const round = engine.roundsData[currentRound];
   const isLast = currentRound === totalRounds - 1;
-
-  const roundClock = (() => {
-    const [h, m] = startTime.split(":").map(Number);
-    const mins = h * 60 + m + currentRound * (minutesPerRound + breakMinutes);
-    const wrapped = ((mins % 1440) + 1440) % 1440;
-    const hh = Math.floor(wrapped / 60);
-    const mm = Math.round(wrapped % 60);
-    return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
-  })();
-
   const pct = totalRounds > 1 ? currentRound / (totalRounds - 1) : 1;
 
   return (
@@ -1304,42 +1271,11 @@ function SessionScreen(props) {
             {scoreFormat === "tennis" ? `Race to ${tennisTarget} game` : `Target ${pointTarget} poin`}
           </Chip>
         </div>
-        <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden mb-4">
+        <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
           <div
             className="h-full bg-lime-300 rounded-full transition-all"
             style={{ width: `${pct * 100}%` }}
           />
-        </div>
-
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="font-display text-5xl text-slate-50 leading-none">{roundClock}</div>
-            <div className="text-xs text-slate-500 mt-1">estimasi jam mulai ronde ini</div>
-          </div>
-
-          <div className="text-right">
-            <div
-              className={`font-mono2 text-4xl leading-none ${
-                secondsLeft <= 10 && timerRunning ? "text-red-400 animate-pulse" : "text-lime-300"
-              }`}
-            >
-              {fmtMMSS(secondsLeft)}
-            </div>
-            <div className="flex gap-2 mt-2 justify-end">
-              <button
-                onClick={() => setTimerRunning((r) => !r)}
-                className="w-9 h-9 rounded-full bg-slate-900 border border-slate-700 flex items-center justify-center"
-              >
-                {timerRunning ? <Pause size={15} /> : <Play size={15} className="ml-0.5" />}
-              </button>
-              <button
-                onClick={resetTimerForRound}
-                className="w-9 h-9 rounded-full bg-slate-900 border border-slate-700 flex items-center justify-center"
-              >
-                <RotateCcw size={14} />
-              </button>
-            </div>
-          </div>
         </div>
       </div>
 
@@ -1373,12 +1309,11 @@ function SessionScreen(props) {
                   onReset={() => resetTennisMatch(cIdx)}
                 />
               ) : (
-                <div className="flex items-center justify-center gap-3 px-4 py-3 border-t border-slate-800">
-                  <ScoreInput value={s.a} onChange={(v) => setScore(cIdx, "a", v)} />
-                  <span className="text-slate-600 font-mono2">–</span>
-                  <ScoreInput value={s.b} onChange={(v) => setScore(cIdx, "b", v)} />
-                  <span className="text-[11px] text-slate-500 ml-1">skor (opsional)</span>
-                </div>
+                <PointsScorePicker
+                  s={s}
+                  target={pointTarget}
+                  onPick={(side, n) => setPointsPair(cIdx, side, n)}
+                />
               )}
             </div>
           );
@@ -1435,15 +1370,62 @@ function TeamSide({ names, align }) {
   );
 }
 
-function ScoreInput({ value, onChange }) {
+function PointsScorePicker({ s, target, onPick }) {
+  const a = s.a !== undefined && s.a !== "" && s.a !== null ? Number(s.a) : null;
+  const b = s.b !== undefined && s.b !== "" && s.b !== null ? Number(s.b) : null;
+  const t = Math.max(1, Number(target) || 21);
+  const nums = Array.from({ length: t + 1 }, (_, i) => i);
+
   return (
-    <input
-      type="number"
-      value={value ?? ""}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder="–"
-      className="w-14 text-center bg-slate-950 border border-slate-700 rounded-lg py-1.5 font-mono2 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
-    />
+    <div className="border-t border-slate-800 px-4 py-3 space-y-3">
+      <div className="flex items-center justify-center gap-3">
+        <span className="font-mono2 text-2xl text-lime-300 w-8 text-center">{a ?? "–"}</span>
+        <span className="text-slate-600 font-mono2">–</span>
+        <span className="font-mono2 text-2xl text-lime-300 w-8 text-center">{b ?? "–"}</span>
+      </div>
+
+      <div>
+        <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-1">
+          Skor tim kiri
+        </div>
+        <div className="flex gap-1.5 overflow-x-auto pb-1">
+          {nums.map((n) => (
+            <button
+              key={n}
+              onClick={() => onPick("a", n)}
+              className={`shrink-0 w-8 h-8 rounded-lg text-xs font-bold border ${
+                a === n
+                  ? "bg-lime-300 text-slate-950 border-lime-300"
+                  : "bg-slate-900 text-slate-300 border-slate-700"
+              }`}
+            >
+              {n}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-1">
+          Skor tim kanan
+        </div>
+        <div className="flex gap-1.5 overflow-x-auto pb-1">
+          {nums.map((n) => (
+            <button
+              key={n}
+              onClick={() => onPick("b", n)}
+              className={`shrink-0 w-8 h-8 rounded-lg text-xs font-bold border ${
+                b === n
+                  ? "bg-lime-300 text-slate-950 border-lime-300"
+                  : "bg-slate-900 text-slate-300 border-slate-700"
+              }`}
+            >
+              {n}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }
 
