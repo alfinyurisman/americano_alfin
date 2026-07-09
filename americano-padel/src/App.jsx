@@ -523,6 +523,16 @@ function AmericanoPadel() {
     });
   };
 
+  const resetPointsScore = (courtIdx) => {
+    const key = `${currentRound}-${courtIdx}`;
+    setScores((prev) => {
+      const updated = { ...prev };
+      delete updated[key];
+      persist({ scores: updated });
+      return updated;
+    });
+  };
+
   const incrementTennisPoint = (courtIdx, side) => {
     const key = `${currentRound}-${courtIdx}`;
     setScores((prev) => {
@@ -572,6 +582,9 @@ function AmericanoPadel() {
         name: playerMap[id],
         points: 0,
         wins: 0,
+        losses: 0,
+        ties: 0,
+        diff: 0,
         matches: engine.playCount[id] || 0,
         rests: engine.restCount[id] || 0,
       };
@@ -582,15 +595,28 @@ function AmericanoPadel() {
         const ab = matchAB(s);
         if (!ab) return;
         const { a, b } = ab;
-        if (Number.isFinite(a)) match.team1.forEach((id) => (totals[id].points += a));
-        if (Number.isFinite(b)) match.team2.forEach((id) => (totals[id].points += b));
-        if (Number.isFinite(a) && Number.isFinite(b) && a !== b) {
-          if (a > b) match.team1.forEach((id) => (totals[id].wins += 1));
-          else match.team2.forEach((id) => (totals[id].wins += 1));
+        if (!Number.isFinite(a) || !Number.isFinite(b)) return;
+        match.team1.forEach((id) => {
+          totals[id].points += a;
+          totals[id].diff += a - b;
+        });
+        match.team2.forEach((id) => {
+          totals[id].points += b;
+          totals[id].diff += b - a;
+        });
+        if (a > b) {
+          match.team1.forEach((id) => (totals[id].wins += 1));
+          match.team2.forEach((id) => (totals[id].losses += 1));
+        } else if (b > a) {
+          match.team2.forEach((id) => (totals[id].wins += 1));
+          match.team1.forEach((id) => (totals[id].losses += 1));
+        } else {
+          match.team1.forEach((id) => (totals[id].ties += 1));
+          match.team2.forEach((id) => (totals[id].ties += 1));
         }
       });
     });
-    return Object.values(totals).sort((x, y) => y.points - x.points || y.wins - x.wins);
+    return Object.values(totals);
   }, [engine, playerMap, scores]);
 
   const fairnessStats = React.useMemo(() => {
@@ -718,6 +744,7 @@ function AmericanoPadel() {
           scores={scores}
           setScore={setScore}
           setPointsPair={setPointsPair}
+          resetPointsScore={resetPointsScore}
           scoreFormat={scoreFormat}
           pointTarget={pointTarget}
           tennisTarget={tennisTarget}
@@ -1232,15 +1259,34 @@ function PreviewStat({ label, value }) {
 function SessionScreen(props) {
   const {
     eventName, engine, playerMap, currentRound, goRound,
-    scores, setScore, setPointsPair, scoreFormat, pointTarget, tennisTarget,
+    scores, setScore, setPointsPair, resetPointsScore, scoreFormat, pointTarget, tennisTarget,
     incrementTennisPoint, resetTennisMatch,
     onNav, onShare, onBackToLobby, onDelete,
   } = props;
+
+  const [scoreModal, setScoreModal] = useState(null); // court index being edited, or null
+
+  useEffect(() => {
+    setScoreModal(null);
+  }, [currentRound]);
 
   const totalRounds = engine.roundsData.length;
   const round = engine.roundsData[currentRound];
   const isLast = currentRound === totalRounds - 1;
   const pct = totalRounds > 1 ? currentRound / (totalRounds - 1) : 1;
+
+  function winnerOf(s) {
+    if (!s) return null;
+    if (scoreFormat === "tennis") {
+      if ((s.gamesA || 0) >= tennisTarget) return "team1";
+      if ((s.gamesB || 0) >= tennisTarget) return "team2";
+      return null;
+    }
+    const a = s.a !== undefined && s.a !== "" ? Number(s.a) : null;
+    const b = s.b !== undefined && s.b !== "" ? Number(s.b) : null;
+    if (a === null || b === null || a === b) return null;
+    return a > b ? "team1" : "team2";
+  }
 
   return (
     <div className="pb-24">
@@ -1284,6 +1330,13 @@ function SessionScreen(props) {
         {round.courts.map((match, cIdx) => {
           const key = `${currentRound}-${cIdx}`;
           const s = scores[key] || {};
+          const winner = winnerOf(s);
+          const scoreLabel =
+            scoreFormat === "tennis"
+              ? `${s.gamesA || 0} – ${s.gamesB || 0}`
+              : s.a !== undefined && s.b !== undefined
+              ? `${s.a} – ${s.b}`
+              : "Input skor";
           return (
             <div key={cIdx} className="rounded-2xl border border-slate-800 overflow-hidden bg-slate-900/40">
               <div className="px-4 py-2 bg-slate-900 border-b border-slate-800">
@@ -1292,15 +1345,24 @@ function SessionScreen(props) {
                 </span>
               </div>
               <div className="grid grid-cols-[1fr_auto_1fr] items-center">
-                <TeamSide names={match.team1.map((id) => playerMap[id])} align="right" />
+                <TeamSide
+                  names={match.team1.map((id) => playerMap[id])}
+                  align="right"
+                  won={winner === "team1"}
+                />
                 <div className="flex flex-col items-center px-3">
                   <div className="w-px h-16 bg-gradient-to-b from-transparent via-lime-300/60 to-transparent" />
                   <span className="font-display text-lg text-lime-300 -mt-9 bg-slate-950 px-1">
                     VS
                   </span>
                 </div>
-                <TeamSide names={match.team2.map((id) => playerMap[id])} align="left" />
+                <TeamSide
+                  names={match.team2.map((id) => playerMap[id])}
+                  align="left"
+                  won={winner === "team2"}
+                />
               </div>
+
               {scoreFormat === "tennis" ? (
                 <TennisScoreTracker
                   s={s}
@@ -1309,11 +1371,18 @@ function SessionScreen(props) {
                   onReset={() => resetTennisMatch(cIdx)}
                 />
               ) : (
-                <PointsScorePicker
-                  s={s}
-                  target={pointTarget}
-                  onPick={(side, n) => setPointsPair(cIdx, side, n)}
-                />
+                <div className="border-t border-slate-800 px-4 py-3 flex justify-center">
+                  <button
+                    onClick={() => setScoreModal(cIdx)}
+                    className={`px-6 py-2 rounded-xl font-mono2 text-lg border ${
+                      winner
+                        ? "bg-lime-400/10 border-lime-400/40 text-lime-300"
+                        : "bg-slate-900 border-slate-700 text-slate-300"
+                    }`}
+                  >
+                    {scoreLabel}
+                  </button>
+                </div>
               )}
             </div>
           );
@@ -1331,6 +1400,20 @@ function SessionScreen(props) {
           </div>
         )}
       </div>
+
+      {/* SCORE MODAL (points format) */}
+      {scoreModal !== null && scoreFormat === "points" && (
+        <ScoreModal
+          roundLabel={`Ronde ${currentRound + 1} – Lapangan ${scoreModal + 1}`}
+          team1={round.courts[scoreModal].team1.map((id) => playerMap[id])}
+          team2={round.courts[scoreModal].team2.map((id) => playerMap[id])}
+          s={scores[`${currentRound}-${scoreModal}`] || {}}
+          target={pointTarget}
+          onPick={(side, n) => setPointsPair(scoreModal, side, n)}
+          onReset={() => resetPointsScore(scoreModal)}
+          onClose={() => setScoreModal(null)}
+        />
+      )}
 
       {/* NAV */}
       <div className="px-6 pt-6 flex gap-3">
@@ -1358,11 +1441,26 @@ function SessionScreen(props) {
   );
 }
 
-function TeamSide({ names, align }) {
+function TeamSide({ names, align, won }) {
+  const isRight = align === "right";
   return (
-    <div className={`px-4 py-5 text-${align === "right" ? "right" : "left"}`}>
+    <div
+      className={`px-4 py-5 relative transition-colors ${isRight ? "text-right" : "text-left"} ${
+        won ? "bg-lime-400/10" : ""
+      }`}
+    >
+      {won && (
+        <div
+          className={`absolute top-2 ${isRight ? "left-2" : "right-2"} w-4 h-4 rounded-full bg-lime-300 flex items-center justify-center`}
+        >
+          <Check size={10} strokeWidth={3} className="text-slate-950" />
+        </div>
+      )}
       {names.map((n, i) => (
-        <div key={i} className="font-semibold text-slate-100 leading-tight">
+        <div
+          key={i}
+          className={`font-semibold leading-tight ${won ? "text-lime-300" : "text-slate-100"}`}
+        >
           {n}
         </div>
       ))}
@@ -1377,23 +1475,23 @@ function PointsScorePicker({ s, target, onPick }) {
   const nums = Array.from({ length: t + 1 }, (_, i) => i);
 
   return (
-    <div className="border-t border-slate-800 px-4 py-3 space-y-3">
+    <div className="space-y-4">
       <div className="flex items-center justify-center gap-3">
-        <span className="font-mono2 text-2xl text-lime-300 w-8 text-center">{a ?? "–"}</span>
+        <span className="font-mono2 text-3xl text-lime-300 w-10 text-center">{a ?? "–"}</span>
         <span className="text-slate-600 font-mono2">–</span>
-        <span className="font-mono2 text-2xl text-lime-300 w-8 text-center">{b ?? "–"}</span>
+        <span className="font-mono2 text-3xl text-lime-300 w-10 text-center">{b ?? "–"}</span>
       </div>
 
       <div>
-        <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-1">
+        <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-2">
           Skor tim kiri
         </div>
-        <div className="flex gap-1.5 overflow-x-auto pb-1">
+        <div className="grid grid-cols-6 gap-1.5">
           {nums.map((n) => (
             <button
               key={n}
               onClick={() => onPick("a", n)}
-              className={`shrink-0 w-8 h-8 rounded-lg text-xs font-bold border ${
+              className={`h-9 rounded-lg text-xs font-bold border ${
                 a === n
                   ? "bg-lime-300 text-slate-950 border-lime-300"
                   : "bg-slate-900 text-slate-300 border-slate-700"
@@ -1406,15 +1504,15 @@ function PointsScorePicker({ s, target, onPick }) {
       </div>
 
       <div>
-        <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-1">
+        <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-2">
           Skor tim kanan
         </div>
-        <div className="flex gap-1.5 overflow-x-auto pb-1">
+        <div className="grid grid-cols-6 gap-1.5">
           {nums.map((n) => (
             <button
               key={n}
               onClick={() => onPick("b", n)}
-              className={`shrink-0 w-8 h-8 rounded-lg text-xs font-bold border ${
+              className={`h-9 rounded-lg text-xs font-bold border ${
                 b === n
                   ? "bg-lime-300 text-slate-950 border-lime-300"
                   : "bg-slate-900 text-slate-300 border-slate-700"
@@ -1423,6 +1521,43 @@ function PointsScorePicker({ s, target, onPick }) {
               {n}
             </button>
           ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ScoreModal({ roundLabel, team1, team2, s, target, onPick, onReset, onClose }) {
+  return (
+    <div
+      className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center"
+      onClick={onClose}
+    >
+      <div
+        className="bg-slate-950 border border-slate-800 rounded-t-3xl sm:rounded-3xl w-full sm:max-w-sm max-h-[85vh] overflow-y-auto p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="text-xs font-semibold tracking-[0.15em] text-cyan-300 uppercase mb-1">
+          {roundLabel}
+        </div>
+        <div className="flex items-center gap-2 text-sm text-slate-300 mb-4">
+          <span className="font-semibold text-slate-100">{team1.join(" & ")}</span>
+          <span className="text-slate-600">vs</span>
+          <span className="font-semibold text-slate-100">{team2.join(" & ")}</span>
+        </div>
+
+        <PointsScorePicker s={s} target={target} onPick={onPick} />
+
+        <div className="flex items-center gap-3 mt-5">
+          <button
+            onClick={onReset}
+            className="w-11 h-11 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center shrink-0"
+          >
+            <RotateCcw size={16} className="text-slate-400" />
+          </button>
+          <PrimaryButton onClick={onClose} className="flex-1">
+            Tutup
+          </PrimaryButton>
         </div>
       </div>
     </div>
@@ -1500,6 +1635,20 @@ function TennisScoreTracker({ s, target, onPoint, onReset }) {
 // ---------------------------------------------------------------------------
 
 function LeaderboardScreen({ eventName, leaderboard, onNav, onBackToLobby }) {
+  const [sortBy, setSortBy] = useState("points"); // points | wins | diff
+
+  const sorted = React.useMemo(() => {
+    const arr = [...leaderboard];
+    if (sortBy === "wins") {
+      arr.sort((x, y) => y.wins - x.wins || y.diff - x.diff || y.points - x.points);
+    } else if (sortBy === "diff") {
+      arr.sort((x, y) => y.diff - x.diff || y.wins - x.wins || y.points - x.points);
+    } else {
+      arr.sort((x, y) => y.points - x.points || y.wins - x.wins || y.diff - x.diff);
+    }
+    return arr;
+  }, [leaderboard, sortBy]);
+
   return (
     <div className="pb-24">
       <div className="px-6 pt-10 pb-6 border-b border-slate-800">
@@ -1518,37 +1667,58 @@ function LeaderboardScreen({ eventName, leaderboard, onNav, onBackToLobby }) {
         </div>
         <h1 className="font-display text-5xl text-slate-50">KLASEMEN</h1>
         <p className="text-slate-500 text-sm mt-2">
-          Diurutkan dari total poin (lalu jumlah menang) berdasarkan skor yang diinput per match.
+          M = main, W-L-T = menang-kalah-seri, +/- = selisih poin.
         </p>
+
+        <div className="flex gap-2 mt-4">
+          {[
+            { key: "points", label: "Poin" },
+            { key: "wins", label: "Game Win" },
+            { key: "diff", label: "Selisih Poin" },
+          ].map((opt) => (
+            <button
+              key={opt.key}
+              onClick={() => setSortBy(opt.key)}
+              className={`px-3 py-1.5 rounded-full text-xs font-semibold border ${
+                sortBy === opt.key
+                  ? "bg-lime-300 text-slate-950 border-lime-300"
+                  : "bg-slate-900 text-slate-400 border-slate-700"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="px-6 pt-4 space-y-2">
-        {leaderboard.length === 0 && (
-          <p className="text-slate-500 text-sm">Belum ada pemain.</p>
-        )}
-        {leaderboard.map((p, i) => (
+        {sorted.length === 0 && <p className="text-slate-500 text-sm">Belum ada pemain.</p>}
+        {sorted.map((p, i) => (
           <div
             key={p.id}
             className={`flex items-center gap-3 rounded-xl border px-4 py-3 ${
-              i === 0
-                ? "border-lime-400/40 bg-lime-400/5"
-                : "border-slate-800 bg-slate-900/40"
+              i === 0 ? "border-lime-400/40 bg-lime-400/5" : "border-slate-800 bg-slate-900/40"
             }`}
           >
             <div
-              className={`font-display text-2xl w-8 text-center ${
+              className={`font-display text-2xl w-8 text-center shrink-0 ${
                 i === 0 ? "text-lime-300" : i === 1 ? "text-slate-300" : "text-slate-500"
               }`}
             >
               {i + 1}
             </div>
-            <div className="flex-1">
-              <div className="font-semibold text-slate-100">{p.name}</div>
-              <div className="text-[11px] text-slate-500">
-                {p.matches} main · {p.wins} menang · {p.rests} istirahat
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold text-slate-100 truncate">{p.name}</div>
+              <div className="text-[11px] text-slate-500 mt-0.5">
+                {p.matches} main · {p.wins}-{p.losses}-{p.ties} (W-L-T) ·{" "}
+                <span className={p.diff > 0 ? "text-lime-400" : p.diff < 0 ? "text-red-400" : ""}>
+                  {p.diff > 0 ? "+" : ""}
+                  {p.diff}
+                </span>{" "}
+                diff
               </div>
             </div>
-            <div className="text-right">
+            <div className="text-right shrink-0">
               <div className="font-mono2 text-lg text-lime-300">{p.points}</div>
               <div className="text-[10px] text-slate-500 uppercase">poin</div>
             </div>
