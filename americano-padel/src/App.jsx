@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Plus, X, Users, Clock, Trophy, Shuffle, ChevronLeft, ChevronRight,
   RotateCcw, Share2, BarChart3, Settings2, Check, Coffee,
-  ArrowLeft, Trash2, CalendarDays, ChevronRightCircle, ClipboardList,
+  ArrowLeft, Trash2, CalendarDays, ChevronRightCircle, ClipboardList, Link2, Eye, ListOrdered,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -241,6 +241,69 @@ function GhostButton({ children, onClick, disabled, className = "", icon: Icon }
       {children}
     </button>
   );
+}
+
+// Normalizes a stored match score (either format) into {a, b} raw numbers
+// used as "points" for the leaderboard, regardless of scoring style chosen.
+function matchAB(s) {
+  if (!s) return null;
+  if (s.format === "tennis") {
+    return { a: s.gamesA, b: s.gamesB };
+  }
+  const a = Number(s.a);
+  const b = Number(s.b);
+  return { a: Number.isFinite(a) ? a : undefined, b: Number.isFinite(b) ? b : undefined };
+}
+
+// Builds the standings array (points, wins/losses/ties, diff, matches played)
+// from a schedule + score map. Shared between the editable app and the
+// read-only viewer link.
+function buildLeaderboard(engine, playerMap, scores) {
+  if (!engine) return [];
+  const totals = {};
+  Object.keys(playerMap).forEach((id) => {
+    totals[id] = {
+      id,
+      name: playerMap[id],
+      points: 0,
+      wins: 0,
+      losses: 0,
+      ties: 0,
+      diff: 0,
+      matches: 0,
+      rests: engine.restCount[id] || 0,
+    };
+  });
+  engine.roundsData.forEach((rd, rIdx) => {
+    rd.courts.forEach((match, cIdx) => {
+      const s = scores[`${rIdx}-${cIdx}`];
+      const ab = matchAB(s);
+      if (!ab) return;
+      const { a, b } = ab;
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return;
+      match.team1.forEach((id) => {
+        totals[id].points += a;
+        totals[id].diff += a - b;
+        totals[id].matches += 1;
+      });
+      match.team2.forEach((id) => {
+        totals[id].points += b;
+        totals[id].diff += b - a;
+        totals[id].matches += 1;
+      });
+      if (a > b) {
+        match.team1.forEach((id) => (totals[id].wins += 1));
+        match.team2.forEach((id) => (totals[id].losses += 1));
+      } else if (b > a) {
+        match.team2.forEach((id) => (totals[id].wins += 1));
+        match.team1.forEach((id) => (totals[id].losses += 1));
+      } else {
+        match.team1.forEach((id) => (totals[id].ties += 1));
+        match.team2.forEach((id) => (totals[id].ties += 1));
+      }
+    });
+  });
+  return Object.values(totals);
 }
 
 // ---------------------------------------------------------------------------
@@ -510,6 +573,13 @@ function AmericanoPadel() {
     persist({ currentRound: next });
   };
 
+  const goToRound = (idx) => {
+    if (!engine) return;
+    const next = Math.min(Math.max(0, idx), engine.roundsData.length - 1);
+    setCurrentRound(next);
+    persist({ currentRound: next });
+  };
+
   const setScore = (courtIdx, side, value) => {
     const key = `${currentRound}-${courtIdx}`;
     setScores((prev) => {
@@ -579,65 +649,10 @@ function AmericanoPadel() {
     });
   };
 
-  // Normalizes a stored match score (either format) into {a, b} raw numbers
-  // used as "points" for the leaderboard, regardless of scoring style chosen.
-  function matchAB(s) {
-    if (!s) return null;
-    if (s.format === "tennis") {
-      return { a: s.gamesA, b: s.gamesB };
-    }
-    const a = Number(s.a);
-    const b = Number(s.b);
-    return { a: Number.isFinite(a) ? a : undefined, b: Number.isFinite(b) ? b : undefined };
-  }
-
-  const leaderboard = React.useMemo(() => {
-    if (!engine) return [];
-    const totals = {};
-    Object.keys(playerMap).forEach((id) => {
-      totals[id] = {
-        id,
-        name: playerMap[id],
-        points: 0,
-        wins: 0,
-        losses: 0,
-        ties: 0,
-        diff: 0,
-        matches: 0,
-        rests: engine.restCount[id] || 0,
-      };
-    });
-    engine.roundsData.forEach((rd, rIdx) => {
-      rd.courts.forEach((match, cIdx) => {
-        const s = scores[`${rIdx}-${cIdx}`];
-        const ab = matchAB(s);
-        if (!ab) return;
-        const { a, b } = ab;
-        if (!Number.isFinite(a) || !Number.isFinite(b)) return;
-        match.team1.forEach((id) => {
-          totals[id].points += a;
-          totals[id].diff += a - b;
-          totals[id].matches += 1;
-        });
-        match.team2.forEach((id) => {
-          totals[id].points += b;
-          totals[id].diff += b - a;
-          totals[id].matches += 1;
-        });
-        if (a > b) {
-          match.team1.forEach((id) => (totals[id].wins += 1));
-          match.team2.forEach((id) => (totals[id].losses += 1));
-        } else if (b > a) {
-          match.team2.forEach((id) => (totals[id].wins += 1));
-          match.team1.forEach((id) => (totals[id].losses += 1));
-        } else {
-          match.team1.forEach((id) => (totals[id].ties += 1));
-          match.team2.forEach((id) => (totals[id].ties += 1));
-        }
-      });
-    });
-    return Object.values(totals);
-  }, [engine, playerMap, scores]);
+  const leaderboard = React.useMemo(
+    () => buildLeaderboard(engine, playerMap, scores),
+    [engine, playerMap, scores]
+  );
 
   const fairnessStats = React.useMemo(() => {
     if (!engine) return [];
@@ -682,6 +697,20 @@ function AmericanoPadel() {
       alert("Jadwal disalin! Tempel (paste) ke WhatsApp.");
     } catch (e) {
       console.log(text);
+      alert("Gagal menyalin otomatis. Buka console untuk salin manual.");
+    }
+  };
+
+  const handleCopyViewLink = async () => {
+    if (!activeId) return;
+    const url = new URL(window.location.href);
+    url.search = `?s=${activeId}`;
+    const link = url.toString();
+    try {
+      await navigator.clipboard.writeText(link);
+      alert("Link pemantau (view only) disalin! Siapa saja yang buka link ini bisa lihat jadwal, klasemen & rekap match tanpa bisa mengubah skor.");
+    } catch (e) {
+      console.log(link);
       alert("Gagal menyalin otomatis. Buka console untuk salin manual.");
     }
   };
@@ -761,6 +790,7 @@ function AmericanoPadel() {
           playerMap={playerMap}
           currentRound={currentRound}
           goRound={goRound}
+          goToRound={goToRound}
           scores={scores}
           setScore={setScore}
           setPointsPair={setPointsPair}
@@ -774,6 +804,7 @@ function AmericanoPadel() {
           onEndEvent={handleEndEvent}
           onNav={setScreen}
           onShare={handleShare}
+          onCopyViewLink={handleCopyViewLink}
           onBackToLobby={handleBackToLobby}
           onDelete={() => handleDeleteSession(activeId)}
         />
@@ -1299,14 +1330,15 @@ function PreviewStat({ label, value }) {
 
 function SessionScreen(props) {
   const {
-    eventName, engine, playerMap, currentRound, goRound,
+    eventName, engine, playerMap, currentRound, goRound, goToRound,
     scores, setScore, setPointsPair, resetPointsScore, scoreFormat, pointTarget, tennisTarget,
     incrementTennisPoint, resetTennisMatch,
     ended, onEndEvent,
-    onNav, onShare, onBackToLobby, onDelete,
+    onNav, onShare, onCopyViewLink, onBackToLobby, onDelete,
   } = props;
 
   const [scoreModal, setScoreModal] = useState(null); // court index being edited, or null
+  const [viewMode, setViewMode] = useState("single"); // single | all
 
   useEffect(() => {
     setScoreModal(null);
@@ -1367,13 +1399,35 @@ function SessionScreen(props) {
           </Chip>
           {ended && <Chip tone="lime">Acara selesai</Chip>}
         </div>
-        <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+        <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden mb-3">
           <div
             className="h-full bg-lime-300 rounded-full transition-all"
             style={{ width: `${pct * 100}%` }}
           />
         </div>
+        <button
+          onClick={() => setViewMode((v) => (v === "single" ? "all" : "single"))}
+          className="flex items-center gap-1.5 text-xs font-semibold text-cyan-300"
+        >
+          <ListOrdered size={14} />
+          {viewMode === "single" ? "Lihat semua ronde" : "Kembali ke tampilan ronde"}
+        </button>
       </div>
+
+      {viewMode === "all" ? (
+        <AllRoundsList
+          engine={engine}
+          playerMap={playerMap}
+          scores={scores}
+          scoreFormat={scoreFormat}
+          currentRound={currentRound}
+          onJump={(idx) => {
+            goToRound(idx);
+            setViewMode("single");
+          }}
+        />
+      ) : (
+        <>
 
       {/* COURTS */}
       <div className="px-6 pt-6 space-y-5">
@@ -1468,14 +1522,81 @@ function SessionScreen(props) {
           Berikutnya
         </GhostButton>
       </div>
+        </>
+      )}
 
-      <div className="px-6 pt-3">
+      <div className="px-6 pt-3 space-y-2">
         <GhostButton onClick={onShare} icon={Share2} className="w-full">
           Bagikan jadwal ke WhatsApp
         </GhostButton>
+        <PrimaryButton onClick={onCopyViewLink} icon={Link2} className="w-full">
+          Salin link pemantau (view only)
+        </PrimaryButton>
+        <p className="text-[11px] text-slate-500 text-center px-4">
+          Siapa saja dengan link ini bisa lihat jadwal, klasemen & rekap match — tanpa bisa
+          mengubah skor.
+        </p>
       </div>
 
       <BottomNav active="session" onNav={onNav} />
+    </div>
+  );
+}
+
+function AllRoundsList({ engine, playerMap, scores, scoreFormat, currentRound, onJump }) {
+  return (
+    <div className="px-6 pt-6 pb-4 space-y-6">
+      {engine.roundsData.map((rd, rIdx) => (
+        <div key={rIdx}>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="font-display text-2xl text-slate-100 tracking-wide">
+              Ronde {rIdx + 1}
+            </span>
+            {rIdx === currentRound && <Chip tone="lime">Sekarang</Chip>}
+          </div>
+          <div className="space-y-2">
+            {rd.courts.map((match, cIdx) => {
+              const s = scores[`${rIdx}-${cIdx}`] || {};
+              let scoreLabel = "belum ada skor";
+              if (scoreFormat === "tennis") {
+                if (s.gamesA || s.gamesB) scoreLabel = `${s.gamesA || 0} – ${s.gamesB || 0}`;
+              } else if (s.a !== undefined && s.a !== "" && s.b !== undefined && s.b !== "") {
+                scoreLabel = `${s.a} – ${s.b}`;
+              }
+              return (
+                <button
+                  key={cIdx}
+                  onClick={() => onJump(rIdx)}
+                  className="w-full text-left rounded-xl border border-slate-800 bg-slate-900/40 px-3 py-2.5 flex items-center justify-between gap-3"
+                >
+                  <div className="min-w-0">
+                    <div className="text-[10px] text-slate-500 uppercase tracking-wide">
+                      Lap. {cIdx + 1}
+                    </div>
+                    <div className="text-sm text-slate-200 truncate">
+                      {match.team1.map((id) => playerMap[id]).join(" & ")}{" "}
+                      <span className="text-slate-600">vs</span>{" "}
+                      {match.team2.map((id) => playerMap[id]).join(" & ")}
+                    </div>
+                  </div>
+                  <div
+                    className={`font-mono2 text-sm shrink-0 ${
+                      scoreLabel === "belum ada skor" ? "text-slate-600" : "text-lime-300"
+                    }`}
+                  >
+                    {scoreLabel}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          {rd.resting.length > 0 && (
+            <div className="text-xs text-amber-300/80 mt-1.5 pl-1">
+              Istirahat: {rd.resting.map((id) => playerMap[id]).join(", ")}
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   );
 }
@@ -2065,4 +2186,394 @@ function StatsScreen({ eventName, stats, totalPlayers, onNav, onBackToLobby }) {
   );
 }
 
-export default AmericanoPadel;
+// ---------------------------------------------------------------------------
+// VIEW-ONLY APP (shared read-only link — schedule, standing, recap)
+// ---------------------------------------------------------------------------
+
+const FONT_STYLE = `
+  @import url('https://fonts.googleapis.com/css2?family=Teko:wght@500;600;700&family=Inter:wght@400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap');
+  .font-display { font-family: 'Teko', sans-serif; }
+  .font-mono2 { font-family: 'Space Mono', monospace; }
+`;
+
+function ViewOnlyApp({ sessionId }) {
+  const [data, setData] = useState(null);
+  const [tab, setTab] = useState("session");
+  const [currentRound, setCurrentRound] = useState(0);
+  const [recapFilter, setRecapFilter] = useState("all");
+  const initializedRound = useRef(false);
+  const lastAppliedRef = useRef(0);
+
+  useEffect(() => {
+    let mounted = true;
+    async function load() {
+      const d = await loadSessionData(sessionId);
+      if (!mounted || !d) return;
+      setData(d);
+      lastAppliedRef.current = d.updatedAt || Date.now();
+      if (!initializedRound.current) {
+        setCurrentRound(d.currentRound || 0);
+        initializedRound.current = true;
+      }
+    }
+    load();
+    const interval = setInterval(async () => {
+      const d = await loadSessionData(sessionId);
+      if (d && (d.updatedAt || 0) > lastAppliedRef.current) {
+        lastAppliedRef.current = d.updatedAt || Date.now();
+        setData(d);
+      }
+    }, 4000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [sessionId]);
+
+  const leaderboard = React.useMemo(
+    () => (data?.engine ? buildLeaderboard(data.engine, data.playerMap, data.scores) : []),
+    [data]
+  );
+  const sortedLeaderboard = React.useMemo(
+    () => [...leaderboard].sort((x, y) => y.wins - x.wins || y.diff - x.diff || y.points - x.points),
+    [leaderboard]
+  );
+
+  const recapRows = React.useMemo(() => {
+    if (!data?.engine) return [];
+    const list = [];
+    data.engine.roundsData.forEach((rd, rIdx) => {
+      rd.courts.forEach((match, cIdx) => {
+        const s = data.scores[`${rIdx}-${cIdx}`];
+        if (!s) return;
+        let a, b;
+        if (s.format === "tennis") {
+          a = s.gamesA || 0;
+          b = s.gamesB || 0;
+          if (!(a > 0 || b > 0 || s.pointsA > 0 || s.pointsB > 0)) return;
+        } else {
+          a = s.a !== undefined && s.a !== "" ? Number(s.a) : null;
+          b = s.b !== undefined && s.b !== "" ? Number(s.b) : null;
+          if (a === null || b === null) return;
+        }
+        list.push({
+          id: `${rIdx}-${cIdx}`,
+          round: rIdx + 1,
+          court: cIdx + 1,
+          team1Ids: match.team1,
+          team2Ids: match.team2,
+          team1: match.team1.map((id) => data.playerMap[id]),
+          team2: match.team2.map((id) => data.playerMap[id]),
+          a,
+          b,
+          winner: a === b ? null : a > b ? "team1" : "team2",
+        });
+      });
+    });
+    return list;
+  }, [data]);
+
+  const filteredRecap =
+    recapFilter === "all"
+      ? recapRows
+      : recapRows.filter((r) => r.team1Ids.includes(recapFilter) || r.team2Ids.includes(recapFilter));
+
+  const players = React.useMemo(
+    () =>
+      data?.playerMap
+        ? Object.entries(data.playerMap)
+            .map(([id, name]) => ({ id, name }))
+            .sort((x, y) => x.name.localeCompare(y.name))
+        : [],
+    [data]
+  );
+
+  if (!data) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <style>{FONT_STYLE}</style>
+        <div className="text-slate-500 text-sm font-mono2">memuat…</div>
+      </div>
+    );
+  }
+
+  if (!data.engine) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center px-6 text-center">
+        <style>{FONT_STYLE}</style>
+        <p className="text-slate-400 text-sm">Acara ini belum punya jadwal.</p>
+      </div>
+    );
+  }
+
+  const totalRounds = data.engine.roundsData.length;
+  const safeRound = Math.min(currentRound, totalRounds - 1);
+  const round = data.engine.roundsData[safeRound];
+
+  function winnerOf(s) {
+    if (!s) return null;
+    if (data.scoreFormat === "tennis") {
+      if ((s.gamesA || 0) >= data.tennisTarget) return "team1";
+      if ((s.gamesB || 0) >= data.tennisTarget) return "team2";
+      return null;
+    }
+    const a = s.a !== undefined && s.a !== "" ? Number(s.a) : null;
+    const b = s.b !== undefined && s.b !== "" ? Number(s.b) : null;
+    if (a === null || b === null || a === b) return null;
+    return a > b ? "team1" : "team2";
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100" style={{ fontFamily: "'Inter', ui-sans-serif, system-ui" }}>
+      <style>{FONT_STYLE}</style>
+
+      <div className="px-6 pt-8 pb-4 border-b border-slate-800">
+        <Chip tone="cyan">
+          <Eye size={11} /> View only — pemantau
+        </Chip>
+        {data.name && <h1 className="font-display text-4xl text-slate-50 mt-2">{data.name}</h1>}
+        {data.ended && (
+          <div className="mt-2">
+            <Chip tone="lime">Acara selesai</Chip>
+          </div>
+        )}
+      </div>
+
+      <div className="pb-24">
+        {tab === "session" && (
+          <div className="px-6 pt-6">
+            <div className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase mb-4">
+              Ronde {safeRound + 1} / {totalRounds}
+            </div>
+            <div className="space-y-5">
+              {round.courts.map((match, cIdx) => {
+                const key = `${safeRound}-${cIdx}`;
+                const s = data.scores[key] || {};
+                const winner = winnerOf(s);
+                const scoreA =
+                  data.scoreFormat === "tennis"
+                    ? s.gamesA || 0
+                    : s.a !== undefined && s.a !== ""
+                    ? s.a
+                    : "–";
+                const scoreB =
+                  data.scoreFormat === "tennis"
+                    ? s.gamesB || 0
+                    : s.b !== undefined && s.b !== ""
+                    ? s.b
+                    : "–";
+                return (
+                  <div key={cIdx} className="rounded-2xl border border-slate-800 overflow-hidden bg-slate-900/40">
+                    <div className="px-4 py-2 bg-slate-900 border-b border-slate-800">
+                      <span className="text-xs font-bold tracking-widest text-slate-400 uppercase">
+                        Lapangan {cIdx + 1}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto_1fr] items-stretch">
+                      <TeamSide
+                        names={match.team1.map((id) => data.playerMap[id])}
+                        align="right"
+                        won={winner === "team1"}
+                        score={scoreA}
+                      />
+                      <div className="flex flex-col items-center px-3 py-2">
+                        <div className="w-px flex-1 bg-gradient-to-b from-transparent via-lime-300/60 to-transparent" />
+                        <span className="font-display text-lg text-lime-300 bg-slate-950 px-1">VS</span>
+                        <div className="w-px flex-1 bg-gradient-to-t from-transparent via-lime-300/60 to-transparent" />
+                      </div>
+                      <TeamSide
+                        names={match.team2.map((id) => data.playerMap[id])}
+                        align="left"
+                        won={winner === "team2"}
+                        score={scoreB}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+
+              {round.resting.length > 0 && (
+                <div className="rounded-2xl border border-dashed border-slate-700 p-4 flex items-center gap-3">
+                  <Coffee size={18} className="text-amber-300 shrink-0" />
+                  <div>
+                    <div className="text-xs font-bold text-amber-300 uppercase tracking-wide">
+                      Istirahat
+                    </div>
+                    <div className="text-sm text-slate-300 mt-0.5">
+                      {round.resting.map((id) => data.playerMap[id]).join(", ")}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-3 mt-6">
+              <GhostButton
+                onClick={() => setCurrentRound((r) => Math.max(0, safeRound - 1))}
+                disabled={safeRound === 0}
+                icon={ChevronLeft}
+                className="flex-1"
+              >
+                Sebelumnya
+              </GhostButton>
+              <GhostButton
+                onClick={() => setCurrentRound((r) => Math.min(totalRounds - 1, safeRound + 1))}
+                disabled={safeRound === totalRounds - 1}
+                icon={ChevronRight}
+                className="flex-1 flex-row-reverse"
+              >
+                Berikutnya
+              </GhostButton>
+            </div>
+          </div>
+        )}
+
+        {tab === "leaderboard" && (
+          <div className="px-6 pt-6">
+            <h2 className="font-display text-3xl text-slate-50 mb-1">KLASEMEN</h2>
+            <p className="text-slate-500 text-xs mb-4">
+              Diurutkan dari game win, lalu selisih poin, lalu total poin.
+            </p>
+            {sortedLeaderboard.length === 0 ? (
+              <p className="text-slate-500 text-sm">Belum ada skor yang diisi.</p>
+            ) : (
+              <div className="overflow-x-auto -mx-6 px-6">
+                <table className="w-full border-collapse min-w-[380px]">
+                  <thead>
+                    <tr className="text-[10px] text-slate-500 uppercase tracking-wide">
+                      <th className="text-center pb-2 w-7">#</th>
+                      <th className="text-left pb-2">Nama</th>
+                      <th className="text-right pb-2 pl-3">M</th>
+                      <th className="text-right pb-2 pl-3 text-lime-300">W-L-T</th>
+                      <th className="text-right pb-2 pl-3">+/-</th>
+                      <th className="text-right pb-2 pl-3">Poin</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedLeaderboard.map((p, i) => (
+                      <tr key={p.id} className={`border-t border-slate-800 ${i === 0 ? "bg-lime-400/5" : ""}`}>
+                        <td className={`py-2.5 text-center font-display text-lg ${i === 0 ? "text-lime-300" : "text-slate-500"}`}>
+                          {i + 1}
+                        </td>
+                        <td className="py-2.5 font-semibold text-slate-100 truncate max-w-[110px]">{p.name}</td>
+                        <td className="py-2.5 pl-3 text-right font-mono2 text-slate-400">{p.matches}</td>
+                        <td className="py-2.5 pl-3 text-right font-mono2 text-lime-300 font-bold">
+                          {p.wins}-{p.losses}-{p.ties}
+                        </td>
+                        <td className="py-2.5 pl-3 text-right font-mono2 text-slate-400">
+                          {p.diff > 0 ? `+${p.diff}` : p.diff}
+                        </td>
+                        <td className="py-2.5 pl-3 text-right font-mono2 text-slate-400">{p.points}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === "recap" && (
+          <div className="px-6 pt-6">
+            <h2 className="font-display text-3xl text-slate-50 mb-4">REKAP MATCH</h2>
+            {players.length > 0 && (
+              <div className="flex gap-1.5 overflow-x-auto pb-1 mb-4 -mx-6 px-6">
+                <button
+                  onClick={() => setRecapFilter("all")}
+                  className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border ${
+                    recapFilter === "all"
+                      ? "bg-lime-300 text-slate-950 border-lime-300"
+                      : "bg-slate-900 text-slate-400 border-slate-700"
+                  }`}
+                >
+                  Semua
+                </button>
+                {players.map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => setRecapFilter(p.id)}
+                    className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border ${
+                      recapFilter === p.id
+                        ? "bg-lime-300 text-slate-950 border-lime-300"
+                        : "bg-slate-900 text-slate-400 border-slate-700"
+                    }`}
+                  >
+                    {p.name}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="space-y-3">
+              {filteredRecap.length === 0 && (
+                <div className="rounded-2xl border border-dashed border-slate-700 p-6 text-center">
+                  <p className="text-slate-500 text-sm">Belum ada match yang diisi skornya.</p>
+                </div>
+              )}
+              {filteredRecap.map((r) => (
+                <div key={r.id} className="rounded-2xl border border-slate-800 bg-slate-900/40 overflow-hidden">
+                  <div className="px-4 py-2 bg-slate-900 border-b border-slate-800">
+                    <span className="text-xs font-bold tracking-widest text-slate-400 uppercase">
+                      Ronde {r.round} · Lapangan {r.court}
+                    </span>
+                  </div>
+                  <div className="px-4 py-3 space-y-1.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className={`text-sm truncate ${r.winner === "team1" ? "text-lime-300 font-semibold" : "text-slate-200"}`}>
+                        {r.team1.join(" & ")}
+                      </span>
+                      <span className={`font-mono2 text-lg shrink-0 ${r.winner === "team1" ? "text-lime-300" : "text-slate-400"}`}>
+                        {r.a}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className={`text-sm truncate ${r.winner === "team2" ? "text-lime-300 font-semibold" : "text-slate-200"}`}>
+                        {r.team2.join(" & ")}
+                      </span>
+                      <span className={`font-mono2 text-lg shrink-0 ${r.winner === "team2" ? "text-lime-300" : "text-slate-400"}`}>
+                        {r.b}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="fixed bottom-0 left-0 right-0 bg-slate-950/95 backdrop-blur border-t border-slate-800 flex z-20">
+        {[
+          { key: "session", label: "Jadwal", icon: Clock },
+          { key: "leaderboard", label: "Klasemen", icon: Trophy },
+          { key: "recap", label: "Rekap", icon: ClipboardList },
+        ].map(({ key, label, icon: Icon }) => (
+          <button
+            key={key}
+            onClick={() => setTab(key)}
+            className={`flex-1 py-3 flex flex-col items-center gap-1 ${
+              tab === key ? "text-lime-300" : "text-slate-500"
+            }`}
+          >
+            <Icon size={20} strokeWidth={tab === key ? 2.5 : 2} />
+            <span className="text-[11px] font-semibold">{label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ROOT — decides between the editable app and the read-only viewer link
+// ---------------------------------------------------------------------------
+
+function AppRoot() {
+  const params = new URLSearchParams(window.location.search);
+  const viewSessionId = params.get("s");
+  if (viewSessionId) {
+    return <ViewOnlyApp sessionId={viewSessionId} />;
+  }
+  return <AmericanoPadel />;
+}
+
+export default AppRoot;
