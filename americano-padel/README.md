@@ -31,42 +31,72 @@ git remote add origin https://github.com/<username>/<repo-name>.git
 git push -u origin main
 ```
 
+⚠️ File `.env` **tidak ikut ter-push** ke GitHub (memang sengaja, lihat `.gitignore`) karena isinya config Firebase. Ini normal — env var yang sama akan ditambahkan manual di Vercel pada langkah berikut.
+
 ## Deploy ke Vercel
 
 1. Buka [vercel.com](https://vercel.com) → **Add New Project**
 2. Import repo GitHub yang baru saja kamu push
 3. Vercel otomatis mendeteksi ini project **Vite** — framework preset: `Vite`,
-   build command: `vite build`, output directory: `dist`. Tidak perlu
-   diubah, langsung **Deploy**.
-4. Setelah selesai, kamu dapat URL publik (`https://<project>.vercel.app`)
+   build command: `vite build`, output directory: `dist`. Tidak perlu diubah.
+4. **Sebelum klik Deploy**, buka bagian **Environment Variables** di halaman
+   import, lalu tambahkan 7 variabel ini (isi persis dari file `.env` di
+   project ini):
+
+   | Key | Value |
+   |---|---|
+   | `VITE_FIREBASE_API_KEY` | isi dari `.env` |
+   | `VITE_FIREBASE_AUTH_DOMAIN` | isi dari `.env` |
+   | `VITE_FIREBASE_DATABASE_URL` | isi dari `.env` |
+   | `VITE_FIREBASE_PROJECT_ID` | isi dari `.env` |
+   | `VITE_FIREBASE_STORAGE_BUCKET` | isi dari `.env` |
+   | `VITE_FIREBASE_MESSAGING_SENDER_ID` | isi dari `.env` |
+   | `VITE_FIREBASE_APP_ID` | isi dari `.env` |
+
+5. Klik **Deploy**. Kamu dapat URL publik (`https://<project>.vercel.app`)
    yang bisa langsung dibuka & di-"Add to Home Screen" di Android/iPhone.
 
-## ⚠️ Penting: soal penyimpanan data (localStorage vs shared/real-time)
+Kalau nanti ganti nilai env var di Vercel, perlu **Redeploy** manual dari tab
+Deployments — Vercel tidak otomatis rebuild hanya karena env var berubah.
 
-Versi ini awalnya dibuat sebagai Claude.ai artifact, yang punya `window.storage`
-bawaan berupa database **shared** — semua orang yang buka link yang sama
-melihat data yang sama secara real-time.
+## ⚠️ Wajib: kunci Database Rules di Firebase (sebelum 30 hari)
 
-Di luar Claude.ai, backend itu tidak tersedia. Project ini sudah dilengkapi
-`src/lib/storage.js` sebagai pengganti sementara yang memakai
-**localStorage** milik browser, supaya app tetap jalan penuh begitu di-deploy.
+Realtime Database yang dibuat dalam "test mode" itu **otomatis terkunci total
+setelah ~30 hari** kalau rules-nya tidak diganti — nanti app tiba-tiba error
+semua. Ganti sekarang juga:
 
-**Konsekuensinya:** localStorage itu per-browser, per-device. Artinya:
-- Lobby, jadwal, dan skor **tidak otomatis tersinkron** antar HP yang berbeda
-- Tiap orang yang buka link dari HP-nya masing-masing akan punya data
-  sendiri-sendiri, terpisah
+1. Buka [Firebase Console](https://console.firebase.google.com) → project kamu
+2. **Build → Realtime Database → tab Rules**
+3. Ganti isinya jadi:
+   ```json
+   {
+     "rules": {
+       ".read": false,
+       ".write": false,
+       "kv": {
+         ".read": true,
+         ".write": true
+       }
+     }
+   }
+   ```
+4. Klik **Publish**
 
-Kalau kamu tetap butuh semua orang di grup melihat sesi & skor yang sama
-secara real-time (seperti sebelumnya di Claude.ai), kamu perlu mengganti isi
-`src/lib/storage.js` dengan backend sungguhan, misalnya:
-- **Firebase Realtime Database / Firestore** (gratis untuk skala kecil, paling mudah)
-- **Supabase** (Postgres + realtime subscriptions)
-- API kecil buatan sendiri + database apa saja
+Rules ini membuka akses baca/tulis hanya untuk path `kv` (tempat semua data
+lobby/jadwal/skor app ini disimpan), tanpa perlu login — sesuai kebutuhan
+grup teman main. Path lain di database tetap tertutup rapat.
 
-Struktur fungsi di `storage.js` (`get`, `set`, `delete`, `list`) sengaja
-dibuat meniru API aslinya, jadi kamu bisa ganti isinya saja tanpa menyentuh
-`App.jsx` sama sekali. Kalau mau, saya bisa bantu wire up Firebase supaya
-sinkronisasi antar HP jalan lagi — tinggal bilang.
+## Soal penyimpanan data (real-time, shared antar HP)
+
+Project ini sekarang pakai **Firebase Realtime Database** sebagai backend
+(lihat `src/lib/storage.js`), menggantikan `window.storage` bawaan Claude.ai.
+Karena ini database sungguhan (bukan localStorage), lobby, jadwal, dan skor
+**otomatis tersinkron real-time ke semua HP** yang membuka app atau link
+pemantau (view only) — persis seperti waktu masih di Claude.ai.
+
+Firebase paket gratis (Spark) cukup jauh lebih dari cukup untuk skala
+pemakaian ini (sekelompok teman main padel) — tanpa batas waktu, tanpa perlu
+kartu kredit.
 
 ## Struktur project
 
@@ -76,10 +106,12 @@ sinkronisasi antar HP jalan lagi — tinggal bilang.
 ├── vite.config.js
 ├── tailwind.config.js
 ├── postcss.config.js
+├── .env               # config Firebase (tidak ikut git, isi manual di Vercel)
+├── .env.example       # template kosong, ikut git
 └── src/
     ├── main.jsx        # entry point, memasang storage shim
     ├── App.jsx          # seluruh aplikasi (lobby, setup, sesi, klasemen, statistik)
     ├── index.css        # Tailwind directives
     └── lib/
-        └── storage.js   # pengganti window.storage (localStorage-based)
+        └── storage.js   # backend Firebase Realtime Database
 ```

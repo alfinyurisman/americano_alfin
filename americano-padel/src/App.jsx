@@ -2198,6 +2198,7 @@ const FONT_STYLE = `
 
 function ViewOnlyApp({ sessionId }) {
   const [data, setData] = useState(null);
+  const [notFound, setNotFound] = useState(false);
   const [tab, setTab] = useState("session");
   const [currentRound, setCurrentRound] = useState(0);
   const [recapFilter, setRecapFilter] = useState("all");
@@ -2206,27 +2207,43 @@ function ViewOnlyApp({ sessionId }) {
 
   useEffect(() => {
     let mounted = true;
-    async function load() {
+    let attempts = 0;
+    let retryTimer = null;
+
+    async function tryLoad() {
       const d = await loadSessionData(sessionId);
-      if (!mounted || !d) return;
-      setData(d);
-      lastAppliedRef.current = d.updatedAt || Date.now();
-      if (!initializedRound.current) {
-        setCurrentRound(d.currentRound || 0);
-        initializedRound.current = true;
+      if (!mounted) return;
+      if (d) {
+        setData(d);
+        setNotFound(false);
+        lastAppliedRef.current = d.updatedAt || Date.now();
+        if (!initializedRound.current) {
+          setCurrentRound(d.currentRound || 0);
+          initializedRound.current = true;
+        }
+        return;
+      }
+      attempts += 1;
+      if (attempts >= 4) {
+        setNotFound(true);
+      } else {
+        retryTimer = setTimeout(tryLoad, 1200);
       }
     }
-    load();
+    tryLoad();
+
     const interval = setInterval(async () => {
       const d = await loadSessionData(sessionId);
       if (d && (d.updatedAt || 0) > lastAppliedRef.current) {
         lastAppliedRef.current = d.updatedAt || Date.now();
         setData(d);
+        setNotFound(false);
       }
     }, 4000);
     return () => {
       mounted = false;
       clearInterval(interval);
+      clearTimeout(retryTimer);
     };
   }, [sessionId]);
 
@@ -2287,6 +2304,23 @@ function ViewOnlyApp({ sessionId }) {
         : [],
     [data]
   );
+
+  if (!data && notFound) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center px-6 text-center">
+        <style>{FONT_STYLE}</style>
+        <div className="max-w-xs">
+          <p className="text-slate-200 text-sm font-semibold mb-2">Sesi tidak ditemukan</p>
+          <p className="text-slate-500 text-xs leading-relaxed">
+            Link ini kemungkinan dibuka di device/browser yang berbeda dari yang dipakai untuk
+            membuat acaranya. Kalau aplikasi ini di-deploy sendiri (bukan lewat Claude.ai),
+            penyimpanan datanya masih bersifat lokal per-device, jadi link pemantau hanya jalan
+            di device yang sama dengan yang membuat acara — belum bisa diakses lintas HP.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (!data) {
     return (

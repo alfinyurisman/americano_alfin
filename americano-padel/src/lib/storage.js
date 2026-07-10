@@ -1,32 +1,50 @@
-// Standalone replacement for the `window.storage` API that Claude.ai
-// artifacts provide automatically. This shim uses the browser's
-// localStorage so the app works out-of-the-box once deployed on your own
-// (e.g. Vercel).
+// Real shared backend for the app, using Firebase Realtime Database.
+// Implements the same get/set/delete/list shape the app already expects
+// (matching Claude.ai's built-in window.storage API), so App.jsx did not
+// need any changes — only this file was swapped out.
 //
-// IMPORTANT LIMITATION:
-// localStorage is per-browser, per-device. It does NOT sync between
-// different phones/players in real time like it did inside Claude.ai
-// (which used a real shared backend). Every device that opens this app
-// will have its own separate lobby/session data.
-//
-// If you want genuine multi-device real-time sync (so everyone sees the
-// same lobby, schedule, and scores update live), you'll need to swap this
-// file for a real backend, e.g. Firebase Realtime Database / Firestore,
-// Supabase, or a small custom API. The three functions below (get/set/
-// delete) are the only integration points used by the app, so you can
-// replace their internals without touching App.jsx at all.
+// Because this is a REAL shared database (not localStorage), data written
+// from one phone is visible to every other phone/browser that opens the
+// app or the view-only link — exactly like it behaved inside Claude.ai.
 
-const NAMESPACE = "americano-padel:";
+import { initializeApp, getApps } from "firebase/app";
+import {
+  getDatabase,
+  ref,
+  get as dbGet,
+  set as dbSet,
+  remove as dbRemove,
+} from "firebase/database";
 
-function fullKey(key) {
-  return `${NAMESPACE}${key}`;
+const firebaseConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+};
+
+const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
+const db = getDatabase(app);
+
+// Realtime Database keys can't contain . # $ [ ] /  — our own keys never
+// do, but this keeps things safe regardless.
+function safeKey(key) {
+  return String(key).replace(/[.#$[\]/]/g, "_");
+}
+
+function path(key) {
+  return `kv/${safeKey(key)}`;
 }
 
 async function get(key /*, shared */) {
   try {
-    const raw = window.localStorage.getItem(fullKey(key));
-    if (raw === null) return null;
-    return { key, value: raw, shared: false };
+    const snap = await dbGet(ref(db, path(key)));
+    if (!snap.exists()) return null;
+    const data = snap.val();
+    return { key, value: data.value, shared: true };
   } catch (e) {
     throw new Error("storage.get failed: " + e.message);
   }
@@ -34,8 +52,8 @@ async function get(key /*, shared */) {
 
 async function set(key, value /*, shared */) {
   try {
-    window.localStorage.setItem(fullKey(key), value);
-    return { key, value, shared: false };
+    await dbSet(ref(db, path(key)), { value, updatedAt: Date.now() });
+    return { key, value, shared: true };
   } catch (e) {
     throw new Error("storage.set failed: " + e.message);
   }
@@ -43,8 +61,8 @@ async function set(key, value /*, shared */) {
 
 async function del(key /*, shared */) {
   try {
-    window.localStorage.removeItem(fullKey(key));
-    return { key, deleted: true, shared: false };
+    await dbRemove(ref(db, path(key)));
+    return { key, deleted: true, shared: true };
   } catch (e) {
     throw new Error("storage.delete failed: " + e.message);
   }
@@ -52,15 +70,12 @@ async function del(key /*, shared */) {
 
 async function list(prefix = "" /*, shared */) {
   try {
-    const keys = [];
-    const full = fullKey(prefix);
-    for (let i = 0; i < window.localStorage.length; i++) {
-      const k = window.localStorage.key(i);
-      if (k && k.startsWith(NAMESPACE) && k.startsWith(full)) {
-        keys.push(k.slice(NAMESPACE.length));
-      }
-    }
-    return { keys, prefix, shared: false };
+    const snap = await dbGet(ref(db, "kv"));
+    if (!snap.exists()) return { keys: [], prefix, shared: true };
+    const all = Object.keys(snap.val());
+    const p = safeKey(prefix);
+    const keys = all.filter((k) => k.startsWith(p));
+    return { keys, prefix, shared: true };
   } catch (e) {
     throw new Error("storage.list failed: " + e.message);
   }
