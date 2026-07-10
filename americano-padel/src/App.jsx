@@ -261,13 +261,14 @@ function AmericanoPadel() {
   const [courts, setCourts] = useState(2);
   const [mode, setMode] = useState("duration"); // duration | rounds
   const [totalMinutes, setTotalMinutes] = useState(120);
-  const [minutesPerRound, setMinutesPerRound] = useState(15);
+  const [minutesPerRound, setMinutesPerRound] = useState(7);
   const [breakMinutes, setBreakMinutes] = useState(0);
   const [manualRounds, setManualRounds] = useState(8);
   const [startTime, setStartTime] = useState("19:00");
   const [scoreFormat, setScoreFormat] = useState("points"); // points | tennis
   const [pointTarget, setPointTarget] = useState(21);
   const [tennisTarget, setTennisTarget] = useState(4); // race to N games
+  const [ended, setEnded] = useState(false);
 
   // Session state (post-generate)
   const [engine, setEngine] = useState(null);
@@ -304,6 +305,7 @@ function AmericanoPadel() {
           setScoreFormat(saved.scoreFormat || "points");
           setPointTarget(saved.pointTarget ?? 21);
           setTennisTarget(saved.tennisTarget ?? 4);
+          setEnded(!!saved.ended);
         }
       }
     }, 4000);
@@ -330,6 +332,7 @@ function AmericanoPadel() {
         scoreFormat,
         pointTarget,
         tennisTarget,
+        ended,
         engine,
         playerMap,
         currentRound,
@@ -349,6 +352,7 @@ function AmericanoPadel() {
           courts: snapshot.courts,
           roundsTotal: snapshot.engine ? snapshot.engine.roundsData.length : 0,
           currentRound: snapshot.currentRound || 0,
+          ended: !!snapshot.ended,
         };
         const next = existing
           ? prev.map((e) => (e.id === id ? entry : e))
@@ -357,7 +361,7 @@ function AmericanoPadel() {
         return next;
       });
     },
-    [activeId, eventName, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, engine, playerMap, currentRound, scores]
+    [activeId, eventName, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
   );
 
   const addPlayerFromInput = () => {
@@ -420,7 +424,7 @@ function AmericanoPadel() {
     setCourts(2);
     setMode("duration");
     setTotalMinutes(120);
-    setMinutesPerRound(15);
+    setMinutesPerRound(7);
     setBreakMinutes(0);
     setManualRounds(8);
     setStartTime("19:00");
@@ -432,6 +436,7 @@ function AmericanoPadel() {
     setCurrentRound(0);
     setScores({});
     setEventName("");
+    setEnded(false);
   };
 
   const handleCreateNew = () => {
@@ -448,13 +453,14 @@ function AmericanoPadel() {
     setCourts(data.courts || 2);
     setMode(data.mode || "duration");
     setTotalMinutes(data.totalMinutes ?? 120);
-    setMinutesPerRound(data.minutesPerRound ?? 15);
+    setMinutesPerRound(data.minutesPerRound ?? 7);
     setBreakMinutes(data.breakMinutes ?? 0);
     setManualRounds(data.manualRounds ?? 8);
     setStartTime(data.startTime || "19:00");
     setScoreFormat(data.scoreFormat || "points");
     setPointTarget(data.pointTarget ?? 21);
     setTennisTarget(data.tennisTarget ?? 4);
+    setEnded(!!data.ended);
     setEngine(data.engine || null);
     setPlayerMap(data.playerMap || {});
     setCurrentRound(data.currentRound || 0);
@@ -483,6 +489,18 @@ function AmericanoPadel() {
       setActiveId(null);
       setScreen("lobby");
     }
+  };
+
+  const handleEndEvent = () => {
+    if (
+      !window.confirm(
+        "Akhiri acara ini sekarang? Klasemen akan dikunci berdasarkan skor yang sudah diisi, walau belum semua ronde selesai dimainkan."
+      )
+    )
+      return;
+    setEnded(true);
+    persist({ ended: true });
+    setScreen("leaderboard");
   };
 
   const goRound = (delta) => {
@@ -585,7 +603,7 @@ function AmericanoPadel() {
         losses: 0,
         ties: 0,
         diff: 0,
-        matches: engine.playCount[id] || 0,
+        matches: 0,
         rests: engine.restCount[id] || 0,
       };
     });
@@ -599,10 +617,12 @@ function AmericanoPadel() {
         match.team1.forEach((id) => {
           totals[id].points += a;
           totals[id].diff += a - b;
+          totals[id].matches += 1;
         });
         match.team2.forEach((id) => {
           totals[id].points += b;
           totals[id].diff += b - a;
+          totals[id].matches += 1;
         });
         if (a > b) {
           match.team1.forEach((id) => (totals[id].wins += 1));
@@ -750,6 +770,8 @@ function AmericanoPadel() {
           tennisTarget={tennisTarget}
           incrementTennisPoint={incrementTennisPoint}
           resetTennisMatch={resetTennisMatch}
+          ended={ended}
+          onEndEvent={handleEndEvent}
           onNav={setScreen}
           onShare={handleShare}
           onBackToLobby={handleBackToLobby}
@@ -761,6 +783,7 @@ function AmericanoPadel() {
         <LeaderboardScreen
           eventName={eventName}
           leaderboard={leaderboard}
+          ended={ended}
           onNav={setScreen}
           onBackToLobby={handleBackToLobby}
         />
@@ -878,14 +901,18 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete }) {
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="font-semibold text-slate-100 truncate">{ev.name}</div>
-                      <div className="text-[11px] text-slate-500 mt-1">
+                      <div className="text-[11px] text-slate-300 mt-1">
                         {ev.playerCount} pemain · {ev.courts} lapangan
                       </div>
                     </div>
                     <ChevronRightCircle size={20} className="text-slate-600 shrink-0 mt-0.5" />
                   </div>
                   <div className="mt-3">
-                    {started ? (
+                    {ev.ended ? (
+                      <Chip tone="lime">
+                        <Trophy size={11} /> Selesai
+                      </Chip>
+                    ) : started ? (
                       <Chip tone="lime">
                         <Clock size={11} /> Ronde {Math.min(ev.currentRound + 1, ev.roundsTotal)}/
                         {ev.roundsTotal}
@@ -1226,7 +1253,7 @@ function Section({ icon: Icon, title, subtitle, children }) {
           <Icon size={16} className="text-lime-300" />
           <h2 className="font-display text-2xl tracking-wide text-slate-100">{title}</h2>
         </div>
-        {subtitle && <span className="text-xs text-slate-500 font-mono2">{subtitle}</span>}
+        {subtitle && <span className="text-xs text-slate-300 font-mono2">{subtitle}</span>}
       </div>
       {children}
     </div>
@@ -1275,6 +1302,7 @@ function SessionScreen(props) {
     eventName, engine, playerMap, currentRound, goRound,
     scores, setScore, setPointsPair, resetPointsScore, scoreFormat, pointTarget, tennisTarget,
     incrementTennisPoint, resetTennisMatch,
+    ended, onEndEvent,
     onNav, onShare, onBackToLobby, onDelete,
   } = props;
 
@@ -1313,9 +1341,16 @@ function SessionScreen(props) {
           >
             <ArrowLeft size={13} /> Lobby
           </button>
-          <button onClick={onDelete} className="text-xs text-red-400/80 flex items-center gap-1">
-            <Trash2 size={12} /> hapus acara
-          </button>
+          <div className="flex items-center gap-3">
+            {!ended && (
+              <button onClick={onEndEvent} className="text-xs text-cyan-300 flex items-center gap-1">
+                <Trophy size={12} /> selesaikan
+              </button>
+            )}
+            <button onClick={onDelete} className="text-xs text-red-400/80 flex items-center gap-1">
+              <Trash2 size={12} /> hapus acara
+            </button>
+          </div>
         </div>
         {eventName && (
           <div className="text-sm font-semibold text-slate-200 mb-1 truncate">{eventName}</div>
@@ -1325,11 +1360,12 @@ function SessionScreen(props) {
             Ronde {currentRound + 1} / {totalRounds}
           </span>
         </div>
-        <div className="mb-3">
+        <div className="mb-3 flex gap-2">
           <Chip tone="amber">
             <Trophy size={11} />
             {scoreFormat === "tennis" ? `Race to ${tennisTarget} game` : `Target ${pointTarget} poin`}
           </Chip>
+          {ended && <Chip tone="lime">Acara selesai</Chip>}
         </div>
         <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
           <div
@@ -1345,8 +1381,10 @@ function SessionScreen(props) {
           const key = `${currentRound}-${cIdx}`;
           const s = scores[key] || {};
           const winner = winnerOf(s);
-          const scoreA = scoreFormat === "tennis" ? s.gamesA || 0 : s.a ?? null;
-          const scoreB = scoreFormat === "tennis" ? s.gamesB || 0 : s.b ?? null;
+          const scoreA =
+            scoreFormat === "tennis" ? s.gamesA || 0 : s.a !== undefined && s.a !== "" ? s.a : "–";
+          const scoreB =
+            scoreFormat === "tennis" ? s.gamesB || 0 : s.b !== undefined && s.b !== "" ? s.b : "–";
           const openModal = scoreFormat === "points" ? () => setScoreModal(cIdx) : undefined;
           return (
             <div key={cIdx} className="rounded-2xl border border-slate-800 overflow-hidden bg-slate-900/40">
@@ -1494,7 +1532,7 @@ function TeamSide({ names, align, won, score, onClick }) {
   );
 }
 
-function PointsScorePicker({ s, target, onPick }) {
+function PointsScorePicker({ s, target, onPick, team1Label, team2Label }) {
   const a = s.a !== undefined && s.a !== "" && s.a !== null ? Number(s.a) : null;
   const b = s.b !== undefined && s.b !== "" && s.b !== null ? Number(s.b) : null;
   const t = Math.max(1, Number(target) || 21);
@@ -1509,8 +1547,8 @@ function PointsScorePicker({ s, target, onPick }) {
       </div>
 
       <div>
-        <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-2">
-          Skor tim kiri
+        <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-2 truncate">
+          Skor {team1Label || "tim kiri"}
         </div>
         <div className="grid grid-cols-6 gap-1.5">
           {nums.map((n) => (
@@ -1530,8 +1568,8 @@ function PointsScorePicker({ s, target, onPick }) {
       </div>
 
       <div>
-        <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-2">
-          Skor tim kanan
+        <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-2 truncate">
+          Skor {team2Label || "tim kanan"}
         </div>
         <div className="grid grid-cols-6 gap-1.5">
           {nums.map((n) => (
@@ -1572,7 +1610,13 @@ function ScoreModal({ roundLabel, team1, team2, s, target, onPick, onReset, onCl
           <span className="font-semibold text-slate-100">{team2.join(" & ")}</span>
         </div>
 
-        <PointsScorePicker s={s} target={target} onPick={onPick} />
+        <PointsScorePicker
+          s={s}
+          target={target}
+          onPick={onPick}
+          team1Label={team1.join(" & ")}
+          team2Label={team2.join(" & ")}
+        />
 
         <div className="flex items-center gap-3 mt-5">
           <button
@@ -1650,8 +1694,8 @@ function TennisScoreTracker({ s, target, onPoint, onReset }) {
 // LEADERBOARD / STANDINGS SCREEN
 // ---------------------------------------------------------------------------
 
-function LeaderboardScreen({ eventName, leaderboard, onNav, onBackToLobby }) {
-  const [sortBy, setSortBy] = useState("points"); // points | wins | diff
+function LeaderboardScreen({ eventName, leaderboard, ended, onNav, onBackToLobby }) {
+  const [sortBy, setSortBy] = useState("wins"); // wins | diff | points
 
   const sorted = React.useMemo(() => {
     const arr = [...leaderboard];
@@ -1698,8 +1742,9 @@ function LeaderboardScreen({ eventName, leaderboard, onNav, onBackToLobby }) {
         <div className="flex items-center gap-2 mb-1">
           <Trophy size={16} className="text-lime-300" />
           <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
-            Standing
+            {ended ? "Hasil Akhir" : "Standing"}
           </span>
+          {ended && <Chip tone="lime">Selesai</Chip>}
         </div>
         <h1 className="font-display text-5xl text-slate-50">KLASEMEN</h1>
         <p className="text-slate-500 text-sm mt-2">
@@ -1708,9 +1753,9 @@ function LeaderboardScreen({ eventName, leaderboard, onNav, onBackToLobby }) {
 
         <div className="flex gap-2 mt-4">
           {[
-            { key: "points", label: "Poin" },
             { key: "wins", label: "Game Win" },
             { key: "diff", label: "Selisih Poin" },
+            { key: "points", label: "Poin" },
           ].map((opt) => (
             <button
               key={opt.key}
@@ -1794,7 +1839,9 @@ function LeaderboardScreen({ eventName, leaderboard, onNav, onBackToLobby }) {
 // ---------------------------------------------------------------------------
 
 function RecapScreen({ eventName, engine, playerMap, scores, scoreFormat, tennisTarget, onNav, onBackToLobby }) {
-  const rows = React.useMemo(() => {
+  const [filterId, setFilterId] = useState("all");
+
+  const allRows = React.useMemo(() => {
     if (!engine) return [];
     const list = [];
     engine.roundsData.forEach((rd, rIdx) => {
@@ -1815,32 +1862,35 @@ function RecapScreen({ eventName, engine, playerMap, scores, scoreFormat, tennis
           if (a === null || b === null) return;
         }
 
-        const partner1 = engine.partner[match.team1[0]]?.[match.team1[1]] || 0;
-        const partner2 = engine.partner[match.team2[0]]?.[match.team2[1]] || 0;
-        const oppMax = Math.max(
-          engine.opp[match.team1[0]]?.[match.team2[0]] || 0,
-          engine.opp[match.team1[0]]?.[match.team2[1]] || 0,
-          engine.opp[match.team1[1]]?.[match.team2[0]] || 0,
-          engine.opp[match.team1[1]]?.[match.team2[1]] || 0
-        );
-
         list.push({
           id: key,
           round: rIdx + 1,
           court: cIdx + 1,
+          team1Ids: match.team1,
+          team2Ids: match.team2,
           team1: match.team1.map((id) => playerMap[id]),
           team2: match.team2.map((id) => playerMap[id]),
           a,
           b,
           winner: a === b ? null : a > b ? "team1" : "team2",
-          partner1,
-          partner2,
-          oppMax,
         });
       });
     });
     return list;
   }, [engine, playerMap, scores]);
+
+  const players = React.useMemo(
+    () =>
+      Object.entries(playerMap)
+        .map(([id, name]) => ({ id, name }))
+        .sort((x, y) => x.name.localeCompare(y.name)),
+    [playerMap]
+  );
+
+  const rows =
+    filterId === "all"
+      ? allRows
+      : allRows.filter((r) => r.team1Ids.includes(filterId) || r.team2Ids.includes(filterId));
 
   return (
     <div className="pb-24">
@@ -1859,16 +1909,44 @@ function RecapScreen({ eventName, engine, playerMap, scores, scoreFormat, tennis
           </span>
         </div>
         <h1 className="font-display text-5xl text-slate-50">REKAP MATCH</h1>
-        <p className="text-slate-500 text-sm mt-2">
-          Semua match yang sudah diisi skornya. Badge kuning menandai partner/lawan yang sudah
-          pernah bertemu sebelumnya di sesi ini — makin jarang muncul, makin adil rotasinya.
-        </p>
+
+        {players.length > 0 && (
+          <div className="flex gap-1.5 overflow-x-auto pb-1 mt-4 -mx-6 px-6">
+            <button
+              onClick={() => setFilterId("all")}
+              className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border ${
+                filterId === "all"
+                  ? "bg-lime-300 text-slate-950 border-lime-300"
+                  : "bg-slate-900 text-slate-400 border-slate-700"
+              }`}
+            >
+              Semua
+            </button>
+            {players.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => setFilterId(p.id)}
+                className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border ${
+                  filterId === p.id
+                    ? "bg-lime-300 text-slate-950 border-lime-300"
+                    : "bg-slate-900 text-slate-400 border-slate-700"
+                }`}
+              >
+                {p.name}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="px-6 pt-4 space-y-3">
         {rows.length === 0 && (
           <div className="rounded-2xl border border-dashed border-slate-700 p-6 text-center">
-            <p className="text-slate-500 text-sm">Belum ada match yang diisi skornya.</p>
+            <p className="text-slate-500 text-sm">
+              {filterId === "all"
+                ? "Belum ada match yang diisi skornya."
+                : "Pemain ini belum punya match dengan skor terisi."}
+            </p>
           </div>
         )}
 
@@ -1912,14 +1990,6 @@ function RecapScreen({ eventName, engine, playerMap, scores, scoreFormat, tennis
                   {r.b}
                 </span>
               </div>
-
-              {(r.partner1 > 1 || r.partner2 > 1 || r.oppMax > 1) && (
-                <div className="flex flex-wrap gap-1.5 pt-1.5">
-                  {r.partner1 > 1 && <Chip tone="amber">partner kiri {r.partner1}x bareng</Chip>}
-                  {r.partner2 > 1 && <Chip tone="amber">partner kanan {r.partner2}x bareng</Chip>}
-                  {r.oppMax > 1 && <Chip tone="amber">vs sudah {r.oppMax}x</Chip>}
-                </div>
-              )}
             </div>
           </div>
         ))}
