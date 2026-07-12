@@ -559,13 +559,18 @@ function buildLeaderboard(engine, playerMap, scores) {
 function AmericanoPadel() {
   const [booted, setBooted] = useState(false);
   const [currentUser, setCurrentUser] = useState(null); // {accountId, username} | null
-  const [screen, setScreen] = useState("lobby"); // lobby | setup | session | leaderboard | stats
-  const [lobby, setLobby] = useState([]); // [{id, name, updatedAt, playerCount, courts, roundsTotal, currentRound}]
+  const [screen, setScreen] = useState("lobby"); // lobby | setup | waiting | session | leaderboard | recap | stats
+  const [lobby, setLobby] = useState([]); // [{id, name, updatedAt, playerCount, courts, roundsTotal, currentRound, role, status}]
   const [activeId, setActiveId] = useState(null);
   const [eventName, setEventName] = useState("");
+  const [sessionRole, setSessionRole] = useState("owner"); // owner | participant (for the currently open session)
+  const [status, setStatus] = useState("waiting"); // waiting | active (for the currently open session)
+  const [maxParticipants, setMaxParticipants] = useState(8);
+  const [pendingRequests, setPendingRequests] = useState([]); // [{id, name, accountId}]
+  const [pendingJoinId] = useState(() => new URLSearchParams(window.location.search).get("join"));
 
   // Setup state
-  const [players, setPlayers] = useState([]); // [{id, name}]
+  const [players, setPlayers] = useState([]); // [{id, name, accountId?}]
   const [nameInput, setNameInput] = useState("");
   const [bulkInput, setBulkInput] = useState("");
   const [courts, setCourts] = useState(2);
@@ -586,24 +591,47 @@ function AmericanoPadel() {
   const [currentRound, setCurrentRound] = useState(0);
   const [scores, setScores] = useState({});
 
+  const clearJoinParam = () => {
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("join");
+      window.history.replaceState({}, "", url.toString());
+    } catch (e) {
+      /* no-op */
+    }
+  };
+
   // On mount, auto-login if this device already has a remembered account.
+  // If the URL carries an invite (?join=<id>), process it right after login.
   useEffect(() => {
     (async () => {
       const remembered = loadRememberedLogin();
       if (remembered) {
-        const list = await loadLobbyIndex(remembered.accountId);
-        setLobby(list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
         setCurrentUser(remembered);
+        if (pendingJoinId) {
+          await handleJoinViaLink(pendingJoinId, remembered);
+          clearJoinParam();
+        } else {
+          const list = await loadLobbyIndex(remembered.accountId);
+          setLobby(list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+        }
       }
       setBooted(true);
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleAuthenticated = async (account) => {
-    setCurrentUser({ accountId: account.accountId, username: account.username });
-    const list = await loadLobbyIndex(account.accountId);
-    setLobby(list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
-    setScreen("lobby");
+    const me = { accountId: account.accountId, username: account.username };
+    setCurrentUser(me);
+    if (pendingJoinId) {
+      await handleJoinViaLink(pendingJoinId, me);
+      clearJoinParam();
+    } else {
+      const list = await loadLobbyIndex(me.accountId);
+      setLobby(list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+      setScreen("lobby");
+    }
   };
 
   const handleLogout = () => {
@@ -614,6 +642,89 @@ function AmericanoPadel() {
     resetSetupForm();
     setActiveId(null);
     setScreen("lobby");
+  };
+
+  // A registered user opened someone else's invite link (?join=<id>). Adds
+  // them as a participant (both into the session's player list, if it's
+  // still gathering players, and into their own account's lobby/history),
+  // then opens the event for them in read-only mode.
+  const handleJoinViaLink = async (id, me) => {
+    const account = me || currentUser;
+    if (!account) return;
+    const data = await loadSessionData(id);
+    if (!data) {
+      alert("Link acara ini tidak valid atau sudah dihapus.");
+      setScreen("lobby");
+      return;
+    }
+    const isOwner = data.ownerId === account.accountId;
+    let current = data;
+
+    if (!isOwner && (data.status || "waiting") === "waiting") {
+      const alreadyPlayer = (data.players || []).some((p) => p.accountId === account.accountId);
+      const alreadyPending = (data.pendingRequests || []).some((p) => p.accountId === account.accountId);
+      if (!alreadyPlayer && !alreadyPending) {
+        const newPending = [
+          ...(data.pendingRequests || []),
+          { id: uid(), name: account.username, accountId: account.accountId },
+        ];
+        current = { ...data, pendingRequests: newPending, updatedAt: Date.now() };
+        await saveSessionData(id, current);
+      }
+    }
+
+    if (!isOwner) {
+      const myList = await loadLobbyIndex(account.accountId);
+      const alreadyListed = myList.some((e) => e.id === id);
+      let nextList = myList;
+      if (!alreadyListed) {
+        const entry = {
+          id,
+          name: current.name || "Sesi Padel",
+          updatedAt: current.updatedAt || Date.now(),
+          createdAt: current.updatedAt || Date.now(),
+          playerCount: (current.players || []).length,
+          courts: current.courts,
+          roundsTotal: current.engine ? current.engine.roundsData.length : 0,
+          currentRound: current.currentRound || 0,
+          ended: !!current.ended,
+          role: "participant",
+          status: current.status || (current.engine ? "active" : "waiting"),
+          ownerUsername: current.ownerUsername || "",
+        };
+        nextList = [entry, ...myList];
+        await saveLobbyIndex(account.accountId, nextList);
+      }
+      setLobby(nextList.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+    } else {
+      const myList = await loadLobbyIndex(account.accountId);
+      setLobby(myList.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+    }
+
+    setEventName(current.name || "Sesi Padel");
+    setPlayers(current.players || []);
+    setCourts(current.courts || 2);
+    setMode(current.mode || "duration");
+    setTotalMinutes(current.totalMinutes ?? 120);
+    setMinutesPerRound(current.minutesPerRound ?? 7);
+    setBreakMinutes(current.breakMinutes ?? 0);
+    setManualRounds(current.manualRounds ?? 8);
+    setStartTime(current.startTime || "19:00");
+    setScoreFormat(current.scoreFormat || "points");
+    setPointTarget(current.pointTarget ?? 21);
+    setTennisTarget(current.tennisTarget ?? 4);
+    setMaxParticipants(current.maxParticipants ?? 8);
+    setPendingRequests(current.pendingRequests || []);
+    setEnded(!!current.ended);
+    setEngine(current.engine || null);
+    setPlayerMap(current.playerMap || {});
+    setCurrentRound(current.currentRound || 0);
+    setScores(current.scores || {});
+    setStatus(current.status || (current.engine ? "active" : "waiting"));
+    setSessionRole(isOwner ? "owner" : "participant");
+    lastAppliedRef.current = current.updatedAt || Date.now();
+    setActiveId(id);
+    setScreen(current.engine ? "session" : "waiting");
   };
 
   const lastAppliedRef = useRef(0);
@@ -631,6 +742,10 @@ function AmericanoPadel() {
         const saved = await loadSessionData(activeId);
         if (saved && (saved.updatedAt || 0) > lastAppliedRef.current) {
           lastAppliedRef.current = saved.updatedAt || Date.now();
+          setPlayers(saved.players || []);
+          setPendingRequests(saved.pendingRequests || []);
+          setStatus(saved.status || (saved.engine ? "active" : "waiting"));
+          setMaxParticipants(saved.maxParticipants ?? 8);
           setEngine(saved.engine || null);
           setPlayerMap(saved.playerMap || {});
           setCurrentRound(saved.currentRound || 0);
@@ -639,6 +754,9 @@ function AmericanoPadel() {
           setPointTarget(saved.pointTarget ?? 21);
           setTennisTarget(saved.tennisTarget ?? 4);
           setEnded(!!saved.ended);
+          if (saved.engine && screen === "waiting") {
+            setScreen("session");
+          }
         }
       }
     }, 4000);
@@ -654,7 +772,11 @@ function AmericanoPadel() {
       const snapshot = {
         id,
         ownerId: currentUser.accountId,
+        ownerUsername: currentUser.username,
         name: eventName,
+        status,
+        maxParticipants,
+        pendingRequests,
         players,
         courts,
         mode,
@@ -687,6 +809,8 @@ function AmericanoPadel() {
           roundsTotal: snapshot.engine ? snapshot.engine.roundsData.length : 0,
           currentRound: snapshot.currentRound || 0,
           ended: !!snapshot.ended,
+          status: snapshot.status,
+          role: "owner",
         };
         const next = existing
           ? prev.map((e) => (e.id === id ? entry : e))
@@ -695,7 +819,7 @@ function AmericanoPadel() {
         return next;
       });
     },
-    [activeId, currentUser, eventName, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
+    [activeId, currentUser, eventName, status, maxParticipants, pendingRequests, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
   );
 
   const addPlayerFromInput = () => {
@@ -722,33 +846,79 @@ function AmericanoPadel() {
       ? Math.max(1, Math.floor(totalMinutes / (minutesPerRound + breakMinutes)))
       : Math.max(1, manualRounds);
 
-  const usableCourtsPreview = Math.min(courts, Math.floor(players.length / 4));
-  const canGenerate = players.length >= 4 && usableCourtsPreview >= 1;
-
-  const handleGenerate = () => {
-    const ids = players.map((p) => p.id);
-    const map = {};
-    players.forEach((p) => (map[p.id] = p.name));
-    const result = generateSchedule(ids, courts, computedRounds);
+  // PHASE A — create the meeting "concept" (courts, duration, score format,
+  // target participant count) and move to the waiting room to gather players.
+  const handleCreateConcept = () => {
     const id = activeId || uid();
     const finalName = eventName.trim() || "Sesi Padel";
-    setEngine(result);
-    setPlayerMap(map);
-    setCurrentRound(0);
-    setScores({});
     setActiveId(id);
     setEventName(finalName);
-    setScreen("session");
+    setStatus("waiting");
+    setSessionRole("owner");
+    setPendingRequests([]);
+    setScreen("waiting");
     persist(
       {
         name: finalName,
-        engine: result,
-        playerMap: map,
+        status: "waiting",
+        maxParticipants,
+        pendingRequests: [],
+        ownerUsername: currentUser?.username || "",
+        engine: null,
+        playerMap: {},
         currentRound: 0,
         scores: {},
       },
       id
     );
+  };
+
+  // PHASE B — once participants are settled (manual names and/or people who
+  // joined via invite link and got approved), the host locks it in and the
+  // schedule is built.
+  const handleFinalizeAndGenerate = () => {
+    if (
+      pendingRequests.length > 0 &&
+      !window.confirm(
+        `Masih ada ${pendingRequests.length} permintaan bergabung yang belum diproses. Tetap lanjutkan tanpa mereka?`
+      )
+    ) {
+      return;
+    }
+    const ids = players.map((p) => p.id);
+    const map = {};
+    players.forEach((p) => (map[p.id] = p.name));
+    const result = generateSchedule(ids, courts, computedRounds);
+    setEngine(result);
+    setPlayerMap(map);
+    setCurrentRound(0);
+    setScores({});
+    setStatus("active");
+    setScreen("session");
+    persist({
+      status: "active",
+      players,
+      engine: result,
+      playerMap: map,
+      currentRound: 0,
+      scores: {},
+    });
+  };
+
+  const handleApproveRequest = (reqId) => {
+    const req = pendingRequests.find((r) => r.id === reqId);
+    if (!req) return;
+    const newPlayers = [...players, { id: req.id, name: req.name, accountId: req.accountId }];
+    const newPending = pendingRequests.filter((r) => r.id !== reqId);
+    setPlayers(newPlayers);
+    setPendingRequests(newPending);
+    persist({ players: newPlayers, pendingRequests: newPending });
+  };
+
+  const handleRejectRequest = (reqId) => {
+    const newPending = pendingRequests.filter((r) => r.id !== reqId);
+    setPendingRequests(newPending);
+    persist({ pendingRequests: newPending });
   };
 
   const resetSetupForm = () => {
@@ -765,12 +935,16 @@ function AmericanoPadel() {
     setScoreFormat("points");
     setPointTarget(21);
     setTennisTarget(4);
+    setMaxParticipants(8);
+    setPendingRequests([]);
     setEngine(null);
     setPlayerMap({});
     setCurrentRound(0);
     setScores({});
     setEventName("");
     setEnded(false);
+    setStatus("waiting");
+    setSessionRole("owner");
   };
 
   const handleCreateNew = () => {
@@ -794,14 +968,19 @@ function AmericanoPadel() {
     setScoreFormat(data.scoreFormat || "points");
     setPointTarget(data.pointTarget ?? 21);
     setTennisTarget(data.tennisTarget ?? 4);
+    setMaxParticipants(data.maxParticipants ?? 8);
+    setPendingRequests(data.pendingRequests || []);
     setEnded(!!data.ended);
     setEngine(data.engine || null);
     setPlayerMap(data.playerMap || {});
     setCurrentRound(data.currentRound || 0);
     setScores(data.scores || {});
+    const st = data.status || (data.engine ? "active" : "waiting");
+    setStatus(st);
+    setSessionRole(!currentUser || data.ownerId === currentUser.accountId ? "owner" : "participant");
     lastAppliedRef.current = data.updatedAt || Date.now();
     setActiveId(id);
-    setScreen(data.engine ? "session" : "setup");
+    setScreen(data.engine ? "session" : "waiting");
   };
 
   const handleBackToLobby = async () => {
@@ -817,6 +996,23 @@ function AmericanoPadel() {
     setLobby((prev) => {
       const next = prev.filter((e) => e.id !== id);
       if (currentUser) saveLobbyIndex(currentUser.accountId, next);
+      return next;
+    });
+    if (activeId === id) {
+      resetSetupForm();
+      setActiveId(null);
+      setScreen("lobby");
+    }
+  };
+
+  // For a session you joined (not own) — only removes it from YOUR OWN lobby
+  // list, the actual event/session is untouched for the host and others.
+  const handleLeaveEntry = async (id) => {
+    if (!window.confirm("Keluar dari daftar acara ini di akunmu? Acara tetap ada untuk host.")) return;
+    if (!currentUser) return;
+    setLobby((prev) => {
+      const next = prev.filter((e) => e.id !== id);
+      saveLobbyIndex(currentUser.accountId, next);
       return next;
     });
     if (activeId === id) {
@@ -1017,6 +1213,7 @@ function AmericanoPadel() {
           onCreateNew={handleCreateNew}
           onOpen={handleOpenSession}
           onDelete={handleDeleteSession}
+          onLeave={handleLeaveEntry}
           currentUser={currentUser}
           onLogout={handleLogout}
         />
@@ -1026,14 +1223,6 @@ function AmericanoPadel() {
         <SetupScreen
           eventName={eventName}
           setEventName={setEventName}
-          players={players}
-          nameInput={nameInput}
-          setNameInput={setNameInput}
-          bulkInput={bulkInput}
-          setBulkInput={setBulkInput}
-          addPlayerFromInput={addPlayerFromInput}
-          addBulk={addBulk}
-          removePlayer={removePlayer}
           courts={courts}
           setCourts={setCourts}
           mode={mode}
@@ -1054,17 +1243,43 @@ function AmericanoPadel() {
           setPointTarget={setPointTarget}
           tennisTarget={tennisTarget}
           setTennisTarget={setTennisTarget}
+          maxParticipants={maxParticipants}
+          setMaxParticipants={setMaxParticipants}
           computedRounds={computedRounds}
-          usableCourtsPreview={usableCourtsPreview}
-          canGenerate={canGenerate}
-          onGenerate={handleGenerate}
+          onGenerate={handleCreateConcept}
           onBackToLobby={handleBackToLobby}
+        />
+      )}
+
+      {screen === "waiting" && (
+        <WaitingRoomScreen
+          eventName={eventName}
+          activeId={activeId}
+          isOwner={sessionRole === "owner"}
+          players={players}
+          nameInput={nameInput}
+          setNameInput={setNameInput}
+          bulkInput={bulkInput}
+          setBulkInput={setBulkInput}
+          addPlayerFromInput={addPlayerFromInput}
+          addBulk={addBulk}
+          removePlayer={removePlayer}
+          maxParticipants={maxParticipants}
+          courts={courts}
+          computedRounds={computedRounds}
+          pendingRequests={pendingRequests}
+          onApprove={handleApproveRequest}
+          onReject={handleRejectRequest}
+          onFinalize={handleFinalizeAndGenerate}
+          onBackToLobby={handleBackToLobby}
+          onDelete={() => handleDeleteSession(activeId)}
         />
       )}
 
       {screen === "session" && engine && (
         <SessionScreen
           eventName={eventName}
+          isOwner={sessionRole === "owner"}
           engine={engine}
           playerMap={playerMap}
           currentRound={currentRound}
@@ -1159,7 +1374,7 @@ function BottomNav({ active, onNav }) {
 // LOBBY SCREEN
 // ---------------------------------------------------------------------------
 
-function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, currentUser, onLogout }) {
+function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, currentUser, onLogout }) {
   const [accountCount, setAccountCount] = useState(null);
 
   useEffect(() => {
@@ -1196,7 +1411,7 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, currentUser, onLogo
           </div>
         )}
         <p className="text-slate-400 text-sm mt-2 max-w-xs">
-          Acara di bawah ini adalah history turnamen yang kamu buat di akun ini.
+          Acara yang kamu buat maupun yang kamu ikuti (lewat undangan) muncul di sini.
         </p>
         {accountCount !== null && (
           <p className="text-[11px] text-slate-600 mt-2">{accountCount} akun terdaftar di app ini</p>
@@ -1225,6 +1440,8 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, currentUser, onLogo
         <div className="space-y-3">
           {lobby.map((ev) => {
             const started = ev.roundsTotal > 0;
+            const isOwnerEntry = (ev.role || "owner") === "owner";
+            const waiting = ev.status === "waiting";
             return (
               <div
                 key={ev.id}
@@ -1236,14 +1453,22 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, currentUser, onLogo
                       <div className="font-semibold text-slate-100 truncate">{ev.name}</div>
                       <div className="text-[11px] text-slate-300 mt-1">
                         {ev.playerCount} pemain · {ev.courts} lapangan
+                        {!isOwnerEntry && ev.ownerUsername && ` · host: ${ev.ownerUsername}`}
                       </div>
                     </div>
                     <ChevronRightCircle size={20} className="text-slate-600 shrink-0 mt-0.5" />
                   </div>
-                  <div className="mt-3">
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    <Chip tone={isOwnerEntry ? "cyan" : "slate"}>
+                      {isOwnerEntry ? "Host" : "Peserta"}
+                    </Chip>
                     {ev.ended ? (
                       <Chip tone="lime">
                         <Trophy size={11} /> Selesai
+                      </Chip>
+                    ) : waiting ? (
+                      <Chip tone="amber">
+                        <Clock size={11} /> Menunggu peserta
                       </Chip>
                     ) : started ? (
                       <Chip tone="lime">
@@ -1255,12 +1480,21 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, currentUser, onLogo
                     )}
                   </div>
                 </button>
-                <button
-                  onClick={() => onDelete(ev.id)}
-                  className="w-full flex items-center justify-center gap-1.5 py-2 text-[11px] text-red-400/70 border-t border-slate-800"
-                >
-                  <Trash2 size={11} /> hapus acara
-                </button>
+                {isOwnerEntry ? (
+                  <button
+                    onClick={() => onDelete(ev.id)}
+                    className="w-full flex items-center justify-center gap-1.5 py-2 text-[11px] text-red-400/70 border-t border-slate-800"
+                  >
+                    <Trash2 size={11} /> hapus acara
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => onLeave(ev.id)}
+                    className="w-full flex items-center justify-center gap-1.5 py-2 text-[11px] text-slate-500 border-t border-slate-800"
+                  >
+                    <LogOut size={11} /> keluar dari daftar
+                  </button>
+                )}
               </div>
             );
           })}
@@ -1277,20 +1511,16 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, currentUser, onLogo
 function SetupScreen(props) {
   const {
     eventName, setEventName,
-    players, nameInput, setNameInput, bulkInput, setBulkInput,
-    addPlayerFromInput, addBulk, removePlayer,
     courts, setCourts, mode, setMode,
     totalMinutes, setTotalMinutes, minutesPerRound, setMinutesPerRound,
     breakMinutes, setBreakMinutes, manualRounds, setManualRounds,
     startTime, setStartTime,
     scoreFormat, setScoreFormat, pointTarget, setPointTarget,
     tennisTarget, setTennisTarget,
-    computedRounds, usableCourtsPreview, canGenerate, onGenerate,
+    maxParticipants, setMaxParticipants,
+    computedRounds, onGenerate,
     onBackToLobby,
   } = props;
-
-  const [showBulk, setShowBulk] = useState(false);
-  const restingPerRound = Math.max(0, players.length - usableCourtsPreview * 4);
 
   return (
     <div className="pb-10">
@@ -1335,65 +1565,26 @@ function SetupScreen(props) {
       </Section>
 
 
-      {/* PLAYERS */}
-      <Section icon={Users} title="Pemain" subtitle={`${players.length} terdaftar`}>
-        <div className="flex gap-2 mb-3">
-          <input
-            value={nameInput}
-            onChange={(e) => setNameInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && addPlayerFromInput()}
-            placeholder="Nama pemain"
-            className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
-          />
+      {/* MAX PARTICIPANTS */}
+      <Section icon={Users} title="Maks Peserta" subtitle="bisa disesuaikan nanti">
+        <div className="flex items-center gap-4">
           <button
-            onClick={addPlayerFromInput}
-            className="bg-lime-300 text-slate-950 rounded-xl px-4 flex items-center justify-center"
+            onClick={() => setMaxParticipants((n) => Math.max(4, n - 1))}
+            className="w-11 h-11 rounded-xl bg-slate-900 border border-slate-700 text-xl font-bold"
           >
-            <Plus size={20} strokeWidth={3} />
+            −
           </button>
+          <div className="font-display text-5xl text-lime-300 w-14 text-center">{maxParticipants}</div>
+          <button
+            onClick={() => setMaxParticipants((n) => n + 1)}
+            className="w-11 h-11 rounded-xl bg-slate-900 border border-slate-700 text-xl font-bold"
+          >
+            +
+          </button>
+          <div className="text-xs text-slate-400 ml-2 leading-tight">
+            Cuma target — di halaman berikutnya jumlah peserta tetap bisa kurang/lebih dari ini.
+          </div>
         </div>
-
-        <button
-          onClick={() => setShowBulk((s) => !s)}
-          className="text-xs font-semibold text-cyan-300 mb-3"
-        >
-          {showBulk ? "Sembunyikan tempel banyak nama" : "+ Tempel banyak nama sekaligus"}
-        </button>
-
-        {showBulk && (
-          <div className="mb-3 space-y-2">
-            <textarea
-              value={bulkInput}
-              onChange={(e) => setBulkInput(e.target.value)}
-              placeholder={"Satu nama per baris atau pisah koma\nBudi\nAndi\nCitra..."}
-              rows={3}
-              className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
-            />
-            <GhostButton onClick={addBulk}>Tambahkan semua</GhostButton>
-          </div>
-        )}
-
-        {players.length > 0 && (
-          <div className="flex flex-wrap gap-2">
-            {players.map((p) => (
-              <span
-                key={p.id}
-                className="inline-flex items-center gap-1.5 bg-slate-900 border border-slate-700 rounded-full pl-3 pr-1.5 py-1.5 text-sm"
-              >
-                {p.name}
-                <button
-                  onClick={() => removePlayer(p.id)}
-                  className="w-5 h-5 rounded-full bg-slate-800 flex items-center justify-center text-slate-400 hover:text-red-400"
-                >
-                  <X size={12} />
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
-        {players.length > 0 && players.length < 4 && (
-          <p className="text-amber-400 text-xs mt-3">Minimal 4 pemain untuk membentuk 1 lapangan.</p>
-        )}
       </Section>
 
       {/* COURTS */}
@@ -1549,29 +1740,24 @@ function SetupScreen(props) {
       </Section>
 
       {/* PREVIEW */}
-      {players.length > 0 && (
-        <div className="mx-6 mt-2 mb-6 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
-          <div className="grid grid-cols-3 gap-3 text-center">
-            <PreviewStat label="Ronde" value={computedRounds} />
-            <PreviewStat label="Court aktif" value={usableCourtsPreview || 0} />
-            <PreviewStat label="Istirahat/ronde" value={restingPerRound} />
-          </div>
-          {usableCourtsPreview === 0 && players.length >= 4 && (
-            <p className="text-amber-400 text-xs mt-3">
-              Jumlah lapangan terlalu banyak untuk jumlah pemain — turunkan jumlah court.
-            </p>
-          )}
+      <div className="mx-6 mt-2 mb-6 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+        <div className="grid grid-cols-2 gap-3 text-center">
+          <PreviewStat label="Estimasi ronde" value={computedRounds} />
+          <PreviewStat label="Target lapangan" value={Math.max(1, Math.min(courts, Math.floor(maxParticipants / 4))) || 0} />
         </div>
-      )}
+        <p className="text-[11px] text-slate-500 mt-3">
+          Jumlah ronde & lapangan aktif akan disesuaikan lagi otomatis begitu peserta fix, mengikuti
+          jumlah yang benar-benar bergabung.
+        </p>
+      </div>
 
       <div className="px-6">
         <PrimaryButton
           onClick={onGenerate}
-          disabled={!canGenerate}
-          icon={Shuffle}
+          icon={Users}
           className="w-full text-lg py-4"
         >
-          Buat Jadwal
+          Buat Acara & Undang Peserta
         </PrimaryButton>
       </div>
     </div>
@@ -1627,12 +1813,211 @@ function PreviewStat({ label, value }) {
 }
 
 // ---------------------------------------------------------------------------
+// WAITING ROOM (gather participants before generating the schedule)
+// ---------------------------------------------------------------------------
+
+function WaitingRoomScreen(props) {
+  const {
+    eventName, activeId, isOwner,
+    players, nameInput, setNameInput, bulkInput, setBulkInput,
+    addPlayerFromInput, addBulk, removePlayer,
+    maxParticipants, courts, computedRounds,
+    pendingRequests, onApprove, onReject,
+    onFinalize, onBackToLobby, onDelete,
+  } = props;
+
+  const [showBulk, setShowBulk] = useState(false);
+  const usableCourtsPreview = Math.min(courts, Math.floor(players.length / 4));
+  const canFinalize = players.length >= 4 && usableCourtsPreview >= 1;
+
+  const handleCopyInvite = async () => {
+    const url = new URL(window.location.href);
+    url.search = `?join=${activeId}`;
+    const link = url.toString();
+    try {
+      await navigator.clipboard.writeText(link);
+      alert(
+        "Link undangan disalin! Kirim ke calon peserta — kalau mereka sudah punya akun, tinggal buka link ini dan minta bergabung."
+      );
+    } catch (e) {
+      console.log(link);
+      alert("Gagal menyalin otomatis. Buka console untuk salin manual.");
+    }
+  };
+
+  return (
+    <div className="pb-10">
+      <div className="px-6 pt-10 pb-6 border-b border-slate-800 relative overflow-hidden">
+        <div className="absolute -right-10 -top-10 w-40 h-40 rounded-full bg-lime-400/10 blur-2xl pointer-events-none" />
+        <div className="flex items-center justify-between mb-4">
+          <button
+            onClick={onBackToLobby}
+            className="flex items-center gap-1 text-xs font-semibold text-slate-400"
+          >
+            <ArrowLeft size={13} /> Lobby
+          </button>
+          {isOwner ? (
+            <button onClick={onDelete} className="text-xs text-red-400/80 flex items-center gap-1">
+              <Trash2 size={12} /> hapus acara
+            </button>
+          ) : (
+            <Chip tone="cyan">
+              <Eye size={11} /> view only
+            </Chip>
+          )}
+        </div>
+        {eventName && <h1 className="font-display text-4xl text-slate-50 mb-1">{eventName}</h1>}
+        <Chip tone="amber">
+          <Clock size={11} /> Menunggu peserta
+        </Chip>
+        <p className="text-slate-400 text-sm mt-3">
+          {players.length}/{maxParticipants} peserta target · {courts} lapangan · estimasi{" "}
+          {computedRounds} ronde
+        </p>
+      </div>
+
+      {isOwner && (
+        <Section icon={Link2} title="Undang Peserta">
+          <p className="text-xs text-slate-500 mb-3">
+            Bagikan link ini ke calon peserta yang sudah punya akun. Begitu mereka buka & minta
+            gabung, permintaannya muncul di bawah untuk kamu setujui.
+          </p>
+          <PrimaryButton onClick={handleCopyInvite} icon={Link2} className="w-full">
+            Salin Link Undangan
+          </PrimaryButton>
+        </Section>
+      )}
+
+      {isOwner && pendingRequests.length > 0 && (
+        <Section icon={Users} title="Permintaan Bergabung" subtitle={`${pendingRequests.length} baru`}>
+          <div className="space-y-2">
+            {pendingRequests.map((r) => (
+              <div
+                key={r.id}
+                className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3"
+              >
+                <span className="font-semibold text-slate-100 truncate">{r.name}</span>
+                <div className="flex gap-2 shrink-0">
+                  <button
+                    onClick={() => onApprove(r.id)}
+                    className="w-8 h-8 rounded-lg bg-lime-300 text-slate-950 flex items-center justify-center"
+                  >
+                    <Check size={15} strokeWidth={3} />
+                  </button>
+                  <button
+                    onClick={() => onReject(r.id)}
+                    className="w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 text-red-400 flex items-center justify-center"
+                  >
+                    <X size={15} strokeWidth={3} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      <Section icon={Users} title="Peserta" subtitle={`${players.length} bergabung`}>
+        {isOwner && (
+          <>
+            <div className="flex gap-2 mb-3">
+              <input
+                value={nameInput}
+                onChange={(e) => setNameInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && addPlayerFromInput()}
+                placeholder="Nama pemain (manual)"
+                className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+              />
+              <button
+                onClick={addPlayerFromInput}
+                className="bg-lime-300 text-slate-950 rounded-xl px-4 flex items-center justify-center"
+              >
+                <Plus size={20} strokeWidth={3} />
+              </button>
+            </div>
+
+            <button
+              onClick={() => setShowBulk((s) => !s)}
+              className="text-xs font-semibold text-cyan-300 mb-3"
+            >
+              {showBulk ? "Sembunyikan tempel banyak nama" : "+ Tempel banyak nama sekaligus"}
+            </button>
+
+            {showBulk && (
+              <div className="mb-3 space-y-2">
+                <textarea
+                  value={bulkInput}
+                  onChange={(e) => setBulkInput(e.target.value)}
+                  placeholder={"Satu nama per baris atau pisah koma\nBudi\nAndi\nCitra..."}
+                  rows={3}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+                />
+                <GhostButton onClick={addBulk}>Tambahkan semua</GhostButton>
+              </div>
+            )}
+          </>
+        )}
+
+        {players.length > 0 ? (
+          <div className="flex flex-wrap gap-2">
+            {players.map((p) => (
+              <span
+                key={p.id}
+                className="inline-flex items-center gap-1.5 bg-slate-900 border border-slate-700 rounded-full pl-3 pr-1.5 py-1.5 text-sm"
+              >
+                {p.name}
+                {p.accountId && <UserCircle2 size={12} className="text-cyan-300" />}
+                {isOwner && (
+                  <button
+                    onClick={() => removePlayer(p.id)}
+                    className="w-5 h-5 rounded-full bg-slate-800 flex items-center justify-center text-slate-400 hover:text-red-400"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <p className="text-slate-500 text-sm">Belum ada peserta.</p>
+        )}
+        {players.length > 0 && players.length < 4 && (
+          <p className="text-amber-400 text-xs mt-3">Minimal 4 peserta untuk membentuk 1 lapangan.</p>
+        )}
+      </Section>
+
+      {isOwner ? (
+        <div className="px-6">
+          <PrimaryButton
+            onClick={onFinalize}
+            disabled={!canFinalize}
+            icon={Shuffle}
+            className="w-full text-lg py-4"
+          >
+            Fix Peserta & Buat Jadwal
+          </PrimaryButton>
+        </div>
+      ) : (
+        <div className="px-6">
+          <div className="rounded-2xl border border-dashed border-slate-700 p-5 text-center">
+            <p className="text-slate-400 text-sm">
+              Kamu sudah tergabung. Menunggu host memulai pertandingan — halaman ini akan otomatis
+              lanjut ke jadwal begitu dimulai.
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // SESSION SCREEN (round-by-round court/scoreboard view)
 // ---------------------------------------------------------------------------
 
 function SessionScreen(props) {
   const {
-    eventName, engine, playerMap, currentRound, goRound, goToRound,
+    eventName, isOwner, engine, playerMap, currentRound, goRound, goToRound,
     scores, setScore, setPointsPair, resetPointsScore, scoreFormat, pointTarget, tennisTarget,
     incrementTennisPoint, resetTennisMatch,
     ended, onEndEvent,
@@ -1675,16 +2060,22 @@ function SessionScreen(props) {
           >
             <ArrowLeft size={13} /> Lobby
           </button>
-          <div className="flex items-center gap-3">
-            {!ended && (
-              <button onClick={onEndEvent} className="text-xs text-cyan-300 flex items-center gap-1">
-                <Trophy size={12} /> selesaikan
+          {isOwner ? (
+            <div className="flex items-center gap-3">
+              {!ended && (
+                <button onClick={onEndEvent} className="text-xs text-cyan-300 flex items-center gap-1">
+                  <Trophy size={12} /> selesaikan
+                </button>
+              )}
+              <button onClick={onDelete} className="text-xs text-red-400/80 flex items-center gap-1">
+                <Trash2 size={12} /> hapus acara
               </button>
-            )}
-            <button onClick={onDelete} className="text-xs text-red-400/80 flex items-center gap-1">
-              <Trash2 size={12} /> hapus acara
-            </button>
-          </div>
+            </div>
+          ) : (
+            <Chip tone="cyan">
+              <Eye size={11} /> view only
+            </Chip>
+          )}
         </div>
         {eventName && (
           <div className="text-sm font-semibold text-slate-200 mb-1 truncate">{eventName}</div>
@@ -1741,7 +2132,7 @@ function SessionScreen(props) {
             scoreFormat === "tennis" ? s.gamesA || 0 : s.a !== undefined && s.a !== "" ? s.a : "–";
           const scoreB =
             scoreFormat === "tennis" ? s.gamesB || 0 : s.b !== undefined && s.b !== "" ? s.b : "–";
-          const openModal = scoreFormat === "points" ? () => setScoreModal(cIdx) : undefined;
+          const openModal = isOwner && scoreFormat === "points" ? () => setScoreModal(cIdx) : undefined;
           return (
             <div key={cIdx} className="rounded-2xl border border-slate-800 overflow-hidden bg-slate-900/40">
               <div className="px-4 py-2 bg-slate-900 border-b border-slate-800">
@@ -1775,6 +2166,7 @@ function SessionScreen(props) {
                 <TennisScoreTracker
                   s={s}
                   target={tennisTarget}
+                  readOnly={!isOwner}
                   onPoint={(side) => incrementTennisPoint(cIdx, side)}
                   onReset={() => resetTennisMatch(cIdx)}
                 />
@@ -1827,18 +2219,20 @@ function SessionScreen(props) {
         </>
       )}
 
-      <div className="px-6 pt-3 space-y-2">
-        <GhostButton onClick={onShare} icon={Share2} className="w-full">
-          Bagikan jadwal ke WhatsApp
-        </GhostButton>
-        <PrimaryButton onClick={onCopyViewLink} icon={Link2} className="w-full">
-          Salin link pemantau (view only)
-        </PrimaryButton>
-        <p className="text-[11px] text-slate-500 text-center px-4">
-          Siapa saja dengan link ini bisa lihat jadwal, klasemen & rekap match — tanpa bisa
-          mengubah skor.
-        </p>
-      </div>
+      {isOwner && (
+        <div className="px-6 pt-3 space-y-2">
+          <GhostButton onClick={onShare} icon={Share2} className="w-full">
+            Bagikan jadwal ke WhatsApp
+          </GhostButton>
+          <PrimaryButton onClick={onCopyViewLink} icon={Link2} className="w-full">
+            Salin link pemantau (view only)
+          </PrimaryButton>
+          <p className="text-[11px] text-slate-500 text-center px-4">
+            Siapa saja dengan link ini bisa lihat jadwal, klasemen & rekap match — tanpa bisa
+            mengubah skor.
+          </p>
+        </div>
+      )}
 
       <BottomNav active="session" onNav={onNav} />
     </div>
@@ -2067,7 +2461,7 @@ function tennisPointLabels(pointsA, pointsB) {
   return { a: labels[Math.min(pointsA, 3)], b: labels[Math.min(pointsB, 3)] };
 }
 
-function TennisScoreTracker({ s, target, onPoint, onReset }) {
+function TennisScoreTracker({ s, target, onPoint, onReset, readOnly }) {
   const gamesA = s.gamesA || 0;
   const gamesB = s.gamesB || 0;
   const pointsA = s.pointsA || 0;
@@ -2087,6 +2481,7 @@ function TennisScoreTracker({ s, target, onPoint, onReset }) {
           </div>
         )}
       </div>
+      {!readOnly && (
       <div className="flex items-center gap-2 px-4 pb-3">
         <button
           onClick={() => onPoint("a")}
@@ -2109,6 +2504,7 @@ function TennisScoreTracker({ s, target, onPoint, onReset }) {
           +1 poin kanan
         </button>
       </div>
+      )}
     </div>
   );
 }
