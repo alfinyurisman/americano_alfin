@@ -211,16 +211,39 @@ async function getUserAccount(usernameLower) {
   }
 }
 
-async function createUserAccount(username, passwordHash) {
+// Case/whitespace-insensitive normalization for security question answers —
+// "Jakarta", " jakarta ", "JAKARTA" should all match.
+function normalizeAnswer(raw) {
+  return String(raw || "").trim().toLowerCase();
+}
+
+const SECURITY_QUESTIONS = [
+  { key: "city", label: "Di kota mana Anda lahir?" },
+  { key: "sport", label: "Olahraga favorit Anda?" },
+  { key: "country", label: "Negara favorit Anda?" },
+];
+
+async function createUserAccount(username, passwordHash, securityAnswers) {
   const usernameLower = username.toLowerCase();
   const account = {
     accountId: usernameLower,
     username,
     passwordHash,
+    // Legacy accounts (created before this feature) simply won't have this
+    // field — handled explicitly wherever it's read.
+    securityAnswers: securityAnswers || null,
     createdAt: Date.now(),
   };
   await window.storage.set(userKey(usernameLower), JSON.stringify(account), true);
   return account;
+}
+
+async function updateUserPassword(usernameLower, newPasswordHash) {
+  const existing = await getUserAccount(usernameLower);
+  if (!existing) return null;
+  const updated = { ...existing, passwordHash: newPasswordHash };
+  await window.storage.set(userKey(usernameLower), JSON.stringify(updated), true);
+  return updated;
 }
 
 // Lets you see how many accounts are registered (see chat for where to check this).
@@ -231,6 +254,68 @@ async function countRegisteredAccounts() {
   } catch (e) {
     return 0;
   }
+}
+
+// ---------------------------------------------------------------------------
+// PUBLIC EVENTS DISCOVERY (shared list of "public" meetings anyone can browse
+// and request to join, subject to host approval)
+// ---------------------------------------------------------------------------
+
+const PUBLIC_EVENTS_KEY = "padel-public-events";
+
+async function loadPublicEvents() {
+  try {
+    const res = await window.storage.get(PUBLIC_EVENTS_KEY, true);
+    return res ? JSON.parse(res.value) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+async function savePublicEvents(list) {
+  try {
+    await window.storage.set(PUBLIC_EVENTS_KEY, JSON.stringify(list), true);
+  } catch (e) {
+    console.error("Gagal menyimpan daftar acara publik:", e);
+  }
+}
+
+// Called whenever a session is saved. Keeps the shared public discovery list
+// consistent: a "public" meeting still gathering players (status=waiting)
+// should be listed; anything else (private, already generated, deleted)
+// should not.
+async function syncPublicEventEntry(snapshot) {
+  const list = await loadPublicEvents();
+  const shouldBeListed = snapshot.visibility === "public" && snapshot.status === "waiting";
+  const existingIdx = list.findIndex((e) => e.id === snapshot.id);
+
+  if (!shouldBeListed) {
+    if (existingIdx !== -1) {
+      list.splice(existingIdx, 1);
+      await savePublicEvents(list);
+    }
+    return;
+  }
+
+  const entry = {
+    id: snapshot.id,
+    name: snapshot.name || "Sesi Padel",
+    ownerId: snapshot.ownerId,
+    ownerUsername: snapshot.ownerUsername || "",
+    maxParticipants: snapshot.maxParticipants,
+    playerCount: (snapshot.players || []).length,
+    courts: snapshot.courts,
+    updatedAt: snapshot.updatedAt,
+  };
+  if (existingIdx !== -1) list[existingIdx] = entry;
+  else list.unshift(entry);
+  await savePublicEvents(list);
+}
+
+async function removePublicEventEntry(id) {
+  const list = await loadPublicEvents();
+  const next = list.filter((e) => e.id !== id);
+  if (next.length !== list.length) await savePublicEvents(next);
 }
 
 function rememberLogin(account) {
@@ -327,16 +412,34 @@ function GhostButton({ children, onClick, disabled, className = "", icon: Icon }
 // ---------------------------------------------------------------------------
 
 function AuthScreen({ onAuthenticated }) {
-  const [mode, setMode] = useState("login"); // login | register
+  const [mode, setMode] = useState("login"); // login | register | forgot
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [secAnswers, setSecAnswers] = useState({ city: "", sport: "", country: "" });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // Forgot-password sub-flow
+  const [forgotStep, setForgotStep] = useState("username"); // username | questions | reset
+  const [forgotAccount, setForgotAccount] = useState(null);
+  const [forgotAnswers, setForgotAnswers] = useState({ city: "", sport: "", country: "" });
+  const [newPassword, setNewPassword] = useState("");
+  const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
 
   const resetFields = () => {
     setPassword("");
     setConfirmPassword("");
+    setSecAnswers({ city: "", sport: "", country: "" });
+    setError("");
+  };
+
+  const resetForgotFlow = () => {
+    setForgotStep("username");
+    setForgotAccount(null);
+    setForgotAnswers({ city: "", sport: "", country: "" });
+    setNewPassword("");
+    setNewPasswordConfirm("");
     setError("");
   };
 
@@ -355,9 +458,15 @@ function AuthScreen({ onAuthenticated }) {
       setError("Password minimal 4 karakter.");
       return;
     }
-    if (mode === "register" && password !== confirmPassword) {
-      setError("Konfirmasi password tidak sama.");
-      return;
+    if (mode === "register") {
+      if (password !== confirmPassword) {
+        setError("Konfirmasi password tidak sama.");
+        return;
+      }
+      if (!secAnswers.city.trim() || !secAnswers.sport.trim() || !secAnswers.country.trim()) {
+        setError("Semua pertanyaan keamanan wajib diisi.");
+        return;
+      }
     }
 
     const usernameLower = name.toLowerCase();
@@ -371,7 +480,12 @@ function AuthScreen({ onAuthenticated }) {
           return;
         }
         const passwordHash = await hashPassword(usernameLower, password);
-        const account = await createUserAccount(name, passwordHash);
+        const normalizedAnswers = {
+          city: normalizeAnswer(secAnswers.city),
+          sport: normalizeAnswer(secAnswers.sport),
+          country: normalizeAnswer(secAnswers.country),
+        };
+        const account = await createUserAccount(name, passwordHash, normalizedAnswers);
         rememberLogin(account);
         onAuthenticated(account);
       } else {
@@ -396,6 +510,69 @@ function AuthScreen({ onAuthenticated }) {
     setBusy(false);
   };
 
+  // --- Forgot password handlers ---
+
+  const handleForgotUsername = async () => {
+    setError("");
+    const name = username.trim();
+    if (!name) {
+      setError("Masukkan username kamu.");
+      return;
+    }
+    setBusy(true);
+    const account = await getUserAccount(name.toLowerCase());
+    setBusy(false);
+    if (!account) {
+      setError("Akun tidak ditemukan.");
+      return;
+    }
+    setForgotAccount(account);
+    if (account.securityAnswers) {
+      setForgotStep("questions");
+    } else {
+      // Legacy account, created before security questions existed —
+      // per design, username alone is enough to proceed to reset.
+      setForgotStep("reset");
+    }
+  };
+
+  const handleForgotQuestions = () => {
+    setError("");
+    const a = forgotAccount.securityAnswers;
+    const ok =
+      normalizeAnswer(forgotAnswers.city) === a.city &&
+      normalizeAnswer(forgotAnswers.sport) === a.sport &&
+      normalizeAnswer(forgotAnswers.country) === a.country;
+    if (!ok) {
+      setError("Jawaban tidak cocok. Coba lagi.");
+      return;
+    }
+    setForgotStep("reset");
+  };
+
+  const handleForgotReset = async () => {
+    setError("");
+    if (newPassword.length < 4) {
+      setError("Password minimal 4 karakter.");
+      return;
+    }
+    if (newPassword !== newPasswordConfirm) {
+      setError("Konfirmasi password tidak sama.");
+      return;
+    }
+    setBusy(true);
+    const usernameLower = forgotAccount.accountId;
+    const passwordHash = await hashPassword(usernameLower, newPassword);
+    const updated = await updateUserPassword(usernameLower, passwordHash);
+    setBusy(false);
+    if (!updated) {
+      setError("Terjadi kesalahan. Coba lagi.");
+      return;
+    }
+    rememberLogin(updated);
+    onAuthenticated(updated);
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <style>{FONT_STYLE}</style>
@@ -417,69 +594,184 @@ function AuthScreen({ onAuthenticated }) {
         </p>
       </div>
 
-      <div className="flex gap-2 mb-5">
-        <ModeTab
-          active={mode === "login"}
-          onClick={() => {
-            setMode("login");
-            resetFields();
-          }}
-        >
-          Masuk
-        </ModeTab>
-        <ModeTab
-          active={mode === "register"}
-          onClick={() => {
-            setMode("register");
-            resetFields();
-          }}
-        >
-          Daftar Akun
-        </ModeTab>
-      </div>
+      {mode !== "forgot" && (
+        <div className="flex gap-2 mb-5">
+          <ModeTab
+            active={mode === "login"}
+            onClick={() => {
+              setMode("login");
+              resetFields();
+            }}
+          >
+            Masuk
+          </ModeTab>
+          <ModeTab
+            active={mode === "register"}
+            onClick={() => {
+              setMode("register");
+              resetFields();
+            }}
+          >
+            Daftar Akun
+          </ModeTab>
+        </div>
+      )}
 
-      <div className="space-y-3">
-        <div className="relative">
-          <UserCircle2 size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
-          <input
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            placeholder="Username"
-            autoCapitalize="none"
-            className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-11 pr-4 py-3.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
-          />
+      {mode === "forgot" ? (
+        <div className="space-y-3">
+          <button
+            onClick={() => {
+              setMode("login");
+              resetForgotFlow();
+            }}
+            className="flex items-center gap-1 text-xs font-semibold text-slate-400 mb-1"
+          >
+            <ArrowLeft size={13} /> Kembali ke Masuk
+          </button>
+
+          {forgotStep === "username" && (
+            <>
+              <div className="relative">
+                <UserCircle2 size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                <input
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="Username"
+                  autoCapitalize="none"
+                  onKeyDown={(e) => e.key === "Enter" && !busy && handleForgotUsername()}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-11 pr-4 py-3.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+                />
+              </div>
+              {error && <p className="text-red-400 text-xs px-1">{error}</p>}
+              <PrimaryButton onClick={handleForgotUsername} disabled={busy} className="w-full text-base py-3.5">
+                {busy ? "Memeriksa…" : "Lanjut"}
+              </PrimaryButton>
+            </>
+          )}
+
+          {forgotStep === "questions" && (
+            <>
+              <p className="text-xs text-slate-500 mb-1">Jawab 3 pertanyaan keamananmu:</p>
+              {SECURITY_QUESTIONS.map((q) => (
+                <div key={q.key} className="relative">
+                  <input
+                    value={forgotAnswers[q.key]}
+                    onChange={(e) => setForgotAnswers((a) => ({ ...a, [q.key]: e.target.value }))}
+                    placeholder={q.label}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+                  />
+                </div>
+              ))}
+              {error && <p className="text-red-400 text-xs px-1">{error}</p>}
+              <PrimaryButton onClick={handleForgotQuestions} className="w-full text-base py-3.5">
+                Verifikasi
+              </PrimaryButton>
+            </>
+          )}
+
+          {forgotStep === "reset" && (
+            <>
+              <p className="text-xs text-slate-500 mb-1">Buat password baru:</p>
+              <div className="relative">
+                <Lock size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                <input
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  type="password"
+                  placeholder="Password baru"
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-11 pr-4 py-3.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+                />
+              </div>
+              <div className="relative">
+                <Lock size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                <input
+                  value={newPasswordConfirm}
+                  onChange={(e) => setNewPasswordConfirm(e.target.value)}
+                  type="password"
+                  placeholder="Ulangi password baru"
+                  onKeyDown={(e) => e.key === "Enter" && !busy && handleForgotReset()}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-11 pr-4 py-3.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+                />
+              </div>
+              {error && <p className="text-red-400 text-xs px-1">{error}</p>}
+              <PrimaryButton onClick={handleForgotReset} disabled={busy} className="w-full text-base py-3.5">
+                {busy ? "Menyimpan…" : "Simpan Password Baru"}
+              </PrimaryButton>
+            </>
+          )}
         </div>
-        <div className="relative">
-          <Lock size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
-          <input
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            type="password"
-            placeholder="Password"
-            onKeyDown={(e) => e.key === "Enter" && !busy && handleSubmit()}
-            className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-11 pr-4 py-3.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
-          />
-        </div>
-        {mode === "register" && (
+      ) : (
+        <div className="space-y-3">
           <div className="relative">
-            <Lock size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+            <UserCircle2 size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
             <input
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              type="password"
-              placeholder="Ulangi password"
-              onKeyDown={(e) => e.key === "Enter" && !busy && handleSubmit()}
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="Username"
+              autoCapitalize="none"
               className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-11 pr-4 py-3.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
             />
           </div>
-        )}
+          <div className="relative">
+            <Lock size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+            <input
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              type="password"
+              placeholder="Password"
+              onKeyDown={(e) => e.key === "Enter" && !busy && mode !== "register" && handleSubmit()}
+              className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-11 pr-4 py-3.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+            />
+          </div>
+          {mode === "register" && (
+            <>
+              <div className="relative">
+                <Lock size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                <input
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  type="password"
+                  placeholder="Ulangi password"
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-11 pr-4 py-3.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+                />
+              </div>
 
-        {error && <p className="text-red-400 text-xs px-1">{error}</p>}
+              <p className="text-xs text-slate-500 pt-2">
+                Pertanyaan keamanan (untuk reset password kalau lupa nanti):
+              </p>
+              {SECURITY_QUESTIONS.map((q) => (
+                <div key={q.key} className="relative">
+                  <input
+                    value={secAnswers[q.key]}
+                    onChange={(e) => setSecAnswers((a) => ({ ...a, [q.key]: e.target.value }))}
+                    placeholder={q.label}
+                    onKeyDown={(e) => e.key === "Enter" && !busy && handleSubmit()}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+                  />
+                </div>
+              ))}
+            </>
+          )}
 
-        <PrimaryButton onClick={handleSubmit} disabled={busy} className="w-full text-base py-3.5">
-          {busy ? "Memproses…" : mode === "login" ? "Masuk" : "Buat Akun"}
-        </PrimaryButton>
-      </div>
+          {mode === "login" && (
+            <button
+              onClick={() => {
+                setMode("forgot");
+                resetForgotFlow();
+              }}
+              className="text-xs text-cyan-300 font-semibold px-1"
+            >
+              Lupa password?
+            </button>
+          )}
+
+          {error && <p className="text-red-400 text-xs px-1">{error}</p>}
+
+          <PrimaryButton onClick={handleSubmit} disabled={busy} className="w-full text-base py-3.5">
+            {busy ? "Memproses…" : mode === "login" ? "Masuk" : "Buat Akun"}
+          </PrimaryButton>
+        </div>
+      )}
 
       <p className="text-[11px] text-slate-500 text-center mt-6">
         Cukup username & password — tidak perlu email. Password disimpan dalam bentuk terenkripsi
@@ -567,6 +859,8 @@ function AmericanoPadel() {
   const [status, setStatus] = useState("waiting"); // waiting | active (for the currently open session)
   const [maxParticipants, setMaxParticipants] = useState(8);
   const [pendingRequests, setPendingRequests] = useState([]); // [{id, name, accountId}]
+  const [visibility, setVisibility] = useState("private"); // private | public
+  const [publicEvents, setPublicEvents] = useState([]);
   const [pendingJoinId] = useState(() => new URLSearchParams(window.location.search).get("join"));
 
   // Setup state
@@ -601,6 +895,39 @@ function AmericanoPadel() {
     }
   };
 
+  // Lobby entries for events you JOINED (role: participant) are a snapshot
+  // taken at join time. This re-fetches the live session for each of those
+  // so status/ended/round progress reflect what the host has actually done
+  // (fixes: participant's lobby still showing "waiting" after host ended it).
+  // Owner's own entries are always kept fresh by persist(), so they're left
+  // as-is here to avoid extra reads.
+  const refreshLobbyFor = async (accountId) => {
+    const list = await loadLobbyIndex(accountId);
+    const refreshed = await Promise.all(
+      list.map(async (entry) => {
+        if ((entry.role || "owner") === "owner") return entry;
+        const data = await loadSessionData(entry.id);
+        if (!data) return entry;
+        return {
+          ...entry,
+          name: data.name || entry.name,
+          playerCount: (data.players || []).length,
+          courts: data.courts,
+          roundsTotal: data.engine ? data.engine.roundsData.length : 0,
+          currentRound: data.currentRound || 0,
+          ended: !!data.ended,
+          status: data.status || (data.engine ? "active" : "waiting"),
+          ownerUsername: data.ownerUsername || entry.ownerUsername,
+          updatedAt: data.updatedAt || entry.updatedAt,
+        };
+      })
+    );
+    const sorted = refreshed.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    setLobby(sorted);
+    saveLobbyIndex(accountId, sorted);
+    return sorted;
+  };
+
   // On mount, auto-login if this device already has a remembered account.
   // If the URL carries an invite (?join=<id>), process it right after login.
   useEffect(() => {
@@ -612,8 +939,7 @@ function AmericanoPadel() {
           await handleJoinViaLink(pendingJoinId, remembered);
           clearJoinParam();
         } else {
-          const list = await loadLobbyIndex(remembered.accountId);
-          setLobby(list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+          await refreshLobbyFor(remembered.accountId);
         }
       }
       setBooted(true);
@@ -628,8 +954,7 @@ function AmericanoPadel() {
       await handleJoinViaLink(pendingJoinId, me);
       clearJoinParam();
     } else {
-      const list = await loadLobbyIndex(me.accountId);
-      setLobby(list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+      await refreshLobbyFor(me.accountId);
       setScreen("lobby");
     }
   };
@@ -714,6 +1039,7 @@ function AmericanoPadel() {
     setPointTarget(current.pointTarget ?? 21);
     setTennisTarget(current.tennisTarget ?? 4);
     setMaxParticipants(current.maxParticipants ?? 8);
+    setVisibility(current.visibility || "private");
     setPendingRequests(current.pendingRequests || []);
     setEnded(!!current.ended);
     setEngine(current.engine || null);
@@ -775,6 +1101,7 @@ function AmericanoPadel() {
         ownerUsername: currentUser.username,
         name: eventName,
         status,
+        visibility,
         maxParticipants,
         pendingRequests,
         players,
@@ -797,6 +1124,7 @@ function AmericanoPadel() {
         updatedAt,
       };
       saveSessionData(id, snapshot);
+      syncPublicEventEntry(snapshot);
       setLobby((prev) => {
         const existing = prev.find((e) => e.id === id);
         const entry = {
@@ -819,13 +1147,17 @@ function AmericanoPadel() {
         return next;
       });
     },
-    [activeId, currentUser, eventName, status, maxParticipants, pendingRequests, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
+    [activeId, currentUser, eventName, status, visibility, maxParticipants, pendingRequests, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
   );
 
   const addPlayerFromInput = () => {
     const name = nameInput.trim();
     if (!name) return;
-    setPlayers((p) => [...p, { id: uid(), name }]);
+    setPlayers((p) => {
+      const next = [...p, { id: uid(), name }];
+      persist({ players: next });
+      return next;
+    });
     setNameInput("");
   };
 
@@ -835,11 +1167,20 @@ function AmericanoPadel() {
       .map((s) => s.trim())
       .filter(Boolean);
     if (!names.length) return;
-    setPlayers((p) => [...p, ...names.map((name) => ({ id: uid(), name }))]);
+    setPlayers((p) => {
+      const next = [...p, ...names.map((name) => ({ id: uid(), name }))];
+      persist({ players: next });
+      return next;
+    });
     setBulkInput("");
   };
 
-  const removePlayer = (id) => setPlayers((p) => p.filter((x) => x.id !== id));
+  const removePlayer = (id) =>
+    setPlayers((p) => {
+      const next = p.filter((x) => x.id !== id);
+      persist({ players: next });
+      return next;
+    });
 
   const computedRounds =
     mode === "duration"
@@ -861,6 +1202,7 @@ function AmericanoPadel() {
       {
         name: finalName,
         status: "waiting",
+        visibility,
         maxParticipants,
         pendingRequests: [],
         ownerUsername: currentUser?.username || "",
@@ -937,6 +1279,7 @@ function AmericanoPadel() {
     setTennisTarget(4);
     setMaxParticipants(8);
     setPendingRequests([]);
+    setVisibility("private");
     setEngine(null);
     setPlayerMap({});
     setCurrentRound(0);
@@ -970,6 +1313,7 @@ function AmericanoPadel() {
     setTennisTarget(data.tennisTarget ?? 4);
     setMaxParticipants(data.maxParticipants ?? 8);
     setPendingRequests(data.pendingRequests || []);
+    setVisibility(data.visibility || "private");
     setEnded(!!data.ended);
     setEngine(data.engine || null);
     setPlayerMap(data.playerMap || {});
@@ -983,16 +1327,28 @@ function AmericanoPadel() {
     setScreen(data.engine ? "session" : "waiting");
   };
 
+  const handleRefreshLobby = async () => {
+    if (!currentUser) return;
+    await refreshLobbyFor(currentUser.accountId);
+  };
+
+  const handleOpenDiscover = async () => {
+    const list = await loadPublicEvents();
+    const filtered = list.filter((e) => e.ownerId !== currentUser?.accountId);
+    setPublicEvents(filtered.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+    setScreen("discover");
+  };
+
   const handleBackToLobby = async () => {
     setScreen("lobby");
     if (!currentUser) return;
-    const list = await loadLobbyIndex(currentUser.accountId);
-    setLobby(list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+    await refreshLobbyFor(currentUser.accountId);
   };
 
   const handleDeleteSession = async (id) => {
     if (!window.confirm("Hapus acara ini beserta seluruh jadwal & skornya?")) return;
     await deleteSessionData(id);
+    await removePublicEventEntry(id);
     setLobby((prev) => {
       const next = prev.filter((e) => e.id !== id);
       if (currentUser) saveLobbyIndex(currentUser.accountId, next);
@@ -1214,8 +1570,18 @@ function AmericanoPadel() {
           onOpen={handleOpenSession}
           onDelete={handleDeleteSession}
           onLeave={handleLeaveEntry}
+          onDiscover={handleOpenDiscover}
+          onRefresh={handleRefreshLobby}
           currentUser={currentUser}
           onLogout={handleLogout}
+        />
+      )}
+
+      {screen === "discover" && (
+        <PublicEventsScreen
+          events={publicEvents}
+          onJoinRequest={(id) => handleJoinViaLink(id)}
+          onBackToLobby={handleBackToLobby}
         />
       )}
 
@@ -1245,6 +1611,8 @@ function AmericanoPadel() {
           setTennisTarget={setTennisTarget}
           maxParticipants={maxParticipants}
           setMaxParticipants={setMaxParticipants}
+          visibility={visibility}
+          setVisibility={setVisibility}
           computedRounds={computedRounds}
           onGenerate={handleCreateConcept}
           onBackToLobby={handleBackToLobby}
@@ -1256,6 +1624,7 @@ function AmericanoPadel() {
           eventName={eventName}
           activeId={activeId}
           isOwner={sessionRole === "owner"}
+          myAccountId={currentUser?.accountId}
           players={players}
           nameInput={nameInput}
           setNameInput={setNameInput}
@@ -1374,8 +1743,9 @@ function BottomNav({ active, onNav }) {
 // LOBBY SCREEN
 // ---------------------------------------------------------------------------
 
-function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, currentUser, onLogout }) {
+function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover, onRefresh, currentUser, onLogout }) {
   const [accountCount, setAccountCount] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -1383,6 +1753,12 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, currentUse
       setAccountCount(n);
     })();
   }, []);
+
+  const handleRefreshClick = async () => {
+    setRefreshing(true);
+    await onRefresh();
+    setRefreshing(false);
+  };
 
   return (
     <div className="pb-10">
@@ -1395,9 +1771,19 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, currentUse
               Court Rotation Engine
             </span>
           </div>
-          <button onClick={onLogout} className="flex items-center gap-1 text-xs text-slate-400">
-            <LogOut size={12} /> keluar
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleRefreshClick}
+              disabled={refreshing}
+              className="flex items-center gap-1 text-xs text-slate-400"
+            >
+              <RotateCcw size={12} className={refreshing ? "animate-spin" : ""} />
+              {refreshing ? "memuat…" : "refresh"}
+            </button>
+            <button onClick={onLogout} className="flex items-center gap-1 text-xs text-slate-400">
+              <LogOut size={12} /> keluar
+            </button>
+          </div>
         </div>
         <h1 className="font-display text-6xl leading-[0.85] text-slate-50 tracking-wide">
           AMERICANO
@@ -1422,6 +1808,12 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, currentUse
         <PrimaryButton onClick={onCreateNew} icon={Plus} className="w-full text-lg py-4">
           Buat Acara Baru
         </PrimaryButton>
+      </div>
+
+      <div className="px-6 pt-3">
+        <GhostButton onClick={onDiscover} icon={Eye} className="w-full">
+          Jelajahi Acara Publik
+        </GhostButton>
       </div>
 
       <div className="px-6 pt-6">
@@ -1505,6 +1897,65 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, currentUse
 }
 
 // ---------------------------------------------------------------------------
+// PUBLIC EVENTS DISCOVERY SCREEN
+// ---------------------------------------------------------------------------
+
+function PublicEventsScreen({ events, onJoinRequest, onBackToLobby }) {
+  return (
+    <div className="pb-10">
+      <div className="px-6 pt-10 pb-6 border-b border-slate-800">
+        <button
+          onClick={onBackToLobby}
+          className="flex items-center gap-1 text-xs font-semibold text-slate-400 mb-4"
+        >
+          <ArrowLeft size={13} /> Lobby
+        </button>
+        <div className="flex items-center gap-2 mb-1">
+          <Eye size={16} className="text-lime-300" />
+          <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
+            Discover
+          </span>
+        </div>
+        <h1 className="font-display text-5xl text-slate-50">ACARA PUBLIK</h1>
+        <p className="text-slate-500 text-sm mt-2">
+          Acara yang dibuka untuk umum oleh host lain. Minta gabung — host akan meninjau
+          permintaanmu sebelum kamu resmi jadi peserta.
+        </p>
+      </div>
+
+      <div className="px-6 pt-4 space-y-3">
+        {events.length === 0 && (
+          <div className="rounded-2xl border border-dashed border-slate-700 p-6 text-center">
+            <p className="text-slate-500 text-sm">Belum ada acara publik yang terbuka saat ini.</p>
+          </div>
+        )}
+
+        {events.map((ev) => (
+          <div
+            key={ev.id}
+            className="rounded-2xl border border-slate-800 bg-slate-900/50 overflow-hidden"
+          >
+            <div className="px-4 py-4">
+              <div className="font-semibold text-slate-100 truncate">{ev.name}</div>
+              <div className="text-[11px] text-slate-300 mt-1">
+                host: {ev.ownerUsername || "-"} · {ev.playerCount}/{ev.maxParticipants} peserta ·{" "}
+                {ev.courts} lapangan
+              </div>
+            </div>
+            <button
+              onClick={() => onJoinRequest(ev.id)}
+              className="w-full flex items-center justify-center gap-1.5 py-2.5 text-xs font-semibold text-slate-950 bg-lime-300 border-t border-slate-800"
+            >
+              <Users size={12} /> Minta Gabung
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // SETUP SCREEN
 // ---------------------------------------------------------------------------
 
@@ -1518,6 +1969,7 @@ function SetupScreen(props) {
     scoreFormat, setScoreFormat, pointTarget, setPointTarget,
     tennisTarget, setTennisTarget,
     maxParticipants, setMaxParticipants,
+    visibility, setVisibility,
     computedRounds, onGenerate,
     onBackToLobby,
   } = props;
@@ -1585,6 +2037,23 @@ function SetupScreen(props) {
             Cuma target — di halaman berikutnya jumlah peserta tetap bisa kurang/lebih dari ini.
           </div>
         </div>
+      </Section>
+
+      {/* VISIBILITY */}
+      <Section icon={Eye} title="Privasi Acara">
+        <div className="flex gap-2 mb-2">
+          <ModeTab active={visibility === "private"} onClick={() => setVisibility("private")}>
+            Private
+          </ModeTab>
+          <ModeTab active={visibility === "public"} onClick={() => setVisibility("public")}>
+            Public
+          </ModeTab>
+        </div>
+        <p className="text-xs text-slate-500">
+          {visibility === "private"
+            ? "Cuma orang yang kamu kirimi link undangan yang bisa lihat & minta gabung acara ini."
+            : "Muncul di halaman \"Jelajahi Acara Publik\" — siapa saja bisa lihat & minta gabung, tetap butuh persetujuanmu."}
+        </p>
       </Section>
 
       {/* COURTS */}
@@ -1818,7 +2287,7 @@ function PreviewStat({ label, value }) {
 
 function WaitingRoomScreen(props) {
   const {
-    eventName, activeId, isOwner,
+    eventName, activeId, isOwner, myAccountId,
     players, nameInput, setNameInput, bulkInput, setBulkInput,
     addPlayerFromInput, addBulk, removePlayer,
     maxParticipants, courts, computedRounds,
@@ -1829,6 +2298,8 @@ function WaitingRoomScreen(props) {
   const [showBulk, setShowBulk] = useState(false);
   const usableCourtsPreview = Math.min(courts, Math.floor(players.length / 4));
   const canFinalize = players.length >= 4 && usableCourtsPreview >= 1;
+  const iAmApproved = !isOwner && players.some((p) => p.accountId === myAccountId);
+  const iAmPending = !isOwner && !iAmApproved && pendingRequests.some((r) => r.accountId === myAccountId);
 
   const handleCopyInvite = async () => {
     const url = new URL(window.location.href);
@@ -2001,8 +2472,11 @@ function WaitingRoomScreen(props) {
         <div className="px-6">
           <div className="rounded-2xl border border-dashed border-slate-700 p-5 text-center">
             <p className="text-slate-400 text-sm">
-              Kamu sudah tergabung. Menunggu host memulai pertandingan — halaman ini akan otomatis
-              lanjut ke jadwal begitu dimulai.
+              {iAmPending
+                ? "Permintaan bergabungmu sudah terkirim, menunggu persetujuan host."
+                : iAmApproved
+                ? 'Kamu sudah jadi peserta. Menunggu host memulai pertandingan — halaman ini akan otomatis lanjut ke jadwal begitu dimulai.'
+                : "Menunggu host memulai pertandingan."}
             </p>
           </div>
         </div>
