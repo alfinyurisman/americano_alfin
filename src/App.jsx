@@ -1645,11 +1645,17 @@ function AmericanoPadel() {
 
   const fairnessStats = React.useMemo(() => {
     if (!engine) return [];
+    const idToAccountId = {};
+    players.forEach((p) => {
+      idToAccountId[p.id] = p.accountId || null;
+    });
     const ids = Object.keys(playerMap);
     return ids
       .map((id) => {
         const partners = Object.values(engine.partner[id] || {}).filter((v) => v > 0).length;
         const opps = Object.values(engine.opp[id] || {}).filter((v) => v > 0).length;
+        const accId = idToAccountId[id];
+        const role = accId && accId === ownerId ? "host" : accId && coHostIds.includes(accId) ? "cohost" : null;
         return {
           id,
           name: playerMap[id],
@@ -1657,10 +1663,11 @@ function AmericanoPadel() {
           rests: engine.restCount[id] || 0,
           partners,
           opps,
+          role,
         };
       })
       .sort((a, b) => b.matches - a.matches);
-  }, [engine, playerMap]);
+  }, [engine, playerMap, players, ownerId, coHostIds]);
 
   const handleShare = async () => {
     if (!engine) return;
@@ -1948,28 +1955,31 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
 
   return (
     <div className="pb-10">
-      <div className="px-6 pt-10 pb-8 border-b border-slate-800 relative overflow-hidden">
+      <div className="px-6 pt-14 pb-8 border-b border-slate-800 relative overflow-hidden">
         <div className="absolute -right-10 -top-10 w-40 h-40 rounded-full bg-lime-400/10 blur-2xl pointer-events-none" />
-        <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-lime-300" />
             <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
               Court Rotation Engine
             </span>
           </div>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={handleRefreshClick}
-              disabled={refreshing}
-              className="flex items-center gap-1 text-xs text-slate-400"
-            >
-              <RotateCcw size={12} className={refreshing ? "animate-spin" : ""} />
-              {refreshing ? "memuat…" : "refresh"}
-            </button>
-            <button onClick={onLogout} className="flex items-center gap-1 text-xs text-slate-400">
-              <LogOut size={12} /> keluar
-            </button>
-          </div>
+        </div>
+        <div className="flex items-center gap-2 mb-2">
+          <button
+            onClick={handleRefreshClick}
+            disabled={refreshing}
+            className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform"
+          >
+            <RotateCcw size={15} className={refreshing ? "animate-spin" : ""} />
+            {refreshing ? "memuat…" : "refresh"}
+          </button>
+          <button
+            onClick={onLogout}
+            className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform"
+          >
+            <LogOut size={15} /> keluar
+          </button>
         </div>
         <h1 className="font-display text-6xl leading-[0.85] text-slate-50 tracking-wide">
           AMERICANO
@@ -2108,12 +2118,12 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
 function PublicEventsScreen({ events, onJoinRequest, onBackToLobby }) {
   return (
     <div className="pb-10">
-      <div className="px-6 pt-10 pb-6 border-b border-slate-800">
+      <div className="px-6 pt-14 pb-6 border-b border-slate-800">
         <button
           onClick={onBackToLobby}
-          className="flex items-center gap-1 text-xs font-semibold text-slate-400 mb-4"
+          className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform mb-4"
         >
-          <ArrowLeft size={13} /> Lobby
+          <ArrowLeft size={16} /> Lobby
         </button>
         <div className="flex items-center gap-2 mb-1">
           <Eye size={16} className="text-lime-300" />
@@ -2182,13 +2192,13 @@ function SetupScreen(props) {
   return (
     <div className="pb-10">
       {/* HERO */}
-      <div className="px-6 pt-10 pb-8 border-b border-slate-800 relative overflow-hidden">
+      <div className="px-6 pt-14 pb-8 border-b border-slate-800 relative overflow-hidden">
         <div className="absolute -right-10 -top-10 w-40 h-40 rounded-full bg-lime-400/10 blur-2xl pointer-events-none" />
         <button
           onClick={onBackToLobby}
-          className="flex items-center gap-1 text-xs font-semibold text-slate-400 mb-4"
+          className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform mb-4"
         >
-          <ArrowLeft size={13} /> Lobby
+          <ArrowLeft size={16} /> Lobby
         </button>
         <div className="flex items-center gap-2 mb-2">
           <div className="w-2 h-2 rounded-full bg-lime-300" />
@@ -2543,14 +2553,14 @@ function WaitingRoomScreen(props) {
 
   return (
     <div className="pb-10">
-      <div className="px-6 pt-10 pb-6 border-b border-slate-800 relative overflow-hidden">
+      <div className="px-6 pt-14 pb-6 border-b border-slate-800 relative overflow-hidden">
         <div className="absolute -right-10 -top-10 w-40 h-40 rounded-full bg-lime-400/10 blur-2xl pointer-events-none" />
         <div className="flex items-center justify-between mb-4">
           <button
             onClick={onBackToLobby}
-            className="flex items-center gap-1 text-xs font-semibold text-slate-400"
+            className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform"
           >
-            <ArrowLeft size={13} /> Lobby
+            <ArrowLeft size={16} /> Lobby
           </button>
           {canManage ? (
             <div className="flex items-center gap-3">
@@ -2807,13 +2817,13 @@ function SessionScreen(props) {
   return (
     <div className="pb-24">
       {/* HEADER */}
-      <div className="px-6 pt-8 pb-5 border-b border-slate-800">
+      <div className="px-6 pt-12 pb-5 border-b border-slate-800">
         <div className="flex items-center justify-between mb-2">
           <button
             onClick={onBackToLobby}
-            className="flex items-center gap-1 text-xs font-semibold text-slate-400"
+            className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform"
           >
-            <ArrowLeft size={13} /> Lobby
+            <ArrowLeft size={16} /> Lobby
           </button>
           {canManage ? (
             <div className="flex items-center gap-3">
@@ -3308,12 +3318,12 @@ function LeaderboardScreen({ eventName, leaderboard, ended, onNav, onBackToLobby
 
   return (
     <div className="pb-24">
-      <div className="px-6 pt-10 pb-6 border-b border-slate-800">
+      <div className="px-6 pt-14 pb-6 border-b border-slate-800">
         <button
           onClick={onBackToLobby}
-          className="flex items-center gap-1 text-xs font-semibold text-slate-400 mb-4"
+          className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform mb-4"
         >
-          <ArrowLeft size={13} /> Lobby
+          <ArrowLeft size={16} /> Lobby
         </button>
         {eventName && <div className="text-sm font-semibold text-slate-200 mb-1">{eventName}</div>}
         <div className="flex items-center gap-2 mb-1">
@@ -3471,12 +3481,12 @@ function RecapScreen({ eventName, engine, playerMap, scores, scoreFormat, tennis
 
   return (
     <div className="pb-24">
-      <div className="px-6 pt-10 pb-6 border-b border-slate-800">
+      <div className="px-6 pt-14 pb-6 border-b border-slate-800">
         <button
           onClick={onBackToLobby}
-          className="flex items-center gap-1 text-xs font-semibold text-slate-400 mb-4"
+          className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform mb-4"
         >
-          <ArrowLeft size={13} /> Lobby
+          <ArrowLeft size={16} /> Lobby
         </button>
         {eventName && <div className="text-sm font-semibold text-slate-200 mb-1">{eventName}</div>}
         <div className="flex items-center gap-2 mb-1">
@@ -3585,12 +3595,12 @@ function StatsScreen({ eventName, stats, totalPlayers, onNav, onBackToLobby }) {
   const maxPossible = Math.max(0, totalPlayers - 1);
   return (
     <div className="pb-24">
-      <div className="px-6 pt-10 pb-6 border-b border-slate-800">
+      <div className="px-6 pt-14 pb-6 border-b border-slate-800">
         <button
           onClick={onBackToLobby}
-          className="flex items-center gap-1 text-xs font-semibold text-slate-400 mb-4"
+          className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform mb-4"
         >
-          <ArrowLeft size={13} /> Lobby
+          <ArrowLeft size={16} /> Lobby
         </button>
         {eventName && <div className="text-sm font-semibold text-slate-200 mb-1">{eventName}</div>}
         <div className="flex items-center gap-2 mb-1">
@@ -3609,8 +3619,12 @@ function StatsScreen({ eventName, stats, totalPlayers, onNav, onBackToLobby }) {
         {stats.map((p) => (
           <div key={p.id} className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3">
             <div className="flex items-center justify-between mb-2">
-              <span className="font-semibold text-slate-100">{p.name}</span>
-              <div className="flex gap-2">
+              <span className="font-semibold text-slate-100 flex items-center gap-1.5 min-w-0">
+                <span className="truncate">{p.name}</span>
+                {p.role === "host" && <Chip tone="cyan">host</Chip>}
+                {p.role === "cohost" && <Chip tone="cyan">co-host</Chip>}
+              </span>
+              <div className="flex gap-2 shrink-0">
                 <Chip tone="lime">
                   <Check size={11} /> {p.matches} main
                 </Chip>
@@ -3818,7 +3832,7 @@ function ViewOnlyApp({ sessionId }) {
       <style>{FONT_STYLE}</style>
 
       <div className="max-w-md mx-auto relative">
-      <div className="px-6 pt-8 pb-4 border-b border-slate-800">
+      <div className="px-6 pt-12 pb-4 border-b border-slate-800">
         <Chip tone="cyan">
           <Eye size={11} /> View only — pemantau
         </Chip>
