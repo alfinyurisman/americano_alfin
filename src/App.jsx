@@ -2296,7 +2296,7 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
           <Users size={16} strokeWidth={2.5} />
           Teman
           {friendRequestCount > 0 && (
-            <span className="ml-1 inline-flex items-center justify-center w-5 h-5 rounded-full bg-lime-300 text-slate-950 text-[11px] font-bold">
+            <span className="absolute -top-1.5 -right-1.5 min-w-[20px] h-5 px-1 rounded-full bg-red-500 text-white text-[11px] font-bold flex items-center justify-center border-2 border-slate-950">
               {friendRequestCount}
             </span>
           )}
@@ -3091,38 +3091,44 @@ function WaitingRoomScreen(props) {
         </Section>
       )}
 
-      {canManage && friends && friends.length > 0 && (
+      {canManage && (
         <Section icon={Users} title="Undang dari Teman">
-          <div className="space-y-2">
-            {friends
-              .filter(
-                (f) =>
-                  !players.some((p) => p.accountId === f.accountId) &&
-                  !hostInvitations.some((i) => i.accountId === f.accountId)
-              )
-              .map((f) => (
-                <div
-                  key={f.accountId}
-                  className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-2"
-                >
-                  <Avatar name={f.username} avatarUrl={f.avatarUrl} size={32} />
-                  <span className="font-semibold text-slate-100 flex-1 min-w-0 truncate">
-                    {f.username}
-                  </span>
-                  <button
-                    onClick={() => onInviteFriend(f)}
-                    className="px-3 py-1.5 rounded-full text-xs font-semibold bg-lime-300 text-slate-950 shrink-0"
+          {friends.length === 0 ? (
+            <p className="text-slate-500 text-xs">
+              Kamu belum punya teman. Buka menu "Teman" di Lobby untuk cari & tambah teman dulu.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {friends
+                .filter(
+                  (f) =>
+                    !players.some((p) => p.accountId === f.accountId) &&
+                    !hostInvitations.some((i) => i.accountId === f.accountId)
+                )
+                .map((f) => (
+                  <div
+                    key={f.accountId}
+                    className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-2"
                   >
-                    Undang
-                  </button>
-                </div>
-              ))}
-            {friends.every(
-              (f) =>
-                players.some((p) => p.accountId === f.accountId) ||
-                hostInvitations.some((i) => i.accountId === f.accountId)
-            ) && <p className="text-slate-500 text-xs">Semua temanmu sudah diundang/jadi peserta.</p>}
-          </div>
+                    <Avatar name={f.username} avatarUrl={f.avatarUrl} size={32} />
+                    <span className="font-semibold text-slate-100 flex-1 min-w-0 truncate">
+                      {f.username}
+                    </span>
+                    <button
+                      onClick={() => onInviteFriend(f)}
+                      className="px-3 py-1.5 rounded-full text-xs font-semibold bg-lime-300 text-slate-950 shrink-0"
+                    >
+                      Undang
+                    </button>
+                  </div>
+                ))}
+              {friends.every(
+                (f) =>
+                  players.some((p) => p.accountId === f.accountId) ||
+                  hostInvitations.some((i) => i.accountId === f.accountId)
+              ) && <p className="text-slate-500 text-xs">Semua temanmu sudah diundang/jadi peserta.</p>}
+            </div>
+          )}
           <p className="text-[11px] text-slate-500 mt-3">
             Undangan perlu diterima dulu oleh temanmu sebelum masuk daftar peserta.
           </p>
