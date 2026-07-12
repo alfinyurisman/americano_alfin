@@ -246,6 +246,41 @@ async function updateUserPassword(usernameLower, newPasswordHash) {
   return updated;
 }
 
+async function updateUserAvatar(usernameLower, avatarDataUrl) {
+  const existing = await getUserAccount(usernameLower);
+  if (!existing) return null;
+  const updated = { ...existing, avatarUrl: avatarDataUrl };
+  await window.storage.set(userKey(usernameLower), JSON.stringify(updated), true);
+  return updated;
+}
+
+// Resizes/crops any uploaded image client-side into a small square JPEG data
+// URL before it's ever stored, so profile pictures stay tiny (a few KB) no
+// matter what photo someone picks.
+function processImageToAvatar(file, size = 160) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Gagal membaca file"));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("File bukan gambar yang valid"));
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+        const side = Math.min(img.width, img.height);
+        const sx = (img.width - side) / 2;
+        const sy = (img.height - side) / 2;
+        ctx.drawImage(img, sx, sy, side, side, 0, 0, size, size);
+        resolve(canvas.toDataURL("image/jpeg", 0.85));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 // Lets you see how many accounts are registered (see chat for where to check this).
 async function countRegisteredAccounts() {
   try {
@@ -404,6 +439,37 @@ function GhostButton({ children, onClick, disabled, className = "", icon: Icon }
       {Icon && <Icon size={16} strokeWidth={2.5} />}
       {children}
     </button>
+  );
+}
+
+// Circular 1:1 avatar. Shows the account's profile picture if it has one,
+// otherwise falls back to 1-2 letter initials derived from the name.
+function initialsFromName(name) {
+  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+function Avatar({ name, avatarUrl, size = 32, className = "" }) {
+  const px = `${size}px`;
+  if (avatarUrl) {
+    return (
+      <img
+        src={avatarUrl}
+        alt={name || "avatar"}
+        style={{ width: px, height: px }}
+        className={`rounded-full object-cover shrink-0 aspect-square ${className}`}
+      />
+    );
+  }
+  return (
+    <div
+      style={{ width: px, height: px, fontSize: size * 0.38 }}
+      className={`rounded-full bg-slate-800 border border-slate-700 text-slate-300 font-bold flex items-center justify-center shrink-0 aspect-square ${className}`}
+    >
+      {initialsFromName(name)}
+    </div>
   );
 }
 
@@ -870,6 +936,7 @@ function AmericanoPadel() {
   const [maxParticipants, setMaxParticipants] = useState(8);
   const [pendingRequests, setPendingRequests] = useState([]); // [{id, name, accountId}]
   const [visibility, setVisibility] = useState("private"); // private | public
+  const [hostPlaying, setHostPlaying] = useState(false);
   const [publicEvents, setPublicEvents] = useState([]);
   const [pendingJoinId] = useState(() => new URLSearchParams(window.location.search).get("join"));
 
@@ -944,12 +1011,16 @@ function AmericanoPadel() {
     (async () => {
       const remembered = loadRememberedLogin();
       if (remembered) {
-        setCurrentUser(remembered);
+        const fresh = await getUserAccount(remembered.accountId);
+        const me = fresh
+          ? { accountId: fresh.accountId, username: fresh.username, avatarUrl: fresh.avatarUrl || null }
+          : remembered;
+        setCurrentUser(me);
         if (pendingJoinId) {
-          await handleJoinViaLink(pendingJoinId, remembered);
+          await handleJoinViaLink(pendingJoinId, me);
           clearJoinParam();
         } else {
-          await refreshLobbyFor(remembered.accountId);
+          await refreshLobbyFor(me.accountId);
         }
       }
       setBooted(true);
@@ -958,7 +1029,7 @@ function AmericanoPadel() {
   }, []);
 
   const handleAuthenticated = async (account) => {
-    const me = { accountId: account.accountId, username: account.username };
+    const me = { accountId: account.accountId, username: account.username, avatarUrl: account.avatarUrl || null };
     setCurrentUser(me);
     if (pendingJoinId) {
       await handleJoinViaLink(pendingJoinId, me);
@@ -966,6 +1037,17 @@ function AmericanoPadel() {
     } else {
       await refreshLobbyFor(me.accountId);
       setScreen("lobby");
+    }
+  };
+
+  const handleChangeAvatar = async (file) => {
+    if (!currentUser) return;
+    try {
+      const dataUrl = await processImageToAvatar(file);
+      await updateUserAvatar(currentUser.accountId, dataUrl);
+      setCurrentUser((u) => (u ? { ...u, avatarUrl: dataUrl } : u));
+    } catch (e) {
+      alert("Gagal memproses foto. Coba gambar lain.");
     }
   };
 
@@ -1082,6 +1164,7 @@ function AmericanoPadel() {
           setPendingRequests(saved.pendingRequests || []);
           setStatus(saved.status || (saved.engine ? "active" : "waiting"));
           setMaxParticipants(saved.maxParticipants ?? 8);
+          setHostPlaying(!!saved.hostPlaying);
           setEngine(saved.engine || null);
           setPlayerMap(saved.playerMap || {});
           setCurrentRound(saved.currentRound || 0);
@@ -1112,6 +1195,7 @@ function AmericanoPadel() {
         name: eventName,
         status,
         visibility,
+        hostPlaying,
         maxParticipants,
         pendingRequests,
         players,
@@ -1157,7 +1241,7 @@ function AmericanoPadel() {
         return next;
       });
     },
-    [activeId, currentUser, eventName, status, visibility, maxParticipants, pendingRequests, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
+    [activeId, currentUser, eventName, status, visibility, hostPlaying, maxParticipants, pendingRequests, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
   );
 
   const addPlayerFromInput = () => {
@@ -1207,14 +1291,17 @@ function AmericanoPadel() {
     setStatus("waiting");
     setSessionRole("owner");
     setPendingRequests([]);
+    setHostPlaying(false);
     setScreen("waiting");
     persist(
       {
         name: finalName,
         status: "waiting",
         visibility,
+        hostPlaying: false,
         maxParticipants,
         pendingRequests: [],
+        players: [],
         ownerUsername: currentUser?.username || "",
         engine: null,
         playerMap: {},
@@ -1223,6 +1310,26 @@ function AmericanoPadel() {
       },
       id
     );
+  };
+
+  // Host toggles whether they're joining as a player themselves. When turned
+  // on, their own name is added straight to the player list (tagged with
+  // their accountId so it's identifiable); turning it off removes just that
+  // auto-added entry, leaving any manually-typed names untouched.
+  const handleToggleHostPlaying = () => {
+    const next = !hostPlaying;
+    setHostPlaying(next);
+    let newPlayers;
+    if (next) {
+      const already = players.some((p) => p.accountId === currentUser?.accountId);
+      newPlayers = already
+        ? players
+        : [...players, { id: uid(), name: currentUser.username, accountId: currentUser.accountId }];
+    } else {
+      newPlayers = players.filter((p) => p.accountId !== currentUser?.accountId);
+    }
+    setPlayers(newPlayers);
+    persist({ hostPlaying: next, players: newPlayers });
   };
 
   // PHASE B — once participants are settled (manual names and/or people who
@@ -1290,6 +1397,7 @@ function AmericanoPadel() {
     setMaxParticipants(8);
     setPendingRequests([]);
     setVisibility("private");
+    setHostPlaying(false);
     setEngine(null);
     setPlayerMap({});
     setCurrentRound(0);
@@ -1324,6 +1432,7 @@ function AmericanoPadel() {
     setMaxParticipants(data.maxParticipants ?? 8);
     setPendingRequests(data.pendingRequests || []);
     setVisibility(data.visibility || "private");
+    setHostPlaying(!!data.hostPlaying);
     setEnded(!!data.ended);
     setEngine(data.engine || null);
     setPlayerMap(data.playerMap || {});
@@ -1582,6 +1691,7 @@ function AmericanoPadel() {
           onLeave={handleLeaveEntry}
           onDiscover={handleOpenDiscover}
           onRefresh={handleRefreshLobby}
+          onChangeAvatar={handleChangeAvatar}
           currentUser={currentUser}
           onLogout={handleLogout}
         />
@@ -1649,6 +1759,8 @@ function AmericanoPadel() {
           pendingRequests={pendingRequests}
           onApprove={handleApproveRequest}
           onReject={handleRejectRequest}
+          hostPlaying={hostPlaying}
+          onToggleHostPlaying={handleToggleHostPlaying}
           onFinalize={handleFinalizeAndGenerate}
           onBackToLobby={handleBackToLobby}
           onDelete={() => handleDeleteSession(activeId)}
@@ -1753,9 +1865,11 @@ function BottomNav({ active, onNav }) {
 // LOBBY SCREEN
 // ---------------------------------------------------------------------------
 
-function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover, onRefresh, currentUser, onLogout }) {
+function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover, onRefresh, onChangeAvatar, currentUser, onLogout }) {
   const [accountCount, setAccountCount] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     (async () => {
@@ -1768,6 +1882,15 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
     setRefreshing(true);
     await onRefresh();
     setRefreshing(false);
+  };
+
+  const handleAvatarFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setUploadingAvatar(true);
+    await onChangeAvatar(file);
+    setUploadingAvatar(false);
   };
 
   return (
@@ -1801,10 +1924,29 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
           <span className="text-lime-300">SCHEDULER</span>
         </h1>
         {currentUser && (
-          <div className="flex items-center gap-1.5 mt-3">
-            <UserCircle2 size={14} className="text-slate-400" />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center gap-2.5 mt-3"
+          >
+            <div className="relative">
+              <Avatar name={currentUser.username} avatarUrl={currentUser.avatarUrl} size={36} />
+              <div className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-lime-300 border-2 border-slate-950 flex items-center justify-center">
+                {uploadingAvatar ? (
+                  <RotateCcw size={8} className="text-slate-950 animate-spin" />
+                ) : (
+                  <Plus size={8} className="text-slate-950" strokeWidth={3} />
+                )}
+              </div>
+            </div>
             <span className="text-sm text-slate-300 font-semibold">{currentUser.username}</span>
-          </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleAvatarFile}
+              className="hidden"
+            />
+          </button>
         )}
         <p className="text-slate-400 text-sm mt-2 max-w-xs">
           Acara yang kamu buat maupun yang kamu ikuti (lewat undangan) muncul di sini.
@@ -2302,14 +2444,33 @@ function WaitingRoomScreen(props) {
     addPlayerFromInput, addBulk, removePlayer,
     maxParticipants, courts, computedRounds,
     pendingRequests, onApprove, onReject,
+    hostPlaying, onToggleHostPlaying,
     onFinalize, onBackToLobby, onDelete,
   } = props;
 
   const [showBulk, setShowBulk] = useState(false);
+  const [avatarCache, setAvatarCache] = useState({}); // accountId -> avatarUrl | null
   const usableCourtsPreview = Math.min(courts, Math.floor(players.length / 4));
   const canFinalize = players.length >= 4 && usableCourtsPreview >= 1;
   const iAmApproved = !isOwner && players.some((p) => p.accountId === myAccountId);
   const iAmPending = !isOwner && !iAmApproved && pendingRequests.some((r) => r.accountId === myAccountId);
+
+  useEffect(() => {
+    const ids = new Set(
+      [...players, ...pendingRequests].map((p) => p.accountId).filter((id) => id && !(id in avatarCache))
+    );
+    if (ids.size === 0) return;
+    (async () => {
+      const entries = await Promise.all(
+        [...ids].map(async (id) => {
+          const acc = await getUserAccount(id);
+          return [id, acc?.avatarUrl || null];
+        })
+      );
+      setAvatarCache((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [players, pendingRequests]);
 
   const handleCopyInvite = async () => {
     const url = new URL(window.location.href);
@@ -2377,7 +2538,10 @@ function WaitingRoomScreen(props) {
                 key={r.id}
                 className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3"
               >
-                <span className="font-semibold text-slate-100 truncate">{r.name}</span>
+                <span className="flex items-center gap-2 min-w-0">
+                  <Avatar name={r.name} avatarUrl={avatarCache[r.accountId]} size={26} />
+                  <span className="font-semibold text-slate-100 truncate">{r.name}</span>
+                </span>
                 <div className="flex gap-2 shrink-0">
                   <button
                     onClick={() => onApprove(r.id)}
@@ -2401,6 +2565,25 @@ function WaitingRoomScreen(props) {
       <Section icon={Users} title="Peserta" subtitle={`${players.length} bergabung`}>
         {isOwner && (
           <>
+            <button
+              onClick={onToggleHostPlaying}
+              className="w-full flex items-center justify-between gap-3 rounded-xl border border-slate-700 bg-slate-900/60 px-4 py-3 mb-4"
+            >
+              <div className="text-left">
+                <div className="text-sm font-semibold text-slate-100">Saya (host) ikut bermain</div>
+                <div className="text-[11px] text-slate-500 mt-0.5">
+                  Kalau aktif, namamu otomatis masuk ke daftar peserta
+                </div>
+              </div>
+              <div
+                className={`w-11 h-6 rounded-full shrink-0 flex items-center px-0.5 transition-colors ${
+                  hostPlaying ? "bg-lime-300 justify-end" : "bg-slate-700 justify-start"
+                }`}
+              >
+                <div className="w-5 h-5 rounded-full bg-slate-950" />
+              </div>
+            </button>
+
             <div className="flex gap-2 mb-3">
               <input
                 value={nameInput}
@@ -2444,10 +2627,10 @@ function WaitingRoomScreen(props) {
             {players.map((p) => (
               <span
                 key={p.id}
-                className="inline-flex items-center gap-1.5 bg-slate-900 border border-slate-700 rounded-full pl-3 pr-1.5 py-1.5 text-sm"
+                className="inline-flex items-center gap-2 bg-slate-900 border border-slate-700 rounded-full pl-1.5 pr-1.5 py-1.5 text-sm"
               >
+                <Avatar name={p.name} avatarUrl={p.accountId ? avatarCache[p.accountId] : null} size={22} />
                 {p.name}
-                {p.accountId && <UserCircle2 size={12} className="text-cyan-300" />}
                 {isOwner && (
                   <button
                     onClick={() => removePlayer(p.id)}
