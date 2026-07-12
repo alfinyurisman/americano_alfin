@@ -3,7 +3,7 @@ import {
   Plus, X, Users, Clock, Trophy, Shuffle, ChevronLeft, ChevronRight,
   RotateCcw, Share2, BarChart3, Settings2, Check, Coffee,
   ArrowLeft, Trash2, CalendarDays, ChevronRightCircle, ClipboardList, Link2, Eye, ListOrdered,
-  LogOut, Lock, UserCircle2,
+  LogOut, Lock, UserCircle2, Shield,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -937,6 +937,9 @@ function AmericanoPadel() {
   const [pendingRequests, setPendingRequests] = useState([]); // [{id, name, accountId}]
   const [visibility, setVisibility] = useState("private"); // private | public
   const [hostPlaying, setHostPlaying] = useState(false);
+  const [coHostIds, setCoHostIds] = useState([]); // accountIds granted co-host (edit) access
+  const [ownerId, setOwnerId] = useState(null);
+  const [ownerUsername, setOwnerUsername] = useState("");
   const [publicEvents, setPublicEvents] = useState([]);
   const [pendingJoinId] = useState(() => new URLSearchParams(window.location.search).get("join"));
 
@@ -1132,6 +1135,10 @@ function AmericanoPadel() {
     setTennisTarget(current.tennisTarget ?? 4);
     setMaxParticipants(current.maxParticipants ?? 8);
     setVisibility(current.visibility || "private");
+    setHostPlaying(!!current.hostPlaying);
+    setCoHostIds(current.coHostIds || []);
+    setOwnerId(current.ownerId || null);
+    setOwnerUsername(current.ownerUsername || "");
     setPendingRequests(current.pendingRequests || []);
     setEnded(!!current.ended);
     setEngine(current.engine || null);
@@ -1165,6 +1172,7 @@ function AmericanoPadel() {
           setStatus(saved.status || (saved.engine ? "active" : "waiting"));
           setMaxParticipants(saved.maxParticipants ?? 8);
           setHostPlaying(!!saved.hostPlaying);
+          setCoHostIds(saved.coHostIds || []);
           setEngine(saved.engine || null);
           setPlayerMap(saved.playerMap || {});
           setCurrentRound(saved.currentRound || 0);
@@ -1190,12 +1198,13 @@ function AmericanoPadel() {
       lastAppliedRef.current = updatedAt;
       const snapshot = {
         id,
-        ownerId: currentUser.accountId,
-        ownerUsername: currentUser.username,
+        ownerId: ownerId || currentUser.accountId,
+        ownerUsername: ownerUsername || currentUser.username,
         name: eventName,
         status,
         visibility,
         hostPlaying,
+        coHostIds,
         maxParticipants,
         pendingRequests,
         players,
@@ -1219,29 +1228,43 @@ function AmericanoPadel() {
       };
       saveSessionData(id, snapshot);
       syncPublicEventEntry(snapshot);
-      setLobby((prev) => {
-        const existing = prev.find((e) => e.id === id);
-        const entry = {
-          id,
-          name: snapshot.name || "Sesi Padel",
-          updatedAt,
-          createdAt: existing?.createdAt || updatedAt,
-          playerCount: (snapshot.players || []).length,
-          courts: snapshot.courts,
-          roundsTotal: snapshot.engine ? snapshot.engine.roundsData.length : 0,
-          currentRound: snapshot.currentRound || 0,
-          ended: !!snapshot.ended,
-          status: snapshot.status,
-          role: "owner",
-        };
-        const next = existing
-          ? prev.map((e) => (e.id === id ? entry : e))
-          : [entry, ...prev];
-        saveLobbyIndex(currentUser.accountId, next);
-        return next;
-      });
+      const theOwnerId = snapshot.ownerId;
+      const entry = {
+        id,
+        name: snapshot.name || "Sesi Padel",
+        updatedAt,
+        playerCount: (snapshot.players || []).length,
+        courts: snapshot.courts,
+        roundsTotal: snapshot.engine ? snapshot.engine.roundsData.length : 0,
+        currentRound: snapshot.currentRound || 0,
+        ended: !!snapshot.ended,
+        status: snapshot.status,
+        role: "owner",
+      };
+      if (currentUser.accountId === theOwnerId) {
+        // I'm the true owner — update my own visible lobby state right away.
+        setLobby((prev) => {
+          const existing = prev.find((e) => e.id === id);
+          const merged = { ...entry, createdAt: existing?.createdAt || updatedAt };
+          const next = existing ? prev.map((e) => (e.id === id ? merged : e)) : [merged, ...prev];
+          saveLobbyIndex(theOwnerId, next);
+          return next;
+        });
+      } else {
+        // I'm a co-host editing someone else's event — keep the actual
+        // owner's lobby entry fresh too, without touching my own lobby list
+        // (my own "participant" entry there is maintained separately).
+        (async () => {
+          const ownerList = await loadLobbyIndex(theOwnerId);
+          const existing = ownerList.find((e) => e.id === id);
+          const merged = { ...entry, createdAt: existing?.createdAt || updatedAt };
+          const next = existing ? ownerList.map((e) => (e.id === id ? merged : e)) : [merged, ...ownerList];
+          await saveLobbyIndex(theOwnerId, next);
+        })();
+      }
+      return;
     },
-    [activeId, currentUser, eventName, status, visibility, hostPlaying, maxParticipants, pendingRequests, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
+    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, maxParticipants, pendingRequests, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
   );
 
   const addPlayerFromInput = () => {
@@ -1292,6 +1315,9 @@ function AmericanoPadel() {
     setSessionRole("owner");
     setPendingRequests([]);
     setHostPlaying(false);
+    setCoHostIds([]);
+    setOwnerId(currentUser?.accountId || null);
+    setOwnerUsername(currentUser?.username || "");
     setScreen("waiting");
     persist(
       {
@@ -1299,9 +1325,11 @@ function AmericanoPadel() {
         status: "waiting",
         visibility,
         hostPlaying: false,
+        coHostIds: [],
         maxParticipants,
         pendingRequests: [],
         players: [],
+        ownerId: currentUser?.accountId || null,
         ownerUsername: currentUser?.username || "",
         engine: null,
         playerMap: {},
@@ -1380,6 +1408,18 @@ function AmericanoPadel() {
     persist({ pendingRequests: newPending });
   };
 
+  // Owner-only: grant/revoke co-host (same edit access as host) to a
+  // participant. Only participants who joined via a registered account
+  // (i.e. have an accountId) can be made co-host.
+  const handleToggleCoHost = (accountId) => {
+    if (!accountId) return;
+    const next = coHostIds.includes(accountId)
+      ? coHostIds.filter((id) => id !== accountId)
+      : [...coHostIds, accountId];
+    setCoHostIds(next);
+    persist({ coHostIds: next });
+  };
+
   const resetSetupForm = () => {
     setPlayers([]);
     setNameInput("");
@@ -1398,6 +1438,9 @@ function AmericanoPadel() {
     setPendingRequests([]);
     setVisibility("private");
     setHostPlaying(false);
+    setCoHostIds([]);
+    setOwnerId(null);
+    setOwnerUsername("");
     setEngine(null);
     setPlayerMap({});
     setCurrentRound(0);
@@ -1433,6 +1476,9 @@ function AmericanoPadel() {
     setPendingRequests(data.pendingRequests || []);
     setVisibility(data.visibility || "private");
     setHostPlaying(!!data.hostPlaying);
+    setCoHostIds(data.coHostIds || []);
+    setOwnerId(data.ownerId || null);
+    setOwnerUsername(data.ownerUsername || "");
     setEnded(!!data.ended);
     setEngine(data.engine || null);
     setPlayerMap(data.playerMap || {});
@@ -1670,6 +1716,9 @@ function AmericanoPadel() {
     return <AuthScreen onAuthenticated={handleAuthenticated} />;
   }
 
+  const isCoHost = coHostIds.includes(currentUser.accountId);
+  const canManage = sessionRole === "owner" || isCoHost;
+
   return (
     <div
       className="min-h-screen bg-slate-950 text-slate-100"
@@ -1744,6 +1793,7 @@ function AmericanoPadel() {
           eventName={eventName}
           activeId={activeId}
           isOwner={sessionRole === "owner"}
+          canManage={canManage}
           myAccountId={currentUser?.accountId}
           players={players}
           nameInput={nameInput}
@@ -1761,6 +1811,8 @@ function AmericanoPadel() {
           onReject={handleRejectRequest}
           hostPlaying={hostPlaying}
           onToggleHostPlaying={handleToggleHostPlaying}
+          coHostIds={coHostIds}
+          onToggleCoHost={handleToggleCoHost}
           onFinalize={handleFinalizeAndGenerate}
           onBackToLobby={handleBackToLobby}
           onDelete={() => handleDeleteSession(activeId)}
@@ -1771,6 +1823,7 @@ function AmericanoPadel() {
         <SessionScreen
           eventName={eventName}
           isOwner={sessionRole === "owner"}
+          canManage={canManage}
           engine={engine}
           playerMap={playerMap}
           currentRound={currentRound}
@@ -2439,12 +2492,13 @@ function PreviewStat({ label, value }) {
 
 function WaitingRoomScreen(props) {
   const {
-    eventName, activeId, isOwner, myAccountId,
+    eventName, activeId, isOwner, canManage, myAccountId,
     players, nameInput, setNameInput, bulkInput, setBulkInput,
     addPlayerFromInput, addBulk, removePlayer,
     maxParticipants, courts, computedRounds,
     pendingRequests, onApprove, onReject,
     hostPlaying, onToggleHostPlaying,
+    coHostIds, onToggleCoHost,
     onFinalize, onBackToLobby, onDelete,
   } = props;
 
@@ -2452,8 +2506,8 @@ function WaitingRoomScreen(props) {
   const [avatarCache, setAvatarCache] = useState({}); // accountId -> avatarUrl | null
   const usableCourtsPreview = Math.min(courts, Math.floor(players.length / 4));
   const canFinalize = players.length >= 4 && usableCourtsPreview >= 1;
-  const iAmApproved = !isOwner && players.some((p) => p.accountId === myAccountId);
-  const iAmPending = !isOwner && !iAmApproved && pendingRequests.some((r) => r.accountId === myAccountId);
+  const iAmApproved = !canManage && players.some((p) => p.accountId === myAccountId);
+  const iAmPending = !canManage && !iAmApproved && pendingRequests.some((r) => r.accountId === myAccountId);
 
   useEffect(() => {
     const ids = new Set(
@@ -2498,10 +2552,17 @@ function WaitingRoomScreen(props) {
           >
             <ArrowLeft size={13} /> Lobby
           </button>
-          {isOwner ? (
-            <button onClick={onDelete} className="text-xs text-red-400/80 flex items-center gap-1">
-              <Trash2 size={12} /> hapus acara
-            </button>
+          {canManage ? (
+            <div className="flex items-center gap-3">
+              {!isOwner && (
+                <Chip tone="cyan">co-host</Chip>
+              )}
+              {isOwner && (
+                <button onClick={onDelete} className="text-xs text-red-400/80 flex items-center gap-1">
+                  <Trash2 size={12} /> hapus acara
+                </button>
+              )}
+            </div>
           ) : (
             <Chip tone="cyan">
               <Eye size={11} /> view only
@@ -2518,7 +2579,7 @@ function WaitingRoomScreen(props) {
         </p>
       </div>
 
-      {isOwner && (
+      {canManage && (
         <Section icon={Link2} title="Undang Peserta">
           <p className="text-xs text-slate-500 mb-3">
             Bagikan link ini ke calon peserta yang sudah punya akun. Begitu mereka buka & minta
@@ -2530,7 +2591,7 @@ function WaitingRoomScreen(props) {
         </Section>
       )}
 
-      {isOwner && pendingRequests.length > 0 && (
+      {canManage && pendingRequests.length > 0 && (
         <Section icon={Users} title="Permintaan Bergabung" subtitle={`${pendingRequests.length} baru`}>
           <div className="space-y-2">
             {pendingRequests.map((r) => (
@@ -2564,26 +2625,28 @@ function WaitingRoomScreen(props) {
 
       <Section icon={Users} title="Peserta" subtitle={`${players.length} bergabung`}>
         {isOwner && (
-          <>
-            <button
-              onClick={onToggleHostPlaying}
-              className="w-full flex items-center justify-between gap-3 rounded-xl border border-slate-700 bg-slate-900/60 px-4 py-3 mb-4"
+          <button
+            onClick={onToggleHostPlaying}
+            className="w-full flex items-center justify-between gap-3 rounded-xl border border-slate-700 bg-slate-900/60 px-4 py-3 mb-4"
+          >
+            <div className="text-left">
+              <div className="text-sm font-semibold text-slate-100">Saya (host) ikut bermain</div>
+              <div className="text-[11px] text-slate-500 mt-0.5">
+                Kalau aktif, namamu otomatis masuk ke daftar peserta
+              </div>
+            </div>
+            <div
+              className={`w-11 h-6 rounded-full shrink-0 flex items-center px-0.5 transition-colors ${
+                hostPlaying ? "bg-lime-300 justify-end" : "bg-slate-700 justify-start"
+              }`}
             >
-              <div className="text-left">
-                <div className="text-sm font-semibold text-slate-100">Saya (host) ikut bermain</div>
-                <div className="text-[11px] text-slate-500 mt-0.5">
-                  Kalau aktif, namamu otomatis masuk ke daftar peserta
-                </div>
-              </div>
-              <div
-                className={`w-11 h-6 rounded-full shrink-0 flex items-center px-0.5 transition-colors ${
-                  hostPlaying ? "bg-lime-300 justify-end" : "bg-slate-700 justify-start"
-                }`}
-              >
-                <div className="w-5 h-5 rounded-full bg-slate-950" />
-              </div>
-            </button>
+              <div className="w-5 h-5 rounded-full bg-slate-950" />
+            </div>
+          </button>
+        )}
 
+        {canManage && (
+          <>
             <div className="flex gap-2 mb-3">
               <input
                 value={nameInput}
@@ -2623,30 +2686,49 @@ function WaitingRoomScreen(props) {
         )}
 
         {players.length > 0 ? (
-          <div className="grid grid-cols-2 gap-3">
-            {players.map((p) => (
-              <div
-                key={p.id}
-                className="relative flex flex-col items-center gap-2 bg-slate-900 border border-slate-700 rounded-2xl px-3 pt-4 pb-3"
-              >
-                {isOwner && (
-                  <button
-                    onClick={() => removePlayer(p.id)}
-                    className="absolute top-2 right-2 w-6 h-6 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 hover:text-red-400 z-10"
-                  >
-                    <X size={13} />
-                  </button>
-                )}
-                <Avatar
-                  name={p.name}
-                  avatarUrl={p.accountId ? avatarCache[p.accountId] : null}
-                  size={104}
-                />
-                <span className="text-sm font-semibold text-slate-100 text-center leading-snug break-words">
-                  {p.name}
-                </span>
-              </div>
-            ))}
+          <div className="grid grid-cols-4 gap-2">
+            {players.map((p) => {
+              const isThisCoHost = p.accountId && coHostIds.includes(p.accountId);
+              const canToggleCoHost = isOwner && p.accountId && p.accountId !== myAccountId;
+              return (
+                <div
+                  key={p.id}
+                  className={`relative flex flex-col items-center gap-1.5 bg-slate-900 border rounded-2xl px-1.5 pt-3 pb-2 ${
+                    isThisCoHost ? "border-cyan-400/60" : "border-slate-700"
+                  }`}
+                >
+                  {canManage && (
+                    <button
+                      onClick={() => removePlayer(p.id)}
+                      className="absolute top-1 right-1 w-5 h-5 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 hover:text-red-400 z-10"
+                    >
+                      <X size={11} />
+                    </button>
+                  )}
+                  {canToggleCoHost && (
+                    <button
+                      onClick={() => onToggleCoHost(p.accountId)}
+                      className={`absolute top-1 left-1 w-5 h-5 rounded-full flex items-center justify-center z-10 ${
+                        isThisCoHost
+                          ? "bg-cyan-400 text-slate-950"
+                          : "bg-slate-800 border border-slate-700 text-slate-400"
+                      }`}
+                    >
+                      <Shield size={11} />
+                    </button>
+                  )}
+                  <Avatar
+                    name={p.name}
+                    avatarUrl={p.accountId ? avatarCache[p.accountId] : null}
+                    size={56}
+                  />
+                  <span className="text-[11px] font-semibold text-slate-100 text-center leading-snug break-words">
+                    {p.name}
+                  </span>
+                  {isThisCoHost && <Chip tone="cyan">co-host</Chip>}
+                </div>
+              );
+            })}
           </div>
         ) : (
           <p className="text-slate-500 text-sm">Belum ada peserta.</p>
@@ -2656,7 +2738,7 @@ function WaitingRoomScreen(props) {
         )}
       </Section>
 
-      {isOwner ? (
+      {canManage ? (
         <div className="px-6">
           <PrimaryButton
             onClick={onFinalize}
@@ -2690,7 +2772,7 @@ function WaitingRoomScreen(props) {
 
 function SessionScreen(props) {
   const {
-    eventName, isOwner, engine, playerMap, currentRound, goRound, goToRound,
+    eventName, isOwner, canManage, engine, playerMap, currentRound, goRound, goToRound,
     scores, setScore, setPointsPair, resetPointsScore, scoreFormat, pointTarget, tennisTarget,
     incrementTennisPoint, resetTennisMatch,
     ended, onEndEvent,
@@ -2733,16 +2815,19 @@ function SessionScreen(props) {
           >
             <ArrowLeft size={13} /> Lobby
           </button>
-          {isOwner ? (
+          {canManage ? (
             <div className="flex items-center gap-3">
+              {!isOwner && <Chip tone="cyan">co-host</Chip>}
               {!ended && (
                 <button onClick={onEndEvent} className="text-xs text-cyan-300 flex items-center gap-1">
                   <Trophy size={12} /> selesaikan
                 </button>
               )}
-              <button onClick={onDelete} className="text-xs text-red-400/80 flex items-center gap-1">
-                <Trash2 size={12} /> hapus acara
-              </button>
+              {isOwner && (
+                <button onClick={onDelete} className="text-xs text-red-400/80 flex items-center gap-1">
+                  <Trash2 size={12} /> hapus acara
+                </button>
+              )}
             </div>
           ) : (
             <Chip tone="cyan">
@@ -2805,7 +2890,7 @@ function SessionScreen(props) {
             scoreFormat === "tennis" ? s.gamesA || 0 : s.a !== undefined && s.a !== "" ? s.a : "–";
           const scoreB =
             scoreFormat === "tennis" ? s.gamesB || 0 : s.b !== undefined && s.b !== "" ? s.b : "–";
-          const openModal = isOwner && scoreFormat === "points" ? () => setScoreModal(cIdx) : undefined;
+          const openModal = canManage && scoreFormat === "points" ? () => setScoreModal(cIdx) : undefined;
           return (
             <div key={cIdx} className="rounded-2xl border border-slate-800 overflow-hidden bg-slate-900/40">
               <div className="px-4 py-2 bg-slate-900 border-b border-slate-800">
@@ -2839,7 +2924,7 @@ function SessionScreen(props) {
                 <TennisScoreTracker
                   s={s}
                   target={tennisTarget}
-                  readOnly={!isOwner}
+                  readOnly={!canManage}
                   onPoint={(side) => incrementTennisPoint(cIdx, side)}
                   onReset={() => resetTennisMatch(cIdx)}
                 />
@@ -2892,7 +2977,7 @@ function SessionScreen(props) {
         </>
       )}
 
-      {isOwner && (
+      {canManage && (
         <div className="px-6 pt-3 space-y-2">
           <GhostButton onClick={onShare} icon={Share2} className="w-full">
             Bagikan jadwal ke WhatsApp
