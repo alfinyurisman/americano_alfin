@@ -281,6 +281,101 @@ function processImageToAvatar(file, size = 160) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// FRIENDS (add friend, confirm request, friends list)
+// ---------------------------------------------------------------------------
+
+// Sends a friend request to another account. Requests need the recipient's
+// confirmation before becoming mutual friends (stored on the recipient's own
+// account record as `incomingFriendRequests`).
+async function sendFriendRequest(toAccountId, fromAccountId, fromUsername) {
+  if (!toAccountId || toAccountId === fromAccountId) return false;
+  const toAcc = await getUserAccount(toAccountId);
+  if (!toAcc) return false;
+  const friends = toAcc.friends || [];
+  const incoming = toAcc.incomingFriendRequests || [];
+  if (friends.includes(fromAccountId) || incoming.some((r) => r.accountId === fromAccountId)) {
+    return false;
+  }
+  const updated = {
+    ...toAcc,
+    incomingFriendRequests: [...incoming, { accountId: fromAccountId, username: fromUsername }],
+  };
+  await window.storage.set(userKey(toAccountId), JSON.stringify(updated), true);
+  return true;
+}
+
+// Accept or decline an incoming friend request. On accept, both accounts get
+// each other added to their `friends` list (mutual).
+async function respondFriendRequest(myAccountId, fromAccountId, accept) {
+  const me = await getUserAccount(myAccountId);
+  if (!me) return;
+  const incoming = (me.incomingFriendRequests || []).filter((r) => r.accountId !== fromAccountId);
+  let myFriends = me.friends || [];
+  if (accept) myFriends = [...new Set([...myFriends, fromAccountId])];
+  await window.storage.set(
+    userKey(myAccountId),
+    JSON.stringify({ ...me, incomingFriendRequests: incoming, friends: myFriends }),
+    true
+  );
+  if (accept) {
+    const other = await getUserAccount(fromAccountId);
+    if (other) {
+      const otherFriends = [...new Set([...(other.friends || []), myAccountId])];
+      await window.storage.set(
+        userKey(fromAccountId),
+        JSON.stringify({ ...other, friends: otherFriends }),
+        true
+      );
+    }
+  }
+}
+
+// Resolves an account's friend id list into displayable {accountId, username,
+// avatarUrl} entries, plus its pending incoming requests.
+async function loadFriendsData(accountId) {
+  const acc = await getUserAccount(accountId);
+  if (!acc) return { friends: [], incoming: [] };
+  const friendIds = acc.friends || [];
+  const resolved = await Promise.all(
+    friendIds.map(async (id) => {
+      const f = await getUserAccount(id);
+      return f ? { accountId: id, username: f.username, avatarUrl: f.avatarUrl || null } : null;
+    })
+  );
+  return {
+    friends: resolved.filter(Boolean),
+    incoming: acc.incomingFriendRequests || [],
+  };
+}
+
+// For the "browse people" screen — lists every registered account (except
+// yourself) with your relationship status to each (already friends / request
+// already sent by you).
+async function listAllAccounts(myAccountId) {
+  try {
+    const res = await window.storage.list("user:", true);
+    if (!res) return [];
+    const accounts = await Promise.all(
+      res.keys.map(async (k) => {
+        const usernameLower = k.replace(/^user:/, "");
+        const acc = await getUserAccount(usernameLower);
+        if (!acc || acc.accountId === myAccountId) return null;
+        return {
+          accountId: acc.accountId,
+          username: acc.username,
+          avatarUrl: acc.avatarUrl || null,
+          isFriend: (acc.friends || []).includes(myAccountId),
+          requestSentByMe: (acc.incomingFriendRequests || []).some((r) => r.accountId === myAccountId),
+        };
+      })
+    );
+    return accounts.filter(Boolean).sort((a, b) => a.username.localeCompare(b.username));
+  } catch (e) {
+    return [];
+  }
+}
+
 // Lets you see how many accounts are registered (see chat for where to check this).
 async function countRegisteredAccounts() {
   try {
@@ -927,6 +1022,8 @@ function buildLeaderboard(engine, playerMap, scores) {
 function AmericanoPadel() {
   const [booted, setBooted] = useState(false);
   const [currentUser, setCurrentUser] = useState(null); // {accountId, username} | null
+  const [friends, setFriends] = useState([]); // [{accountId, username, avatarUrl}]
+  const [friendRequests, setFriendRequests] = useState([]); // [{accountId, username}] incoming
   const [screen, setScreen] = useState("lobby"); // lobby | setup | waiting | session | leaderboard | recap | stats
   const [lobby, setLobby] = useState([]); // [{id, name, updatedAt, playerCount, courts, roundsTotal, currentRound, role, status}]
   const [activeId, setActiveId] = useState(null);
@@ -942,6 +1039,7 @@ function AmericanoPadel() {
   const [ownerUsername, setOwnerUsername] = useState("");
   const [publicEvents, setPublicEvents] = useState([]);
   const [pendingJoinId] = useState(() => new URLSearchParams(window.location.search).get("join"));
+  const [hostInvitations, setHostInvitations] = useState([]); // [{id, accountId, username}] sent by host, awaiting the friend's accept
 
   // Setup state
   const [players, setPlayers] = useState([]); // [{id, name, accountId?}]
@@ -1024,6 +1122,7 @@ function AmericanoPadel() {
           clearJoinParam();
         } else {
           await refreshLobbyFor(me.accountId);
+          await refreshFriends(me.accountId);
         }
       }
       setBooted(true);
@@ -1039,6 +1138,7 @@ function AmericanoPadel() {
       clearJoinParam();
     } else {
       await refreshLobbyFor(me.accountId);
+      await refreshFriends(me.accountId);
       setScreen("lobby");
     }
   };
@@ -1051,6 +1151,128 @@ function AmericanoPadel() {
       setCurrentUser((u) => (u ? { ...u, avatarUrl: dataUrl } : u));
     } catch (e) {
       alert("Gagal memproses foto. Coba gambar lain.");
+    }
+  };
+
+  const refreshFriends = async (accountId) => {
+    const id = accountId || currentUser?.accountId;
+    if (!id) return;
+    const { friends: f, incoming } = await loadFriendsData(id);
+    setFriends(f);
+    setFriendRequests(incoming);
+  };
+
+  const handleSendFriendRequest = async (toAccountId) => {
+    if (!currentUser) return;
+    const ok = await sendFriendRequest(toAccountId, currentUser.accountId, currentUser.username);
+    if (!ok) {
+      alert("Sudah berteman atau permintaan sudah terkirim sebelumnya.");
+    }
+    return ok;
+  };
+
+  const handleRespondFriendRequest = async (fromAccountId, accept) => {
+    if (!currentUser) return;
+    await respondFriendRequest(currentUser.accountId, fromAccountId, accept);
+    await refreshFriends();
+  };
+
+  const handleOpenFriends = async () => {
+    await refreshFriends();
+    setScreen("friends");
+  };
+
+  // Host sends an invitation to a friend — this does NOT add them as a
+  // player yet. It creates a pending invitation on the session, and drops a
+  // "diundang" entry into the friend's OWN lobby so they see it and can
+  // Accept/Decline themselves (see handleRespondInvitation).
+  const handleInviteFriendAsPlayer = async (friend) => {
+    const alreadyPlayer = players.some((p) => p.accountId === friend.accountId);
+    const alreadyInvited = hostInvitations.some((i) => i.accountId === friend.accountId);
+    if (alreadyPlayer || alreadyInvited || !activeId) return;
+
+    const newInvitations = [
+      ...hostInvitations,
+      { id: uid(), accountId: friend.accountId, username: friend.username },
+    ];
+    setHostInvitations(newInvitations);
+    persist({ hostInvitations: newInvitations });
+
+    const theirList = await loadLobbyIndex(friend.accountId);
+    const alreadyListed = theirList.some((e) => e.id === activeId);
+    if (!alreadyListed) {
+      const entry = {
+        id: activeId,
+        name: eventName || "Sesi Padel",
+        updatedAt: Date.now(),
+        createdAt: Date.now(),
+        playerCount: players.length,
+        courts,
+        roundsTotal: engine ? engine.roundsData.length : 0,
+        currentRound: 0,
+        ended: false,
+        role: "invited",
+        status,
+        ownerUsername: ownerUsername || currentUser?.username || "",
+      };
+      await saveLobbyIndex(friend.accountId, [entry, ...theirList]);
+    }
+  };
+
+  // Host cancels an invitation that hasn't been accepted/declined yet.
+  const handleCancelInvitation = async (accountId) => {
+    const newInvitations = hostInvitations.filter((i) => i.accountId !== accountId);
+    setHostInvitations(newInvitations);
+    persist({ hostInvitations: newInvitations });
+    const theirList = await loadLobbyIndex(accountId);
+    await saveLobbyIndex(accountId, theirList.filter((e) => e.id !== activeId));
+  };
+
+  // Called by the INVITED friend from their own Lobby, to accept or decline
+  // a host's invitation to join as a player.
+  const handleRespondInvitation = async (sessionId, accept) => {
+    if (!currentUser) return;
+    const data = await loadSessionData(sessionId);
+    if (!data) {
+      await refreshLobbyFor(currentUser.accountId);
+      return;
+    }
+    const newInvitations = (data.hostInvitations || []).filter(
+      (i) => i.accountId !== currentUser.accountId
+    );
+    if (accept) {
+      const already = (data.players || []).some((p) => p.accountId === currentUser.accountId);
+      const newPlayers = already
+        ? data.players || []
+        : [
+            ...(data.players || []),
+            { id: uid(), name: currentUser.username, accountId: currentUser.accountId },
+          ];
+      await saveSessionData(sessionId, {
+        ...data,
+        players: newPlayers,
+        hostInvitations: newInvitations,
+        updatedAt: Date.now(),
+      });
+    } else {
+      await saveSessionData(sessionId, {
+        ...data,
+        hostInvitations: newInvitations,
+        updatedAt: Date.now(),
+      });
+    }
+
+    const myList = await loadLobbyIndex(currentUser.accountId);
+    if (accept) {
+      const nextList = myList.map((e) =>
+        e.id === sessionId ? { ...e, role: "participant" } : e
+      );
+      await saveLobbyIndex(currentUser.accountId, nextList);
+      setLobby(nextList.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+    } else {
+      const nextList = myList.filter((e) => e.id !== sessionId);
+      await saveLobbyIndex(currentUser.accountId, nextList);
+      setLobby(nextList.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
     }
   };
 
@@ -1140,6 +1362,7 @@ function AmericanoPadel() {
     setOwnerId(current.ownerId || null);
     setOwnerUsername(current.ownerUsername || "");
     setPendingRequests(current.pendingRequests || []);
+    setHostInvitations(current.hostInvitations || []);
     setEnded(!!current.ended);
     setEngine(current.engine || null);
     setPlayerMap(current.playerMap || {});
@@ -1169,6 +1392,7 @@ function AmericanoPadel() {
           lastAppliedRef.current = saved.updatedAt || Date.now();
           setPlayers(saved.players || []);
           setPendingRequests(saved.pendingRequests || []);
+          setHostInvitations(saved.hostInvitations || []);
           setStatus(saved.status || (saved.engine ? "active" : "waiting"));
           setMaxParticipants(saved.maxParticipants ?? 8);
           setHostPlaying(!!saved.hostPlaying);
@@ -1207,6 +1431,7 @@ function AmericanoPadel() {
         coHostIds,
         maxParticipants,
         pendingRequests,
+        hostInvitations,
         players,
         courts,
         mode,
@@ -1264,7 +1489,7 @@ function AmericanoPadel() {
       }
       return;
     },
-    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, maxParticipants, pendingRequests, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
+    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
   );
 
   const addPlayerFromInput = () => {
@@ -1314,6 +1539,7 @@ function AmericanoPadel() {
     setStatus("waiting");
     setSessionRole("owner");
     setPendingRequests([]);
+    setHostInvitations([]);
     setHostPlaying(false);
     setCoHostIds([]);
     setOwnerId(currentUser?.accountId || null);
@@ -1328,6 +1554,7 @@ function AmericanoPadel() {
         coHostIds: [],
         maxParticipants,
         pendingRequests: [],
+        hostInvitations: [],
         players: [],
         ownerId: currentUser?.accountId || null,
         ownerUsername: currentUser?.username || "",
@@ -1436,6 +1663,7 @@ function AmericanoPadel() {
     setTennisTarget(4);
     setMaxParticipants(8);
     setPendingRequests([]);
+    setHostInvitations([]);
     setVisibility("private");
     setHostPlaying(false);
     setCoHostIds([]);
@@ -1474,6 +1702,7 @@ function AmericanoPadel() {
     setTennisTarget(data.tennisTarget ?? 4);
     setMaxParticipants(data.maxParticipants ?? 8);
     setPendingRequests(data.pendingRequests || []);
+    setHostInvitations(data.hostInvitations || []);
     setVisibility(data.visibility || "private");
     setHostPlaying(!!data.hostPlaying);
     setCoHostIds(data.coHostIds || []);
@@ -1748,8 +1977,31 @@ function AmericanoPadel() {
           onDiscover={handleOpenDiscover}
           onRefresh={handleRefreshLobby}
           onChangeAvatar={handleChangeAvatar}
+          onOpenFriends={handleOpenFriends}
+          friendRequestCount={friendRequests.length}
+          onRespondInvitation={handleRespondInvitation}
           currentUser={currentUser}
           onLogout={handleLogout}
+        />
+      )}
+
+      {screen === "friends" && (
+        <FriendsScreen
+          friends={friends}
+          friendRequests={friendRequests}
+          onRespond={handleRespondFriendRequest}
+          onBrowse={async () => {
+            setScreen("browse-friends");
+          }}
+          onBackToLobby={handleBackToLobby}
+        />
+      )}
+
+      {screen === "browse-friends" && (
+        <BrowseFriendsScreen
+          currentUser={currentUser}
+          onSendRequest={handleSendFriendRequest}
+          onBack={() => setScreen("friends")}
         />
       )}
 
@@ -1820,6 +2072,11 @@ function AmericanoPadel() {
           onToggleHostPlaying={handleToggleHostPlaying}
           coHostIds={coHostIds}
           onToggleCoHost={handleToggleCoHost}
+          friends={friends}
+          onInviteFriend={handleInviteFriendAsPlayer}
+          onSendFriendRequest={handleSendFriendRequest}
+          hostInvitations={hostInvitations}
+          onCancelInvitation={handleCancelInvitation}
           onFinalize={handleFinalizeAndGenerate}
           onBackToLobby={handleBackToLobby}
           onDelete={() => handleDeleteSession(activeId)}
@@ -1925,7 +2182,7 @@ function BottomNav({ active, onNav }) {
 // LOBBY SCREEN
 // ---------------------------------------------------------------------------
 
-function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover, onRefresh, onChangeAvatar, currentUser, onLogout }) {
+function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover, onRefresh, onChangeAvatar, onOpenFriends, friendRequestCount, onRespondInvitation, currentUser, onLogout }) {
   const [accountCount, setAccountCount] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
@@ -2031,6 +2288,21 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
         </GhostButton>
       </div>
 
+      <div className="px-6 pt-3">
+        <button
+          onClick={onOpenFriends}
+          className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-semibold bg-slate-900 border border-slate-700 text-slate-200 active:scale-[0.98] transition-transform relative"
+        >
+          <Users size={16} strokeWidth={2.5} />
+          Teman
+          {friendRequestCount > 0 && (
+            <span className="ml-1 inline-flex items-center justify-center w-5 h-5 rounded-full bg-lime-300 text-slate-950 text-[11px] font-bold">
+              {friendRequestCount}
+            </span>
+          )}
+        </button>
+      </div>
+
       <div className="px-6 pt-6">
         <h2 className="font-display text-2xl tracking-wide text-slate-100 mb-3 flex items-center gap-2">
           <CalendarDays size={16} className="text-lime-300" /> Acara
@@ -2048,7 +2320,46 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
           {lobby.map((ev) => {
             const started = ev.roundsTotal > 0;
             const isOwnerEntry = (ev.role || "owner") === "owner";
+            const isInvited = ev.role === "invited";
             const waiting = ev.status === "waiting";
+
+            if (isInvited) {
+              return (
+                <div
+                  key={ev.id}
+                  className="rounded-2xl border border-cyan-400/40 bg-cyan-400/5 overflow-hidden"
+                >
+                  <div className="px-4 py-4">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <Chip tone="cyan">Undangan</Chip>
+                    </div>
+                    <div className="font-semibold text-slate-100 truncate">{ev.name}</div>
+                    <div className="text-[11px] text-slate-300 mt-1">
+                      {ev.ownerUsername && `host: ${ev.ownerUsername} · `}
+                      {ev.playerCount} pemain · {ev.courts} lapangan
+                    </div>
+                    <p className="text-xs text-slate-400 mt-2">
+                      Kamu diundang untuk ikut jadi peserta acara ini.
+                    </p>
+                  </div>
+                  <div className="flex border-t border-slate-800">
+                    <button
+                      onClick={() => onRespondInvitation(ev.id, true)}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-semibold text-slate-950 bg-lime-300"
+                    >
+                      <Check size={13} strokeWidth={3} /> Terima
+                    </button>
+                    <button
+                      onClick={() => onRespondInvitation(ev.id, false)}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-semibold text-red-400 bg-slate-900 border-l border-slate-800"
+                    >
+                      <X size={13} strokeWidth={3} /> Tolak
+                    </button>
+                  </div>
+                </div>
+              );
+            }
+
             return (
               <div
                 key={ev.id}
@@ -2165,6 +2476,173 @@ function PublicEventsScreen({ events, onJoinRequest, onBackToLobby }) {
             </button>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// FRIENDS SCREEN — friend list + incoming requests
+// ---------------------------------------------------------------------------
+
+function FriendsScreen({ friends, friendRequests, onRespond, onBrowse, onBackToLobby }) {
+  return (
+    <div className="pb-10">
+      <div className="px-6 pt-14 pb-6 border-b border-slate-800">
+        <button
+          onClick={onBackToLobby}
+          className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform mb-4"
+        >
+          <ArrowLeft size={16} /> Lobby
+        </button>
+        <div className="flex items-center gap-2 mb-1">
+          <Users size={16} className="text-lime-300" />
+          <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
+            Social
+          </span>
+        </div>
+        <h1 className="font-display text-5xl text-slate-50">TEMAN</h1>
+      </div>
+
+      <div className="px-6 pt-6">
+        <PrimaryButton onClick={onBrowse} icon={Users} className="w-full">
+          Cari Teman
+        </PrimaryButton>
+      </div>
+
+      {friendRequests.length > 0 && (
+        <Section icon={Users} title="Permintaan Pertemanan" subtitle={`${friendRequests.length} baru`}>
+          <div className="space-y-2">
+            {friendRequests.map((r) => (
+              <div
+                key={r.accountId}
+                className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3"
+              >
+                <span className="flex items-center gap-2 min-w-0">
+                  <Avatar name={r.username} size={32} />
+                  <span className="font-semibold text-slate-100 truncate">{r.username}</span>
+                </span>
+                <div className="flex gap-2 shrink-0">
+                  <button
+                    onClick={() => onRespond(r.accountId, true)}
+                    className="w-8 h-8 rounded-lg bg-lime-300 text-slate-950 flex items-center justify-center"
+                  >
+                    <Check size={15} strokeWidth={3} />
+                  </button>
+                  <button
+                    onClick={() => onRespond(r.accountId, false)}
+                    className="w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 text-red-400 flex items-center justify-center"
+                  >
+                    <X size={15} strokeWidth={3} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      <Section icon={Users} title="Daftar Teman" subtitle={`${friends.length} teman`}>
+        {friends.length === 0 ? (
+          <p className="text-slate-500 text-sm">
+            Belum ada teman. Tap "Cari Teman" untuk mulai menambahkan.
+          </p>
+        ) : (
+          <div className="grid grid-cols-4 gap-2">
+            {friends.map((f) => (
+              <div
+                key={f.accountId}
+                className="flex flex-col items-center gap-1.5 bg-slate-900 border border-slate-700 rounded-2xl px-1.5 pt-3 pb-2"
+              >
+                <Avatar name={f.username} avatarUrl={f.avatarUrl} size={56} />
+                <span className="text-[11px] font-semibold text-slate-100 text-center leading-snug break-words">
+                  {f.username}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Section>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// BROWSE FRIENDS SCREEN — search all registered accounts, send requests
+// ---------------------------------------------------------------------------
+
+function BrowseFriendsScreen({ currentUser, onSendRequest, onBack }) {
+  const [accounts, setAccounts] = useState(null); // null = loading
+  const [query, setQuery] = useState("");
+  const [sentTo, setSentTo] = useState({}); // accountId -> true (local optimistic state)
+
+  useEffect(() => {
+    (async () => {
+      const list = await listAllAccounts(currentUser?.accountId);
+      setAccounts(list);
+    })();
+  }, [currentUser]);
+
+  const filtered = (accounts || []).filter((a) =>
+    a.username.toLowerCase().includes(query.trim().toLowerCase())
+  );
+
+  const handleAdd = async (acc) => {
+    const ok = await onSendRequest(acc.accountId);
+    if (ok) setSentTo((s) => ({ ...s, [acc.accountId]: true }));
+  };
+
+  return (
+    <div className="pb-10">
+      <div className="px-6 pt-14 pb-6 border-b border-slate-800">
+        <button
+          onClick={onBack}
+          className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform mb-4"
+        >
+          <ArrowLeft size={16} /> Teman
+        </button>
+        <h1 className="font-display text-5xl text-slate-50">CARI TEMAN</h1>
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Cari username…"
+          className="w-full mt-4 bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+        />
+      </div>
+
+      <div className="px-6 pt-4 space-y-2">
+        {accounts === null && <p className="text-slate-500 text-sm">Memuat…</p>}
+        {accounts !== null && filtered.length === 0 && (
+          <p className="text-slate-500 text-sm">Tidak ada pengguna yang cocok.</p>
+        )}
+        {filtered.map((acc) => {
+          const requested = sentTo[acc.accountId] || acc.requestSentByMe;
+          return (
+            <div
+              key={acc.accountId}
+              className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3"
+            >
+              <Avatar name={acc.username} avatarUrl={acc.avatarUrl} size={40} />
+              <span className="font-semibold text-slate-100 flex-1 min-w-0 truncate">
+                {acc.username}
+              </span>
+              {acc.isFriend ? (
+                <Chip tone="lime">
+                  <Check size={11} /> teman
+                </Chip>
+              ) : requested ? (
+                <Chip tone="slate">terkirim</Chip>
+              ) : (
+                <button
+                  onClick={() => handleAdd(acc)}
+                  className="px-3 py-1.5 rounded-full text-xs font-semibold bg-lime-300 text-slate-950"
+                >
+                  Tambah
+                </button>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -2509,8 +2987,12 @@ function WaitingRoomScreen(props) {
     pendingRequests, onApprove, onReject,
     hostPlaying, onToggleHostPlaying,
     coHostIds, onToggleCoHost,
+    friends, onInviteFriend, onSendFriendRequest,
+    hostInvitations, onCancelInvitation,
     onFinalize, onBackToLobby, onDelete,
   } = props;
+
+  const [sentFriendReq, setSentFriendReq] = useState({}); // accountId -> true (local feedback)
 
   const [showBulk, setShowBulk] = useState(false);
   const [avatarCache, setAvatarCache] = useState({}); // accountId -> avatarUrl | null
@@ -2521,7 +3003,9 @@ function WaitingRoomScreen(props) {
 
   useEffect(() => {
     const ids = new Set(
-      [...players, ...pendingRequests].map((p) => p.accountId).filter((id) => id && !(id in avatarCache))
+      [...players, ...pendingRequests, ...hostInvitations]
+        .map((p) => p.accountId)
+        .filter((id) => id && !(id in avatarCache))
     );
     if (ids.size === 0) return;
     (async () => {
@@ -2534,7 +3018,13 @@ function WaitingRoomScreen(props) {
       setAvatarCache((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [players, pendingRequests]);
+  }, [players, pendingRequests, hostInvitations]);
+
+  const handleAddFriendClick = async (accountId) => {
+    if (!onSendFriendRequest) return;
+    const ok = await onSendFriendRequest(accountId);
+    if (ok) setSentFriendReq((s) => ({ ...s, [accountId]: true }));
+  };
 
   const handleCopyInvite = async () => {
     const url = new URL(window.location.href);
@@ -2598,6 +3088,71 @@ function WaitingRoomScreen(props) {
           <PrimaryButton onClick={handleCopyInvite} icon={Link2} className="w-full">
             Salin Link Undangan
           </PrimaryButton>
+        </Section>
+      )}
+
+      {canManage && friends && friends.length > 0 && (
+        <Section icon={Users} title="Undang dari Teman">
+          <div className="space-y-2">
+            {friends
+              .filter(
+                (f) =>
+                  !players.some((p) => p.accountId === f.accountId) &&
+                  !hostInvitations.some((i) => i.accountId === f.accountId)
+              )
+              .map((f) => (
+                <div
+                  key={f.accountId}
+                  className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-2"
+                >
+                  <Avatar name={f.username} avatarUrl={f.avatarUrl} size={32} />
+                  <span className="font-semibold text-slate-100 flex-1 min-w-0 truncate">
+                    {f.username}
+                  </span>
+                  <button
+                    onClick={() => onInviteFriend(f)}
+                    className="px-3 py-1.5 rounded-full text-xs font-semibold bg-lime-300 text-slate-950 shrink-0"
+                  >
+                    Undang
+                  </button>
+                </div>
+              ))}
+            {friends.every(
+              (f) =>
+                players.some((p) => p.accountId === f.accountId) ||
+                hostInvitations.some((i) => i.accountId === f.accountId)
+            ) && <p className="text-slate-500 text-xs">Semua temanmu sudah diundang/jadi peserta.</p>}
+          </div>
+          <p className="text-[11px] text-slate-500 mt-3">
+            Undangan perlu diterima dulu oleh temanmu sebelum masuk daftar peserta.
+          </p>
+        </Section>
+      )}
+
+      {canManage && hostInvitations.length > 0 && (
+        <Section icon={Users} title="Undangan Menunggu Respon" subtitle={`${hostInvitations.length}`}>
+          <div className="space-y-2">
+            {hostInvitations.map((inv) => (
+              <div
+                key={inv.accountId}
+                className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3"
+              >
+                <span className="flex items-center gap-2 min-w-0">
+                  <Avatar name={inv.username} avatarUrl={avatarCache[inv.accountId]} size={32} />
+                  <span className="font-semibold text-slate-100 truncate">{inv.username}</span>
+                </span>
+                <div className="flex items-center gap-2 shrink-0">
+                  <Chip tone="amber">menunggu</Chip>
+                  <button
+                    onClick={() => onCancelInvitation(inv.accountId)}
+                    className="w-7 h-7 rounded-full bg-slate-800 border border-slate-700 text-slate-400 hover:text-red-400 flex items-center justify-center"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         </Section>
       )}
 
@@ -2700,6 +3255,13 @@ function WaitingRoomScreen(props) {
             {players.map((p) => {
               const isThisCoHost = p.accountId && coHostIds.includes(p.accountId);
               const canToggleCoHost = isOwner && p.accountId && p.accountId !== myAccountId;
+              const isAlreadyFriend = (friends || []).some((f) => f.accountId === p.accountId);
+              const alreadySentReq = sentFriendReq[p.accountId];
+              const canAddFriend =
+                onSendFriendRequest &&
+                p.accountId &&
+                p.accountId !== myAccountId &&
+                !isAlreadyFriend;
               return (
                 <div
                   key={p.id}
@@ -2727,11 +3289,24 @@ function WaitingRoomScreen(props) {
                       <Shield size={11} />
                     </button>
                   )}
-                  <Avatar
-                    name={p.name}
-                    avatarUrl={p.accountId ? avatarCache[p.accountId] : null}
-                    size={56}
-                  />
+                  <div className="relative">
+                    <Avatar
+                      name={p.name}
+                      avatarUrl={p.accountId ? avatarCache[p.accountId] : null}
+                      size={56}
+                    />
+                    {canAddFriend && (
+                      <button
+                        onClick={() => handleAddFriendClick(p.accountId)}
+                        disabled={alreadySentReq}
+                        className={`absolute -bottom-1 -right-1 w-5 h-5 rounded-full flex items-center justify-center border-2 border-slate-900 z-10 ${
+                          alreadySentReq ? "bg-slate-700 text-slate-400" : "bg-lime-300 text-slate-950"
+                        }`}
+                      >
+                        {alreadySentReq ? <Check size={10} /> : <Plus size={10} strokeWidth={3} />}
+                      </button>
+                    )}
+                  </div>
                   <span className="text-[11px] font-semibold text-slate-100 text-center leading-snug break-words">
                     {p.name}
                   </span>
