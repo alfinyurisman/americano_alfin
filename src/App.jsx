@@ -416,28 +416,30 @@ function AuthScreen({ onAuthenticated }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [secAnswers, setSecAnswers] = useState({ city: "", sport: "", country: "" });
+  const [secQuestionKey, setSecQuestionKey] = useState(SECURITY_QUESTIONS[0].key);
+  const [secAnswer, setSecAnswer] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   // Forgot-password sub-flow
   const [forgotStep, setForgotStep] = useState("username"); // username | questions | reset
   const [forgotAccount, setForgotAccount] = useState(null);
-  const [forgotAnswers, setForgotAnswers] = useState({ city: "", sport: "", country: "" });
+  const [forgotAnswer, setForgotAnswer] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
 
   const resetFields = () => {
     setPassword("");
     setConfirmPassword("");
-    setSecAnswers({ city: "", sport: "", country: "" });
+    setSecQuestionKey(SECURITY_QUESTIONS[0].key);
+    setSecAnswer("");
     setError("");
   };
 
   const resetForgotFlow = () => {
     setForgotStep("username");
     setForgotAccount(null);
-    setForgotAnswers({ city: "", sport: "", country: "" });
+    setForgotAnswer("");
     setNewPassword("");
     setNewPasswordConfirm("");
     setError("");
@@ -463,8 +465,8 @@ function AuthScreen({ onAuthenticated }) {
         setError("Konfirmasi password tidak sama.");
         return;
       }
-      if (!secAnswers.city.trim() || !secAnswers.sport.trim() || !secAnswers.country.trim()) {
-        setError("Semua pertanyaan keamanan wajib diisi.");
+      if (!secAnswer.trim()) {
+        setError("Jawaban pertanyaan keamanan wajib diisi.");
         return;
       }
     }
@@ -480,12 +482,11 @@ function AuthScreen({ onAuthenticated }) {
           return;
         }
         const passwordHash = await hashPassword(usernameLower, password);
-        const normalizedAnswers = {
-          city: normalizeAnswer(secAnswers.city),
-          sport: normalizeAnswer(secAnswers.sport),
-          country: normalizeAnswer(secAnswers.country),
+        const securityAnswer = {
+          questionKey: secQuestionKey,
+          answer: normalizeAnswer(secAnswer),
         };
-        const account = await createUserAccount(name, passwordHash, normalizedAnswers);
+        const account = await createUserAccount(name, passwordHash, securityAnswer);
         rememberLogin(account);
         onAuthenticated(account);
       } else {
@@ -539,10 +540,7 @@ function AuthScreen({ onAuthenticated }) {
   const handleForgotQuestions = () => {
     setError("");
     const a = forgotAccount.securityAnswers;
-    const ok =
-      normalizeAnswer(forgotAnswers.city) === a.city &&
-      normalizeAnswer(forgotAnswers.sport) === a.sport &&
-      normalizeAnswer(forgotAnswers.country) === a.country;
+    const ok = normalizeAnswer(forgotAnswer) === a.answer;
     if (!ok) {
       setError("Jawaban tidak cocok. Coba lagi.");
       return;
@@ -651,17 +649,20 @@ function AuthScreen({ onAuthenticated }) {
 
           {forgotStep === "questions" && (
             <>
-              <p className="text-xs text-slate-500 mb-1">Jawab 3 pertanyaan keamananmu:</p>
-              {SECURITY_QUESTIONS.map((q) => (
-                <div key={q.key} className="relative">
-                  <input
-                    value={forgotAnswers[q.key]}
-                    onChange={(e) => setForgotAnswers((a) => ({ ...a, [q.key]: e.target.value }))}
-                    placeholder={q.label}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
-                  />
-                </div>
-              ))}
+              <p className="text-xs text-slate-500 mb-1">Jawab pertanyaan keamananmu:</p>
+              <p className="text-sm font-semibold text-slate-200 mb-2">
+                {SECURITY_QUESTIONS.find((q) => q.key === forgotAccount?.securityAnswers?.questionKey)
+                  ?.label || "Jawaban keamanan"}
+              </p>
+              <div className="relative">
+                <input
+                  value={forgotAnswer}
+                  onChange={(e) => setForgotAnswer(e.target.value)}
+                  placeholder="Jawabanmu"
+                  onKeyDown={(e) => e.key === "Enter" && handleForgotQuestions()}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+                />
+              </div>
               {error && <p className="text-red-400 text-xs px-1">{error}</p>}
               <PrimaryButton onClick={handleForgotQuestions} className="w-full text-base py-3.5">
                 Verifikasi
@@ -737,19 +738,28 @@ function AuthScreen({ onAuthenticated }) {
               </div>
 
               <p className="text-xs text-slate-500 pt-2">
-                Pertanyaan keamanan (untuk reset password kalau lupa nanti):
+                Pilih pertanyaan keamanan (untuk reset password kalau lupa nanti):
               </p>
-              {SECURITY_QUESTIONS.map((q) => (
-                <div key={q.key} className="relative">
-                  <input
-                    value={secAnswers[q.key]}
-                    onChange={(e) => setSecAnswers((a) => ({ ...a, [q.key]: e.target.value }))}
-                    placeholder={q.label}
-                    onKeyDown={(e) => e.key === "Enter" && !busy && handleSubmit()}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
-                  />
-                </div>
-              ))}
+              <select
+                value={secQuestionKey}
+                onChange={(e) => setSecQuestionKey(e.target.value)}
+                className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3.5 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+              >
+                {SECURITY_QUESTIONS.map((q) => (
+                  <option key={q.key} value={q.key}>
+                    {q.label}
+                  </option>
+                ))}
+              </select>
+              <div className="relative">
+                <input
+                  value={secAnswer}
+                  onChange={(e) => setSecAnswer(e.target.value)}
+                  placeholder="Jawabanmu"
+                  onKeyDown={(e) => e.key === "Enter" && !busy && handleSubmit()}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+                />
+              </div>
             </>
           )}
 
