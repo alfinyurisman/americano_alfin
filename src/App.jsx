@@ -2539,7 +2539,7 @@ function WaitingRoomScreen(props) {
                 className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3"
               >
                 <span className="flex items-center gap-2 min-w-0">
-                  <Avatar name={r.name} avatarUrl={avatarCache[r.accountId]} size={26} />
+                  <Avatar name={r.name} avatarUrl={avatarCache[r.accountId]} size={36} />
                   <span className="font-semibold text-slate-100 truncate">{r.name}</span>
                 </span>
                 <div className="flex gap-2 shrink-0">
@@ -2623,23 +2623,23 @@ function WaitingRoomScreen(props) {
         )}
 
         {players.length > 0 ? (
-          <div className="flex flex-wrap gap-2">
+          <div className="grid grid-cols-2 gap-2">
             {players.map((p) => (
-              <span
+              <div
                 key={p.id}
-                className="inline-flex items-center gap-2 bg-slate-900 border border-slate-700 rounded-full pl-1.5 pr-1.5 py-1.5 text-sm"
+                className="flex items-center gap-2.5 bg-slate-900 border border-slate-700 rounded-2xl pl-2 pr-2.5 py-2"
               >
-                <Avatar name={p.name} avatarUrl={p.accountId ? avatarCache[p.accountId] : null} size={22} />
-                {p.name}
+                <Avatar name={p.name} avatarUrl={p.accountId ? avatarCache[p.accountId] : null} size={44} />
+                <span className="text-sm font-medium text-slate-100 truncate flex-1 min-w-0">{p.name}</span>
                 {isOwner && (
                   <button
                     onClick={() => removePlayer(p.id)}
-                    className="w-5 h-5 rounded-full bg-slate-800 flex items-center justify-center text-slate-400 hover:text-red-400"
+                    className="w-5 h-5 rounded-full bg-slate-800 flex items-center justify-center text-slate-400 hover:text-red-400 shrink-0"
                   >
                     <X size={12} />
                   </button>
                 )}
-              </span>
+              </div>
             ))}
           </div>
         ) : (
