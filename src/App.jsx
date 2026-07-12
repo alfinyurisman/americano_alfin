@@ -2623,22 +2623,28 @@ function WaitingRoomScreen(props) {
         )}
 
         {players.length > 0 ? (
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 gap-3">
             {players.map((p) => (
               <div
                 key={p.id}
-                className="flex items-center gap-2.5 bg-slate-900 border border-slate-700 rounded-2xl pl-2 pr-2.5 py-2"
+                className="relative flex flex-col items-center gap-2 bg-slate-900 border border-slate-700 rounded-2xl px-3 pt-4 pb-3"
               >
-                <Avatar name={p.name} avatarUrl={p.accountId ? avatarCache[p.accountId] : null} size={44} />
-                <span className="text-sm font-medium text-slate-100 truncate flex-1 min-w-0">{p.name}</span>
                 {isOwner && (
                   <button
                     onClick={() => removePlayer(p.id)}
-                    className="w-5 h-5 rounded-full bg-slate-800 flex items-center justify-center text-slate-400 hover:text-red-400 shrink-0"
+                    className="absolute top-2 right-2 w-6 h-6 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 hover:text-red-400 z-10"
                   >
-                    <X size={12} />
+                    <X size={13} />
                   </button>
                 )}
+                <Avatar
+                  name={p.name}
+                  avatarUrl={p.accountId ? avatarCache[p.accountId] : null}
+                  size={104}
+                />
+                <span className="text-sm font-semibold text-slate-100 text-center leading-snug break-words">
+                  {p.name}
+                </span>
               </div>
             ))}
           </div>
