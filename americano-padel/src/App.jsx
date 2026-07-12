@@ -397,8 +397,9 @@ function AuthScreen({ onAuthenticated }) {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center px-6 py-10">
+    <div className="min-h-screen bg-slate-950 text-slate-100">
       <style>{FONT_STYLE}</style>
+      <div className="max-w-md mx-auto flex flex-col justify-center min-h-screen px-6 py-10">
       <div className="mb-8">
         <div className="flex items-center gap-2 mb-2">
           <div className="w-2 h-2 rounded-full bg-lime-300" />
@@ -484,6 +485,7 @@ function AuthScreen({ onAuthenticated }) {
         Cukup username & password — tidak perlu email. Password disimpan dalam bentuk terenkripsi
         (hash), bukan teks biasa.
       </p>
+      </div>
     </div>
   );
 }
@@ -1008,6 +1010,7 @@ function AmericanoPadel() {
         .font-mono2 { font-family: 'Space Mono', monospace; }
       `}</style>
 
+      <div className="max-w-md mx-auto relative">
       {screen === "lobby" && (
         <LobbyScreen
           lobby={lobby}
@@ -1118,6 +1121,7 @@ function AmericanoPadel() {
           onBackToLobby={handleBackToLobby}
         />
       )}
+      </div>
     </div>
   );
 }
@@ -1134,7 +1138,7 @@ function BottomNav({ active, onNav }) {
     { key: "stats", label: "Statistik", icon: BarChart3 },
   ];
   return (
-    <div className="fixed bottom-0 left-0 right-0 bg-slate-950/95 backdrop-blur border-t border-slate-800 flex z-20">
+    <div className="fixed bottom-0 left-0 right-0 bg-slate-950/95 backdrop-blur border-t border-slate-800 flex z-20 max-w-md mx-auto">
       {items.map(({ key, label, icon: Icon }) => (
         <button
           key={key}
@@ -1168,7 +1172,7 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, currentUser, onLogo
   return (
     <div className="pb-10">
       <div className="px-6 pt-10 pb-8 border-b border-slate-800 relative overflow-hidden">
-        <div className="absolute -right-10 -top-10 w-40 h-40 rounded-full bg-lime-400/10 blur-2xl" />
+        <div className="absolute -right-10 -top-10 w-40 h-40 rounded-full bg-lime-400/10 blur-2xl pointer-events-none" />
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-lime-300" />
@@ -1292,7 +1296,7 @@ function SetupScreen(props) {
     <div className="pb-10">
       {/* HERO */}
       <div className="px-6 pt-10 pb-8 border-b border-slate-800 relative overflow-hidden">
-        <div className="absolute -right-10 -top-10 w-40 h-40 rounded-full bg-lime-400/10 blur-2xl" />
+        <div className="absolute -right-10 -top-10 w-40 h-40 rounded-full bg-lime-400/10 blur-2xl pointer-events-none" />
         <button
           onClick={onBackToLobby}
           className="flex items-center gap-1 text-xs font-semibold text-slate-400 mb-4"
@@ -2659,6 +2663,7 @@ function ViewOnlyApp({ sessionId }) {
     <div className="min-h-screen bg-slate-950 text-slate-100" style={{ fontFamily: "'Inter', ui-sans-serif, system-ui" }}>
       <style>{FONT_STYLE}</style>
 
+      <div className="max-w-md mx-auto relative">
       <div className="px-6 pt-8 pb-4 border-b border-slate-800">
         <Chip tone="cyan">
           <Eye size={11} /> View only — pemantau
@@ -2872,8 +2877,9 @@ function ViewOnlyApp({ sessionId }) {
           </div>
         )}
       </div>
+      </div>
 
-      <div className="fixed bottom-0 left-0 right-0 bg-slate-950/95 backdrop-blur border-t border-slate-800 flex z-20">
+      <div className="fixed bottom-0 left-0 right-0 bg-slate-950/95 backdrop-blur border-t border-slate-800 flex z-20 max-w-md mx-auto">
         {[
           { key: "session", label: "Jadwal", icon: Clock },
           { key: "leaderboard", label: "Klasemen", icon: Trophy },
