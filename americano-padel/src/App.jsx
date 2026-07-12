@@ -3,6 +3,7 @@ import {
   Plus, X, Users, Clock, Trophy, Shuffle, ChevronLeft, ChevronRight,
   RotateCcw, Share2, BarChart3, Settings2, Check, Coffee,
   ArrowLeft, Trash2, CalendarDays, ChevronRightCircle, ClipboardList, Link2, Eye, ListOrdered,
+  LogOut, Lock, UserCircle2,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -136,22 +137,26 @@ function generateSchedule(playerIds, courtsInput, numRounds) {
 // STORAGE HELPERS
 // ---------------------------------------------------------------------------
 
-const LOBBY_KEY = "padel-lobby-index";
+const lobbyKey = (accountId) => `padel-lobby-index-${accountId}`;
 const sessionKey = (id) => `padel-session-${id}`;
+const userKey = (usernameLower) => `user:${usernameLower}`;
 
-// SHARED = true → semua orang yang membuka app ini melihat lobby & sesi yang sama
-async function loadLobbyIndex() {
+// SHARED = true → semua orang yang membuka app ini melihat lobby & sesi yang sama.
+// Lobby sekarang di-scope per akun, jadi tiap akun cuma lihat history acaranya sendiri.
+async function loadLobbyIndex(accountId) {
+  if (!accountId) return [];
   try {
-    const res = await window.storage.get(LOBBY_KEY, true);
+    const res = await window.storage.get(lobbyKey(accountId), true);
     return res ? JSON.parse(res.value) : [];
   } catch (e) {
     return [];
   }
 }
 
-async function saveLobbyIndex(list) {
+async function saveLobbyIndex(accountId, list) {
+  if (!accountId) return;
   try {
-    await window.storage.set(LOBBY_KEY, JSON.stringify(list), true);
+    await window.storage.set(lobbyKey(accountId), JSON.stringify(list), true);
   } catch (e) {
     console.error("Gagal menyimpan lobby:", e);
   }
@@ -177,6 +182,80 @@ async function saveSessionData(id, data) {
 async function deleteSessionData(id) {
   try {
     await window.storage.delete(sessionKey(id), true);
+  } catch (e) {
+    /* no-op */
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ACCOUNTS (username + password)
+// ---------------------------------------------------------------------------
+
+const AUTH_SALT = "americano-padel-v1"; // fixed app-level salt (not a secret, just avoids plain rainbow tables)
+const REMEMBER_KEY = "americano-padel-auth";
+
+async function hashPassword(usernameLower, password) {
+  const enc = new TextEncoder().encode(`${AUTH_SALT}:${usernameLower}:${password}`);
+  const digest = await crypto.subtle.digest("SHA-256", enc);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function getUserAccount(usernameLower) {
+  try {
+    const res = await window.storage.get(userKey(usernameLower), true);
+    return res ? JSON.parse(res.value) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function createUserAccount(username, passwordHash) {
+  const usernameLower = username.toLowerCase();
+  const account = {
+    accountId: usernameLower,
+    username,
+    passwordHash,
+    createdAt: Date.now(),
+  };
+  await window.storage.set(userKey(usernameLower), JSON.stringify(account), true);
+  return account;
+}
+
+// Lets you see how many accounts are registered (see chat for where to check this).
+async function countRegisteredAccounts() {
+  try {
+    const res = await window.storage.list("user:", true);
+    return res ? res.keys.length : 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
+function rememberLogin(account) {
+  try {
+    localStorage.setItem(
+      REMEMBER_KEY,
+      JSON.stringify({ accountId: account.accountId, username: account.username })
+    );
+  } catch (e) {
+    /* no-op */
+  }
+}
+
+function loadRememberedLogin() {
+  try {
+    const raw = localStorage.getItem(REMEMBER_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function forgetLogin() {
+  try {
+    localStorage.removeItem(REMEMBER_KEY);
   } catch (e) {
     /* no-op */
   }
@@ -243,8 +322,173 @@ function GhostButton({ children, onClick, disabled, className = "", icon: Icon }
   );
 }
 
-// Normalizes a stored match score (either format) into {a, b} raw numbers
-// used as "points" for the leaderboard, regardless of scoring style chosen.
+// ---------------------------------------------------------------------------
+// AUTH SCREEN (login / daftar — username & password saja)
+// ---------------------------------------------------------------------------
+
+function AuthScreen({ onAuthenticated }) {
+  const [mode, setMode] = useState("login"); // login | register
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const resetFields = () => {
+    setPassword("");
+    setConfirmPassword("");
+    setError("");
+  };
+
+  const handleSubmit = async () => {
+    setError("");
+    const name = username.trim();
+    if (name.length < 3) {
+      setError("Username minimal 3 karakter.");
+      return;
+    }
+    if (!/^[a-zA-Z0-9_.]+$/.test(name)) {
+      setError("Username cuma boleh huruf, angka, titik, dan underscore.");
+      return;
+    }
+    if (password.length < 4) {
+      setError("Password minimal 4 karakter.");
+      return;
+    }
+    if (mode === "register" && password !== confirmPassword) {
+      setError("Konfirmasi password tidak sama.");
+      return;
+    }
+
+    const usernameLower = name.toLowerCase();
+    setBusy(true);
+    try {
+      if (mode === "register") {
+        const existing = await getUserAccount(usernameLower);
+        if (existing) {
+          setError("Username sudah dipakai. Coba nama lain atau masuk (Login).");
+          setBusy(false);
+          return;
+        }
+        const passwordHash = await hashPassword(usernameLower, password);
+        const account = await createUserAccount(name, passwordHash);
+        rememberLogin(account);
+        onAuthenticated(account);
+      } else {
+        const existing = await getUserAccount(usernameLower);
+        if (!existing) {
+          setError("Akun tidak ditemukan. Coba Daftar dulu.");
+          setBusy(false);
+          return;
+        }
+        const passwordHash = await hashPassword(usernameLower, password);
+        if (passwordHash !== existing.passwordHash) {
+          setError("Password salah.");
+          setBusy(false);
+          return;
+        }
+        rememberLogin(existing);
+        onAuthenticated(existing);
+      }
+    } catch (e) {
+      setError("Terjadi kesalahan. Coba lagi.");
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center px-6 py-10">
+      <style>{FONT_STYLE}</style>
+      <div className="mb-8">
+        <div className="flex items-center gap-2 mb-2">
+          <div className="w-2 h-2 rounded-full bg-lime-300" />
+          <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
+            Court Rotation Engine
+          </span>
+        </div>
+        <h1 className="font-display text-6xl leading-[0.85] text-slate-50 tracking-wide">
+          AMERICANO
+          <br />
+          <span className="text-lime-300">SCHEDULER</span>
+        </h1>
+        <p className="text-slate-400 text-sm mt-3">
+          Masuk atau buat akun untuk menyimpan history acara/turnamen kamu.
+        </p>
+      </div>
+
+      <div className="flex gap-2 mb-5">
+        <ModeTab
+          active={mode === "login"}
+          onClick={() => {
+            setMode("login");
+            resetFields();
+          }}
+        >
+          Masuk
+        </ModeTab>
+        <ModeTab
+          active={mode === "register"}
+          onClick={() => {
+            setMode("register");
+            resetFields();
+          }}
+        >
+          Daftar Akun
+        </ModeTab>
+      </div>
+
+      <div className="space-y-3">
+        <div className="relative">
+          <UserCircle2 size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+          <input
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            placeholder="Username"
+            autoCapitalize="none"
+            className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-11 pr-4 py-3.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+          />
+        </div>
+        <div className="relative">
+          <Lock size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+          <input
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            type="password"
+            placeholder="Password"
+            onKeyDown={(e) => e.key === "Enter" && !busy && handleSubmit()}
+            className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-11 pr-4 py-3.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+          />
+        </div>
+        {mode === "register" && (
+          <div className="relative">
+            <Lock size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+            <input
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              type="password"
+              placeholder="Ulangi password"
+              onKeyDown={(e) => e.key === "Enter" && !busy && handleSubmit()}
+              className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-11 pr-4 py-3.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+            />
+          </div>
+        )}
+
+        {error && <p className="text-red-400 text-xs px-1">{error}</p>}
+
+        <PrimaryButton onClick={handleSubmit} disabled={busy} className="w-full text-base py-3.5">
+          {busy ? "Memproses…" : mode === "login" ? "Masuk" : "Buat Akun"}
+        </PrimaryButton>
+      </div>
+
+      <p className="text-[11px] text-slate-500 text-center mt-6">
+        Cukup username & password — tidak perlu email. Password disimpan dalam bentuk terenkripsi
+        (hash), bukan teks biasa.
+      </p>
+    </div>
+  );
+}
+
+
 function matchAB(s) {
   if (!s) return null;
   if (s.format === "tennis") {
@@ -312,6 +556,7 @@ function buildLeaderboard(engine, playerMap, scores) {
 
 function AmericanoPadel() {
   const [booted, setBooted] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null); // {accountId, username} | null
   const [screen, setScreen] = useState("lobby"); // lobby | setup | session | leaderboard | stats
   const [lobby, setLobby] = useState([]); // [{id, name, updatedAt, playerCount, courts, roundsTotal, currentRound}]
   const [activeId, setActiveId] = useState(null);
@@ -339,13 +584,35 @@ function AmericanoPadel() {
   const [currentRound, setCurrentRound] = useState(0);
   const [scores, setScores] = useState({});
 
+  // On mount, auto-login if this device already has a remembered account.
   useEffect(() => {
     (async () => {
-      const list = await loadLobbyIndex();
-      setLobby(list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+      const remembered = loadRememberedLogin();
+      if (remembered) {
+        const list = await loadLobbyIndex(remembered.accountId);
+        setLobby(list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+        setCurrentUser(remembered);
+      }
       setBooted(true);
     })();
   }, []);
+
+  const handleAuthenticated = async (account) => {
+    setCurrentUser({ accountId: account.accountId, username: account.username });
+    const list = await loadLobbyIndex(account.accountId);
+    setLobby(list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+    setScreen("lobby");
+  };
+
+  const handleLogout = () => {
+    if (!window.confirm("Keluar dari akun ini?")) return;
+    forgetLogin();
+    setCurrentUser(null);
+    setLobby([]);
+    resetSetupForm();
+    setActiveId(null);
+    setScreen("lobby");
+  };
 
   const lastAppliedRef = useRef(0);
 
@@ -353,9 +620,10 @@ function AmericanoPadel() {
   // (different phones) stays in sync: lobby list while browsing, or the
   // active session's round/scores while inside one.
   useEffect(() => {
+    if (!currentUser) return;
     const interval = setInterval(async () => {
       if (screen === "lobby") {
-        const list = await loadLobbyIndex();
+        const list = await loadLobbyIndex(currentUser.accountId);
         setLobby(list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
       } else if (activeId) {
         const saved = await loadSessionData(activeId);
@@ -373,16 +641,17 @@ function AmericanoPadel() {
       }
     }, 4000);
     return () => clearInterval(interval);
-  }, [screen, activeId]);
+  }, [screen, activeId, currentUser]);
 
   const persist = useCallback(
     (partial, idOverride) => {
       const id = idOverride || activeId;
-      if (!id) return;
+      if (!id || !currentUser) return;
       const updatedAt = Date.now();
       lastAppliedRef.current = updatedAt;
       const snapshot = {
         id,
+        ownerId: currentUser.accountId,
         name: eventName,
         players,
         courts,
@@ -420,11 +689,11 @@ function AmericanoPadel() {
         const next = existing
           ? prev.map((e) => (e.id === id ? entry : e))
           : [entry, ...prev];
-        saveLobbyIndex(next);
+        saveLobbyIndex(currentUser.accountId, next);
         return next;
       });
     },
-    [activeId, eventName, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
+    [activeId, currentUser, eventName, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
   );
 
   const addPlayerFromInput = () => {
@@ -535,7 +804,8 @@ function AmericanoPadel() {
 
   const handleBackToLobby = async () => {
     setScreen("lobby");
-    const list = await loadLobbyIndex();
+    if (!currentUser) return;
+    const list = await loadLobbyIndex(currentUser.accountId);
     setLobby(list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
   };
 
@@ -544,7 +814,7 @@ function AmericanoPadel() {
     await deleteSessionData(id);
     setLobby((prev) => {
       const next = prev.filter((e) => e.id !== id);
-      saveLobbyIndex(next);
+      if (currentUser) saveLobbyIndex(currentUser.accountId, next);
       return next;
     });
     if (activeId === id) {
@@ -723,6 +993,10 @@ function AmericanoPadel() {
     );
   }
 
+  if (!currentUser) {
+    return <AuthScreen onAuthenticated={handleAuthenticated} />;
+  }
+
   return (
     <div
       className="min-h-screen bg-slate-950 text-slate-100"
@@ -740,6 +1014,8 @@ function AmericanoPadel() {
           onCreateNew={handleCreateNew}
           onOpen={handleOpenSession}
           onDelete={handleDeleteSession}
+          currentUser={currentUser}
+          onLogout={handleLogout}
         />
       )}
 
@@ -879,26 +1155,48 @@ function BottomNav({ active, onNav }) {
 // LOBBY SCREEN
 // ---------------------------------------------------------------------------
 
-function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete }) {
+function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, currentUser, onLogout }) {
+  const [accountCount, setAccountCount] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      const n = await countRegisteredAccounts();
+      setAccountCount(n);
+    })();
+  }, []);
+
   return (
     <div className="pb-10">
       <div className="px-6 pt-10 pb-8 border-b border-slate-800 relative overflow-hidden">
         <div className="absolute -right-10 -top-10 w-40 h-40 rounded-full bg-lime-400/10 blur-2xl" />
-        <div className="flex items-center gap-2 mb-2">
-          <div className="w-2 h-2 rounded-full bg-lime-300" />
-          <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
-            Court Rotation Engine
-          </span>
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-lime-300" />
+            <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
+              Court Rotation Engine
+            </span>
+          </div>
+          <button onClick={onLogout} className="flex items-center gap-1 text-xs text-slate-400">
+            <LogOut size={12} /> keluar
+          </button>
         </div>
         <h1 className="font-display text-6xl leading-[0.85] text-slate-50 tracking-wide">
           AMERICANO
           <br />
           <span className="text-lime-300">SCHEDULER</span>
         </h1>
-        <p className="text-slate-400 text-sm mt-3 max-w-xs">
-          Buat acara padel baru, atau lanjutkan yang sudah berjalan. Semua orang dengan link ini
-          melihat lobby yang sama.
+        {currentUser && (
+          <div className="flex items-center gap-1.5 mt-3">
+            <UserCircle2 size={14} className="text-slate-400" />
+            <span className="text-sm text-slate-300 font-semibold">{currentUser.username}</span>
+          </div>
+        )}
+        <p className="text-slate-400 text-sm mt-2 max-w-xs">
+          Acara di bawah ini adalah history turnamen yang kamu buat di akun ini.
         </p>
+        {accountCount !== null && (
+          <p className="text-[11px] text-slate-600 mt-2">{accountCount} akun terdaftar di app ini</p>
+        )}
       </div>
 
       <div className="px-6 pt-6">
