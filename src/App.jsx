@@ -1012,7 +1012,11 @@ function buildLeaderboard(engine, playerMap, scores) {
       }
     });
   });
-  return Object.values(totals);
+  return Object.values(totals).map((t) => ({
+    ...t,
+    winPercent: t.matches > 0 ? (t.wins / t.matches) * 100 : 0,
+    ppm: t.matches > 0 ? t.points / t.matches : 0,
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1867,6 +1871,28 @@ function AmericanoPadel() {
     });
   };
 
+  // Lets the host/co-host directly set the final game tally (e.g. 4-2)
+  // without tapping through every point. Resets in-game point progress.
+  const setTennisGamesDirect = (courtIdx, side, value) => {
+    const key = `${currentRound}-${courtIdx}`;
+    setScores((prev) => {
+      const cur = prev[key] || { format: "tennis", gamesA: 0, gamesB: 0, pointsA: 0, pointsB: 0 };
+      const updated = {
+        ...prev,
+        [key]: {
+          ...cur,
+          format: "tennis",
+          gamesA: side === "a" ? value : cur.gamesA || 0,
+          gamesB: side === "b" ? value : cur.gamesB || 0,
+          pointsA: 0,
+          pointsB: 0,
+        },
+      };
+      persist({ scores: updated });
+      return updated;
+    });
+  };
+
   const leaderboard = React.useMemo(
     () => buildLeaderboard(engine, playerMap, scores),
     [engine, playerMap, scores]
@@ -2102,6 +2128,7 @@ function AmericanoPadel() {
           tennisTarget={tennisTarget}
           incrementTennisPoint={incrementTennisPoint}
           resetTennisMatch={resetTennisMatch}
+          setTennisGamesDirect={setTennisGamesDirect}
           ended={ended}
           onEndEvent={handleEndEvent}
           onNav={setScreen}
@@ -3365,7 +3392,7 @@ function SessionScreen(props) {
   const {
     eventName, isOwner, canManage, engine, playerMap, currentRound, goRound, goToRound,
     scores, setScore, setPointsPair, resetPointsScore, scoreFormat, pointTarget, tennisTarget,
-    incrementTennisPoint, resetTennisMatch,
+    incrementTennisPoint, resetTennisMatch, setTennisGamesDirect,
     ended, onEndEvent,
     onNav, onShare, onCopyViewLink, onBackToLobby, onDelete,
   } = props;
@@ -3518,6 +3545,7 @@ function SessionScreen(props) {
                   readOnly={!canManage}
                   onPoint={(side) => incrementTennisPoint(cIdx, side)}
                   onReset={() => resetTennisMatch(cIdx)}
+                  onSetGames={(side, value) => setTennisGamesDirect(cIdx, side, value)}
                 />
               )}
             </div>
@@ -3810,13 +3838,15 @@ function tennisPointLabels(pointsA, pointsB) {
   return { a: labels[Math.min(pointsA, 3)], b: labels[Math.min(pointsB, 3)] };
 }
 
-function TennisScoreTracker({ s, target, onPoint, onReset, readOnly }) {
+function TennisScoreTracker({ s, target, onPoint, onReset, onSetGames, readOnly }) {
+  const [showGameEditor, setShowGameEditor] = useState(false);
   const gamesA = s.gamesA || 0;
   const gamesB = s.gamesB || 0;
   const pointsA = s.pointsA || 0;
   const pointsB = s.pointsB || 0;
   const finished = gamesA >= target || gamesB >= target;
   const labels = tennisPointLabels(pointsA, pointsB);
+  const gameOptions = Array.from({ length: target + 1 }, (_, i) => i);
 
   return (
     <div className="border-t border-slate-800">
@@ -3854,6 +3884,64 @@ function TennisScoreTracker({ s, target, onPoint, onReset, readOnly }) {
         </button>
       </div>
       )}
+      {!readOnly && onSetGames && (
+        <div className="px-4 pb-3">
+          <button
+            onClick={() => setShowGameEditor((v) => !v)}
+            className="text-[11px] font-semibold text-cyan-300"
+          >
+            {showGameEditor ? "Sembunyikan set skor langsung" : "Set skor game langsung →"}
+          </button>
+          {showGameEditor && (
+            <div className="mt-3 space-y-3">
+              <p className="text-[11px] text-slate-500">
+                Langsung tentukan jumlah game akhir tanpa perlu tap poin satu-satu. Progres poin
+                (0/15/30/40) akan direset ke 0-0.
+              </p>
+              <div>
+                <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-1.5">
+                  Game tim kiri: <span className="text-slate-300">{gamesA}</span>
+                </div>
+                <div className="grid grid-cols-6 gap-1.5">
+                  {gameOptions.map((n) => (
+                    <button
+                      key={n}
+                      onClick={() => onSetGames("a", n)}
+                      className={`h-8 rounded-lg text-xs font-bold border ${
+                        gamesA === n
+                          ? "bg-lime-300 text-slate-950 border-lime-300"
+                          : "bg-slate-900 text-slate-300 border-slate-700"
+                      }`}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-1.5">
+                  Game tim kanan: <span className="text-slate-300">{gamesB}</span>
+                </div>
+                <div className="grid grid-cols-6 gap-1.5">
+                  {gameOptions.map((n) => (
+                    <button
+                      key={n}
+                      onClick={() => onSetGames("b", n)}
+                      className={`h-8 rounded-lg text-xs font-bold border ${
+                        gamesB === n
+                          ? "bg-lime-300 text-slate-950 border-lime-300"
+                          : "bg-slate-900 text-slate-300 border-slate-700"
+                      }`}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -3863,16 +3951,18 @@ function TennisScoreTracker({ s, target, onPoint, onReset, readOnly }) {
 // ---------------------------------------------------------------------------
 
 function LeaderboardScreen({ eventName, leaderboard, ended, onNav, onBackToLobby }) {
-  const [sortBy, setSortBy] = useState("wins"); // wins | diff | points
+  const [sortBy, setSortBy] = useState("wins"); // wins | diff | winPercent | ppm
 
   const sorted = React.useMemo(() => {
     const arr = [...leaderboard];
     if (sortBy === "wins") {
-      arr.sort((x, y) => y.wins - x.wins || y.diff - x.diff || y.points - x.points);
+      arr.sort((x, y) => y.wins - x.wins || y.diff - x.diff || y.winPercent - x.winPercent || y.ppm - x.ppm);
     } else if (sortBy === "diff") {
-      arr.sort((x, y) => y.diff - x.diff || y.wins - x.wins || y.points - x.points);
+      arr.sort((x, y) => y.diff - x.diff || y.wins - x.wins || y.winPercent - x.winPercent || y.ppm - x.ppm);
+    } else if (sortBy === "winPercent") {
+      arr.sort((x, y) => y.winPercent - x.winPercent || y.wins - x.wins || y.diff - x.diff);
     } else {
-      arr.sort((x, y) => y.points - x.points || y.wins - x.wins || y.diff - x.diff);
+      arr.sort((x, y) => y.ppm - x.ppm || y.wins - x.wins || y.diff - x.diff);
     }
     return arr;
   }, [leaderboard, sortBy]);
@@ -3880,18 +3970,12 @@ function LeaderboardScreen({ eventName, leaderboard, ended, onNav, onBackToLobby
   // Column that matches the active sort criterion always renders last (rightmost)
   // and gets highlighted, so it's obvious what the table is currently ordered by.
   const baseColumns = [
-    { key: "matches", sortKey: null, label: "M", render: (p) => p.matches },
     { key: "wlt", sortKey: "wins", label: "W-L-T", render: (p) => `${p.wins}-${p.losses}-${p.ties}` },
-    {
-      key: "diff",
-      sortKey: "diff",
-      label: "+/-",
-      render: (p) => (p.diff > 0 ? `+${p.diff}` : `${p.diff}`),
-    },
-    { key: "points", sortKey: "points", label: "Poin", render: (p) => p.points },
+    { key: "diff", sortKey: "diff", label: "+/-", render: (p) => (p.diff > 0 ? `+${p.diff}` : `${p.diff}`) },
+    { key: "winPercent", sortKey: "winPercent", label: "Win%", render: (p) => `${Math.round(p.winPercent)}%` },
+    { key: "ppm", sortKey: "ppm", label: "PPM", render: (p) => p.ppm.toFixed(1) },
   ];
-  const activeColKey =
-    sortBy === "wins" ? "wlt" : sortBy === "diff" ? "diff" : "points";
+  const activeColKey = sortBy === "wins" ? "wlt" : sortBy;
   const columns = [
     ...baseColumns.filter((c) => c.key !== activeColKey),
     ...baseColumns.filter((c) => c.key === activeColKey),
@@ -3915,15 +3999,14 @@ function LeaderboardScreen({ eventName, leaderboard, ended, onNav, onBackToLobby
           {ended && <Chip tone="lime">Selesai</Chip>}
         </div>
         <h1 className="font-display text-5xl text-slate-50">KLASEMEN</h1>
-        <p className="text-slate-500 text-sm mt-2">
-          M = main, W-L-T = menang-kalah-seri, +/- = selisih poin. Tap salah satu untuk urutkan.
-        </p>
+        <p className="text-slate-500 text-sm mt-2">Tap salah satu tombol untuk urutkan.</p>
 
-        <div className="flex gap-2 mt-4">
+        <div className="flex flex-wrap gap-2 mt-4">
           {[
-            { key: "wins", label: "Game Win" },
+            { key: "wins", label: "W-L-T" },
             { key: "diff", label: "Selisih Poin" },
-            { key: "points", label: "Poin" },
+            { key: "winPercent", label: "Win%" },
+            { key: "ppm", label: "PPM" },
           ].map((opt) => (
             <button
               key={opt.key}
@@ -3943,56 +4026,73 @@ function LeaderboardScreen({ eventName, leaderboard, ended, onNav, onBackToLobby
       <div className="px-6 pt-4">
         {sorted.length === 0 && <p className="text-slate-500 text-sm">Belum ada pemain.</p>}
         {sorted.length > 0 && (
-          <div className="overflow-x-auto -mx-6 px-6">
-            <table className="w-full border-collapse min-w-[380px]">
-              <thead>
-                <tr className="text-[10px] text-slate-500 uppercase tracking-wide">
-                  <th className="text-center pb-2 w-7">#</th>
-                  <th className="text-left pb-2">Nama</th>
+          <table className="w-full border-collapse table-fixed">
+            <colgroup>
+              <col style={{ width: "22px" }} />
+              <col />
+              <col style={{ width: "26px" }} />
+              <col style={{ width: "56px" }} />
+              <col style={{ width: "40px" }} />
+              <col style={{ width: "38px" }} />
+              <col style={{ width: "38px" }} />
+            </colgroup>
+            <thead>
+              <tr className="text-[9px] text-slate-500 uppercase tracking-wide">
+                <th className="text-center pb-2">#</th>
+                <th className="text-left pb-2">Nama</th>
+                <th className="text-center pb-2">M</th>
+                {columns.map((c) => (
+                  <th
+                    key={c.key}
+                    className={`text-right pb-2 pl-1 ${c.key === activeColKey ? "text-lime-300" : ""}`}
+                  >
+                    {c.label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((p, i) => (
+                <tr
+                  key={p.id}
+                  className={`border-t border-slate-800 ${i === 0 ? "bg-lime-400/5" : ""}`}
+                >
+                  <td
+                    className={`py-2.5 text-center font-display text-base ${
+                      i === 0 ? "text-lime-300" : i === 1 ? "text-slate-300" : "text-slate-500"
+                    }`}
+                  >
+                    {i + 1}
+                  </td>
+                  <td className="py-2.5 font-semibold text-slate-100 truncate text-[13px]">
+                    {p.name}
+                  </td>
+                  <td className="py-2.5 text-center font-mono2 text-[11px] text-slate-400">
+                    {p.matches}
+                  </td>
                   {columns.map((c) => (
-                    <th
+                    <td
                       key={c.key}
-                      className={`text-right pb-2 pl-3 ${
-                        c.key === activeColKey ? "text-lime-300" : ""
+                      className={`py-2.5 pl-1 text-right font-mono2 text-[11px] ${
+                        c.key === activeColKey ? "text-lime-300 font-bold" : "text-slate-400"
                       }`}
                     >
-                      {c.label}
-                    </th>
+                      {c.render(p)}
+                    </td>
                   ))}
                 </tr>
-              </thead>
-              <tbody>
-                {sorted.map((p, i) => (
-                  <tr
-                    key={p.id}
-                    className={`border-t border-slate-800 ${i === 0 ? "bg-lime-400/5" : ""}`}
-                  >
-                    <td
-                      className={`py-2.5 text-center font-display text-lg ${
-                        i === 0 ? "text-lime-300" : i === 1 ? "text-slate-300" : "text-slate-500"
-                      }`}
-                    >
-                      {i + 1}
-                    </td>
-                    <td className="py-2.5 font-semibold text-slate-100 truncate max-w-[110px]">
-                      {p.name}
-                    </td>
-                    {columns.map((c) => (
-                      <td
-                        key={c.key}
-                        className={`py-2.5 pl-3 text-right font-mono2 ${
-                          c.key === activeColKey
-                            ? "text-lime-300 font-bold text-base"
-                            : "text-slate-400"
-                        }`}
-                      >
-                        {c.render(p)}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+              ))}
+            </tbody>
+          </table>
+        )}
+
+        {sorted.length > 0 && (
+          <div className="mt-4 pt-4 border-t border-slate-800 space-y-1 text-[11px] text-slate-500">
+            <div><span className="text-slate-300 font-semibold">M</span> — jumlah match dimainkan</div>
+            <div><span className="text-slate-300 font-semibold">W-L-T</span> — menang-kalah-seri</div>
+            <div><span className="text-slate-300 font-semibold">+/-</span> — selisih poin (poin dapat − poin lawan)</div>
+            <div><span className="text-slate-300 font-semibold">Win%</span> — persentase match dimenangkan</div>
+            <div><span className="text-slate-300 font-semibold">PPM</span> — rata-rata poin per match</div>
           </div>
         )}
       </div>
@@ -4302,10 +4402,21 @@ function ViewOnlyApp({ sessionId }) {
     () => (data?.engine ? buildLeaderboard(data.engine, data.playerMap, data.scores) : []),
     [data]
   );
-  const sortedLeaderboard = React.useMemo(
-    () => [...leaderboard].sort((x, y) => y.wins - x.wins || y.diff - x.diff || y.points - x.points),
-    [leaderboard]
-  );
+  const [lbSortBy, setLbSortBy] = useState("wins"); // wins | diff | winPercent | ppm
+  const sortedLeaderboard = React.useMemo(() => {
+    const arr = [...leaderboard];
+    if (lbSortBy === "wins") {
+      arr.sort((x, y) => y.wins - x.wins || y.diff - x.diff || y.winPercent - x.winPercent || y.ppm - x.ppm);
+    } else if (lbSortBy === "diff") {
+      arr.sort((x, y) => y.diff - x.diff || y.wins - x.wins || y.winPercent - x.winPercent || y.ppm - x.ppm);
+    } else if (lbSortBy === "winPercent") {
+      arr.sort((x, y) => y.winPercent - x.winPercent || y.wins - x.wins || y.diff - x.diff);
+    } else {
+      arr.sort((x, y) => y.ppm - x.ppm || y.wins - x.wins || y.diff - x.diff);
+    }
+    return arr;
+  }, [leaderboard, lbSortBy]);
+  const lbActiveCol = lbSortBy === "wins" ? "wlt" : lbSortBy;
 
   const recapRows = React.useMemo(() => {
     if (!data?.engine) return [];
@@ -4474,6 +4585,9 @@ function ViewOnlyApp({ sessionId }) {
                         score={scoreB}
                       />
                     </div>
+                    {data.scoreFormat === "tennis" && (
+                      <TennisScoreTracker s={s} target={data.tennisTarget} readOnly />
+                    )}
                   </div>
                 );
               })}
@@ -4517,43 +4631,104 @@ function ViewOnlyApp({ sessionId }) {
         {tab === "leaderboard" && (
           <div className="px-6 pt-6">
             <h2 className="font-display text-3xl text-slate-50 mb-1">KLASEMEN</h2>
-            <p className="text-slate-500 text-xs mb-4">
-              Diurutkan dari game win, lalu selisih poin, lalu total poin.
-            </p>
+            <p className="text-slate-500 text-xs mb-3">Tap salah satu tombol untuk urutkan.</p>
+            <div className="flex flex-wrap gap-2 mb-4">
+              {[
+                { key: "wins", label: "W-L-T" },
+                { key: "diff", label: "Selisih Poin" },
+                { key: "winPercent", label: "Win%" },
+                { key: "ppm", label: "PPM" },
+              ].map((opt) => (
+                <button
+                  key={opt.key}
+                  onClick={() => setLbSortBy(opt.key)}
+                  className={`px-3 py-1.5 rounded-full text-xs font-semibold border ${
+                    lbSortBy === opt.key
+                      ? "bg-lime-300 text-slate-950 border-lime-300"
+                      : "bg-slate-900 text-slate-400 border-slate-700"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
             {sortedLeaderboard.length === 0 ? (
               <p className="text-slate-500 text-sm">Belum ada skor yang diisi.</p>
             ) : (
-              <div className="overflow-x-auto -mx-6 px-6">
-                <table className="w-full border-collapse min-w-[380px]">
-                  <thead>
-                    <tr className="text-[10px] text-slate-500 uppercase tracking-wide">
-                      <th className="text-center pb-2 w-7">#</th>
-                      <th className="text-left pb-2">Nama</th>
-                      <th className="text-right pb-2 pl-3">M</th>
-                      <th className="text-right pb-2 pl-3 text-lime-300">W-L-T</th>
-                      <th className="text-right pb-2 pl-3">+/-</th>
-                      <th className="text-right pb-2 pl-3">Poin</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sortedLeaderboard.map((p, i) => (
+              <table className="w-full border-collapse table-fixed">
+                <colgroup>
+                  <col style={{ width: "22px" }} />
+                  <col />
+                  <col style={{ width: "26px" }} />
+                  <col style={{ width: "56px" }} />
+                  <col style={{ width: "40px" }} />
+                  <col style={{ width: "38px" }} />
+                  <col style={{ width: "38px" }} />
+                </colgroup>
+                <thead>
+                  <tr className="text-[9px] text-slate-500 uppercase tracking-wide">
+                    <th className="text-center pb-2">#</th>
+                    <th className="text-left pb-2">Nama</th>
+                    <th className="text-center pb-2">M</th>
+                    {["wlt", "diff", "winPercent", "ppm"]
+                      .filter((k) => k !== lbActiveCol)
+                      .concat([lbActiveCol])
+                      .map((k) => (
+                        <th
+                          key={k}
+                          className={`text-right pb-2 pl-1 ${k === lbActiveCol ? "text-lime-300" : ""}`}
+                        >
+                          {k === "wlt" ? "W-L-T" : k === "diff" ? "+/-" : k === "winPercent" ? "Win%" : "PPM"}
+                        </th>
+                      ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedLeaderboard.map((p, i) => {
+                    const cellVal = (k) =>
+                      k === "wlt"
+                        ? `${p.wins}-${p.losses}-${p.ties}`
+                        : k === "diff"
+                        ? p.diff > 0
+                          ? `+${p.diff}`
+                          : p.diff
+                        : k === "winPercent"
+                        ? `${Math.round(p.winPercent)}%`
+                        : p.ppm.toFixed(1);
+                    return (
                       <tr key={p.id} className={`border-t border-slate-800 ${i === 0 ? "bg-lime-400/5" : ""}`}>
-                        <td className={`py-2.5 text-center font-display text-lg ${i === 0 ? "text-lime-300" : "text-slate-500"}`}>
+                        <td className={`py-2.5 text-center font-display text-base ${i === 0 ? "text-lime-300" : "text-slate-500"}`}>
                           {i + 1}
                         </td>
-                        <td className="py-2.5 font-semibold text-slate-100 truncate max-w-[110px]">{p.name}</td>
-                        <td className="py-2.5 pl-3 text-right font-mono2 text-slate-400">{p.matches}</td>
-                        <td className="py-2.5 pl-3 text-right font-mono2 text-lime-300 font-bold">
-                          {p.wins}-{p.losses}-{p.ties}
-                        </td>
-                        <td className="py-2.5 pl-3 text-right font-mono2 text-slate-400">
-                          {p.diff > 0 ? `+${p.diff}` : p.diff}
-                        </td>
-                        <td className="py-2.5 pl-3 text-right font-mono2 text-slate-400">{p.points}</td>
+                        <td className="py-2.5 font-semibold text-slate-100 truncate text-[13px]">{p.name}</td>
+                        <td className="py-2.5 text-center font-mono2 text-[11px] text-slate-400">{p.matches}</td>
+                        {["wlt", "diff", "winPercent", "ppm"]
+                          .filter((k) => k !== lbActiveCol)
+                          .concat([lbActiveCol])
+                          .map((k) => (
+                            <td
+                              key={k}
+                              className={`py-2.5 pl-1 text-right font-mono2 text-[11px] ${
+                                k === lbActiveCol ? "text-lime-300 font-bold" : "text-slate-400"
+                              }`}
+                            >
+                              {cellVal(k)}
+                            </td>
+                          ))}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+
+            {sortedLeaderboard.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-slate-800 space-y-1 text-[11px] text-slate-500">
+                <div><span className="text-slate-300 font-semibold">M</span> — jumlah match dimainkan</div>
+                <div><span className="text-slate-300 font-semibold">W-L-T</span> — menang-kalah-seri</div>
+                <div><span className="text-slate-300 font-semibold">+/-</span> — selisih poin (poin dapat − poin lawan)</div>
+                <div><span className="text-slate-300 font-semibold">Win%</span> — persentase match dimenangkan</div>
+                <div><span className="text-slate-300 font-semibold">PPM</span> — rata-rata poin per match</div>
               </div>
             )}
           </div>
