@@ -4028,13 +4028,13 @@ function LeaderboardScreen({ eventName, leaderboard, ended, onNav, onBackToLobby
         {sorted.length > 0 && (
           <table className="w-full border-collapse table-fixed">
             <colgroup>
-              <col style={{ width: "22px" }} />
-              <col />
-              <col style={{ width: "26px" }} />
-              <col style={{ width: "56px" }} />
-              <col style={{ width: "40px" }} />
-              <col style={{ width: "38px" }} />
-              <col style={{ width: "38px" }} />
+              <col style={{ width: "6%" }} />
+              <col style={{ width: "34%" }} />
+              <col style={{ width: "8%" }} />
+              <col style={{ width: "13%" }} />
+              <col style={{ width: "13%" }} />
+              <col style={{ width: "13%" }} />
+              <col style={{ width: "13%" }} />
             </colgroup>
             <thead>
               <tr className="text-[9px] text-slate-500 uppercase tracking-wide">
@@ -4044,7 +4044,7 @@ function LeaderboardScreen({ eventName, leaderboard, ended, onNav, onBackToLobby
                 {columns.map((c) => (
                   <th
                     key={c.key}
-                    className={`text-right pb-2 pl-1 ${c.key === activeColKey ? "text-lime-300" : ""}`}
+                    className={`text-right pb-2 pl-1 whitespace-nowrap ${c.key === activeColKey ? "text-lime-300" : ""}`}
                   >
                     {c.label}
                   </th>
@@ -4073,7 +4073,7 @@ function LeaderboardScreen({ eventName, leaderboard, ended, onNav, onBackToLobby
                   {columns.map((c) => (
                     <td
                       key={c.key}
-                      className={`py-2.5 pl-1 text-right font-mono2 text-[11px] ${
+                      className={`py-2.5 pl-1 text-right font-mono2 text-[11px] whitespace-nowrap ${
                         c.key === activeColKey ? "text-lime-300 font-bold" : "text-slate-400"
                       }`}
                     >
@@ -4657,13 +4657,13 @@ function ViewOnlyApp({ sessionId }) {
             ) : (
               <table className="w-full border-collapse table-fixed">
                 <colgroup>
-                  <col style={{ width: "22px" }} />
-                  <col />
-                  <col style={{ width: "26px" }} />
-                  <col style={{ width: "56px" }} />
-                  <col style={{ width: "40px" }} />
-                  <col style={{ width: "38px" }} />
-                  <col style={{ width: "38px" }} />
+                  <col style={{ width: "6%" }} />
+                  <col style={{ width: "34%" }} />
+                  <col style={{ width: "8%" }} />
+                  <col style={{ width: "13%" }} />
+                  <col style={{ width: "13%" }} />
+                  <col style={{ width: "13%" }} />
+                  <col style={{ width: "13%" }} />
                 </colgroup>
                 <thead>
                   <tr className="text-[9px] text-slate-500 uppercase tracking-wide">
@@ -4676,7 +4676,7 @@ function ViewOnlyApp({ sessionId }) {
                       .map((k) => (
                         <th
                           key={k}
-                          className={`text-right pb-2 pl-1 ${k === lbActiveCol ? "text-lime-300" : ""}`}
+                          className={`text-right pb-2 pl-1 whitespace-nowrap ${k === lbActiveCol ? "text-lime-300" : ""}`}
                         >
                           {k === "wlt" ? "W-L-T" : k === "diff" ? "+/-" : k === "winPercent" ? "Win%" : "PPM"}
                         </th>
@@ -4708,7 +4708,7 @@ function ViewOnlyApp({ sessionId }) {
                           .map((k) => (
                             <td
                               key={k}
-                              className={`py-2.5 pl-1 text-right font-mono2 text-[11px] ${
+                              className={`py-2.5 pl-1 text-right font-mono2 text-[11px] whitespace-nowrap ${
                                 k === lbActiveCol ? "text-lime-300 font-bold" : "text-slate-400"
                               }`}
                             >
