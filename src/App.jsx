@@ -990,6 +990,25 @@ function matchAB(s) {
 // Builds the standings array (points, wins/losses/ties, diff, matches played)
 // from a schedule + score map. Shared between the editable app and the
 // read-only viewer link.
+// Finds the earliest round that still has at least one court without a
+// completed score — used so opening a session from the Lobby jumps you to
+// where scoring actually needs to continue, instead of wherever the shared
+// "currentRound" pointer happened to be left (which just reflects whichever
+// round someone else last had open).
+function findFirstUnscoredRound(engine, scores) {
+  for (let rIdx = 0; rIdx < engine.roundsData.length; rIdx++) {
+    const rd = engine.roundsData[rIdx];
+    const allScored = rd.courts.every((_, cIdx) => {
+      const s = (scores || {})[`${rIdx}-${cIdx}`];
+      if (!s) return false;
+      if (s.format === "tennis") return (s.gamesA || 0) > 0 || (s.gamesB || 0) > 0;
+      return s.a !== undefined && s.a !== "" && s.b !== undefined && s.b !== "";
+    });
+    if (!allScored) return rIdx;
+  }
+  return Math.max(0, engine.roundsData.length - 1);
+}
+
 function buildLeaderboard(engine, playerMap, scores) {
   if (!engine) return [];
   const totals = {};
@@ -1440,8 +1459,12 @@ function AmericanoPadel() {
     setEnded(!!current.ended);
     setEngine(current.engine || null);
     setPlayerMap(current.playerMap || {});
-    setCurrentRound(current.currentRound || 0);
     setScores(current.scores || {});
+    setCurrentRound(
+      current.engine && !current.ended
+        ? findFirstUnscoredRound(current.engine, current.scores || {})
+        : current.currentRound || 0
+    );
     setStatus(current.status || (current.engine ? "active" : "waiting"));
     setSessionRole(isOwner ? "owner" : "participant");
     lastAppliedRef.current = current.updatedAt || Date.now();
@@ -1891,8 +1914,12 @@ function AmericanoPadel() {
     setEnded(!!data.ended);
     setEngine(data.engine || null);
     setPlayerMap(data.playerMap || {});
-    setCurrentRound(data.currentRound || 0);
     setScores(data.scores || {});
+    setCurrentRound(
+      data.engine && !data.ended
+        ? findFirstUnscoredRound(data.engine, data.scores || {})
+        : data.currentRound || 0
+    );
     const st = data.status || (data.engine ? "active" : "waiting");
     setStatus(st);
     setSessionRole(!currentUser || data.ownerId === currentUser.accountId ? "owner" : "participant");
@@ -3816,14 +3843,6 @@ function SessionScreen(props) {
               )}
               {isOwner && (
                 <button
-                  onClick={onReshuffle}
-                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-white bg-amber-500 rounded-full px-2.5 py-1 shrink-0 whitespace-nowrap"
-                >
-                  <Shuffle size={11} /> reshuffle
-                </button>
-              )}
-              {isOwner && (
-                <button
                   onClick={onDelete}
                   className="inline-flex items-center gap-1.5 text-xs font-semibold text-white bg-red-500 rounded-full px-2.5 py-1 shrink-0 whitespace-nowrap"
                 >
@@ -4015,6 +4034,15 @@ function SessionScreen(props) {
           <PrimaryButton onClick={onCopyViewLink} icon={Link2} className="w-full">
             Salin link pemantau (view only)
           </PrimaryButton>
+          {isOwner && (
+            <button
+              onClick={onReshuffle}
+              className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-bold tracking-wide bg-amber-500 text-white active:scale-[0.98] transition-transform w-full"
+            >
+              <Shuffle size={18} strokeWidth={2.5} />
+              Reshuffle
+            </button>
+          )}
           <p className="text-[11px] text-slate-500 text-center px-4">
             Siapa saja dengan link ini bisa lihat jadwal, klasemen & rekap match — tanpa bisa
             mengubah skor.
