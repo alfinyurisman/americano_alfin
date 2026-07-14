@@ -1639,6 +1639,75 @@ function AmericanoPadel() {
     });
   };
 
+  // HOST-ONLY (not co-host): re-runs the same fairness-first generator with
+  // the same players/courts/round-count to produce a fresh randomized
+  // pairing. Wipes existing scores since old ones no longer correspond to
+  // the new pairing.
+  const handleReshuffleMatches = () => {
+    if (!engine) return;
+    if (
+      !window.confirm(
+        "Acak ulang jadwal? Semua skor yang sudah diisi akan terhapus. Jumlah ronde, lapangan, dan pemain tetap sama — cuma urutan pasangannya yang diacak ulang."
+      )
+    )
+      return;
+    const ids = players.map((p) => p.id);
+    const map = {};
+    players.forEach((p) => (map[p.id] = p.name));
+    const result = generateSchedule(ids, courts, engine.roundsData.length);
+    setEngine(result);
+    setPlayerMap(map);
+    setCurrentRound(0);
+    setScores({});
+    persist({ engine: result, playerMap: map, currentRound: 0, scores: {} });
+  };
+
+  // HOST or CO-HOST: appends one extra manually-composed match/round once
+  // the normal schedule is done — useful when there's still time left.
+  const handleAddManualMatch = (team1Ids, team2Ids) => {
+    if (!engine) return;
+    const allIds = players.map((p) => p.id);
+    const playing = new Set([...team1Ids, ...team2Ids]);
+    const resting = allIds.filter((id) => !playing.has(id));
+    const newRound = { resting, courts: [{ team1: team1Ids, team2: team2Ids }] };
+    const newRoundsData = [...engine.roundsData, newRound];
+
+    const newPartner = {};
+    const newOpp = {};
+    Object.keys(engine.partner).forEach((id) => (newPartner[id] = { ...engine.partner[id] }));
+    Object.keys(engine.opp).forEach((id) => (newOpp[id] = { ...engine.opp[id] }));
+    const newPlayCount = { ...engine.playCount };
+    const newRestCount = { ...engine.restCount };
+
+    const [a, b] = team1Ids;
+    const [c, d] = team2Ids;
+    newPartner[a][b] = (newPartner[a][b] || 0) + 1;
+    newPartner[b][a] = (newPartner[b][a] || 0) + 1;
+    newPartner[c][d] = (newPartner[c][d] || 0) + 1;
+    newPartner[d][c] = (newPartner[d][c] || 0) + 1;
+    [a, b].forEach((x) =>
+      [c, d].forEach((y) => {
+        newOpp[x][y] = (newOpp[x][y] || 0) + 1;
+        newOpp[y][x] = (newOpp[y][x] || 0) + 1;
+      })
+    );
+    [a, b, c, d].forEach((id) => (newPlayCount[id] = (newPlayCount[id] || 0) + 1));
+    resting.forEach((id) => (newRestCount[id] = (newRestCount[id] || 0) + 1));
+
+    const newEngine = {
+      ...engine,
+      roundsData: newRoundsData,
+      partner: newPartner,
+      opp: newOpp,
+      playCount: newPlayCount,
+      restCount: newRestCount,
+    };
+    const newRoundIdx = newRoundsData.length - 1;
+    setEngine(newEngine);
+    setCurrentRound(newRoundIdx);
+    persist({ engine: newEngine, currentRound: newRoundIdx });
+  };
+
   const handleApproveRequest = (reqId) => {
     const req = pendingRequests.find((r) => r.id === reqId);
     if (!req) return;
@@ -2004,6 +2073,16 @@ function AmericanoPadel() {
   const isCoHost = coHostIds.includes(currentUser.accountId);
   const canManage = sessionRole === "owner" || isCoHost;
   const hasSplitBill = (Number(courtCost) || 0) + (Number(adminFee) || 0) + (Number(ballCost) || 0) > 0;
+  const allMatchesScored =
+    !!engine &&
+    engine.roundsData.every((rd, rIdx) =>
+      rd.courts.every((_, cIdx) => {
+        const s = scores[`${rIdx}-${cIdx}`];
+        if (!s) return false;
+        if (s.format === "tennis") return (s.gamesA || 0) > 0 || (s.gamesB || 0) > 0;
+        return s.a !== undefined && s.a !== "" && s.b !== undefined && s.b !== "";
+      })
+    );
 
   return (
     <div
@@ -2169,6 +2248,10 @@ function AmericanoPadel() {
           ended={ended}
           hasSplitBill={hasSplitBill}
           onEndEvent={handleEndEvent}
+          onReshuffle={handleReshuffleMatches}
+          allMatchesScored={allMatchesScored}
+          players={players}
+          onAddManualMatch={handleAddManualMatch}
           onNav={setScreen}
           onShare={handleShare}
           onCopyViewLink={handleCopyViewLink}
@@ -3527,12 +3610,13 @@ function SessionScreen(props) {
     eventName, isOwner, canManage, engine, playerMap, currentRound, goRound, goToRound,
     scores, setScore, setPointsPair, resetPointsScore, scoreFormat, pointTarget, tennisTarget,
     incrementTennisPoint, resetTennisMatch, setTennisGamesDirect,
-    ended, hasSplitBill, onEndEvent,
+    ended, hasSplitBill, onEndEvent, onReshuffle, allMatchesScored, players, onAddManualMatch,
     onNav, onShare, onCopyViewLink, onBackToLobby, onDelete,
   } = props;
 
   const [scoreModal, setScoreModal] = useState(null); // court index being edited, or null
   const [viewMode, setViewMode] = useState("single"); // single | all
+  const [showAddMatch, setShowAddMatch] = useState(false);
 
   useEffect(() => {
     setScoreModal(null);
@@ -3568,11 +3652,16 @@ function SessionScreen(props) {
             <ArrowLeft size={16} /> Lobby
           </button>
           {canManage ? (
-            <div className="flex items-center gap-3">
+            <div className="flex items-center flex-wrap justify-end gap-x-3 gap-y-1.5">
               {!isOwner && <Chip tone="cyan">co-host</Chip>}
               {!ended && (
                 <button onClick={onEndEvent} className="text-xs text-cyan-300 flex items-center gap-1">
                   <Trophy size={12} /> selesaikan
+                </button>
+              )}
+              {isOwner && (
+                <button onClick={onReshuffle} className="text-xs text-amber-300 flex items-center gap-1">
+                  <Shuffle size={12} /> kocok ulang
                 </button>
               )}
               {isOwner && (
@@ -3608,6 +3697,14 @@ function SessionScreen(props) {
             className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-950 bg-lime-300 rounded-full px-3 py-1.5 mb-3"
           >
             <Wallet size={12} /> Lihat Split Bill
+          </button>
+        )}
+        {canManage && allMatchesScored && (
+          <button
+            onClick={() => setShowAddMatch(true)}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-950 bg-cyan-300 rounded-full px-3 py-1.5 mb-3"
+          >
+            <Plus size={12} /> Tambah Match Manual
           </button>
         )}
         <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden mb-3">
@@ -3718,6 +3815,17 @@ function SessionScreen(props) {
           onPick={(side, n) => setPointsPair(scoreModal, side, n)}
           onReset={() => resetPointsScore(scoreModal)}
           onClose={() => setScoreModal(null)}
+        />
+      )}
+
+      {showAddMatch && (
+        <AddMatchModal
+          players={players}
+          onConfirm={(team1Ids, team2Ids) => {
+            onAddManualMatch(team1Ids, team2Ids);
+            setShowAddMatch(false);
+          }}
+          onClose={() => setShowAddMatch(false)}
         />
       )}
 
@@ -3963,6 +4071,121 @@ function ScoreModal({ roundLabel, team1, team2, s, target, onPick, onReset, onCl
           </button>
           <PrimaryButton onClick={onClose} className="flex-1">
             Tutup
+          </PrimaryButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Lets host/co-host manually pick who plays in an extra bonus match — 2
+// players tap-assigned to "Tim Kiri", 2 to "Tim Kanan". A player can only be
+// on one side at a time.
+function AddMatchModal({ players, onConfirm, onClose }) {
+  const [team1, setTeam1] = useState([]);
+  const [team2, setTeam2] = useState([]);
+
+  const toggle = (side, playerId) => {
+    const inTeam1 = team1.includes(playerId);
+    const inTeam2 = team2.includes(playerId);
+    if (side === "team1") {
+      if (inTeam1) {
+        setTeam1(team1.filter((id) => id !== playerId));
+      } else if (team1.length < 2) {
+        setTeam2(team2.filter((id) => id !== playerId));
+        setTeam1([...team1, playerId]);
+      }
+    } else {
+      if (inTeam2) {
+        setTeam2(team2.filter((id) => id !== playerId));
+      } else if (team2.length < 2) {
+        setTeam1(team1.filter((id) => id !== playerId));
+        setTeam2([...team2, playerId]);
+      }
+    }
+  };
+
+  const canConfirm = team1.length === 2 && team2.length === 2;
+
+  return (
+    <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center" onClick={onClose}>
+      <div
+        className="bg-slate-950 border border-slate-800 rounded-t-3xl sm:rounded-3xl w-full sm:max-w-sm max-h-[85vh] overflow-y-auto p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="text-xs font-semibold tracking-[0.15em] text-cyan-300 uppercase mb-1">
+          Tambah Match Manual
+        </div>
+        <p className="text-xs text-slate-500 mb-4">
+          Pilih 2 pemain buat Tim Kiri dan 2 pemain buat Tim Kanan. Cocok kalau masih ada waktu
+          tersisa setelah semua jadwal selesai dimainkan.
+        </p>
+
+        <div className="flex items-center justify-center gap-4 mb-4 text-xs">
+          <div className="text-center">
+            <div className="text-[10px] text-slate-500 uppercase mb-1">Tim Kiri</div>
+            <div className="text-slate-200 font-semibold min-h-[18px]">
+              {team1.map((id) => players.find((p) => p.id === id)?.name).join(" & ") || "—"}
+            </div>
+          </div>
+          <span className="text-slate-600 font-display text-lg">VS</span>
+          <div className="text-center">
+            <div className="text-[10px] text-slate-500 uppercase mb-1">Tim Kanan</div>
+            <div className="text-slate-200 font-semibold min-h-[18px]">
+              {team2.map((id) => players.find((p) => p.id === id)?.name).join(" & ") || "—"}
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-2 max-h-64 overflow-y-auto">
+          {players.map((p) => {
+            const inTeam1 = team1.includes(p.id);
+            const inTeam2 = team2.includes(p.id);
+            return (
+              <div
+                key={p.id}
+                className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-2"
+              >
+                <span className="font-semibold text-slate-100 flex-1 min-w-0 truncate text-sm">
+                  {p.name}
+                </span>
+                <button
+                  onClick={() => toggle("team1", p.id)}
+                  disabled={!inTeam1 && team1.length >= 2}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border disabled:opacity-30 ${
+                    inTeam1
+                      ? "bg-lime-300 text-slate-950 border-lime-300"
+                      : "bg-slate-900 text-slate-400 border-slate-700"
+                  }`}
+                >
+                  Kiri
+                </button>
+                <button
+                  onClick={() => toggle("team2", p.id)}
+                  disabled={!inTeam2 && team2.length >= 2}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border disabled:opacity-30 ${
+                    inTeam2
+                      ? "bg-cyan-300 text-slate-950 border-cyan-300"
+                      : "bg-slate-900 text-slate-400 border-slate-700"
+                  }`}
+                >
+                  Kanan
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="flex items-center gap-3 mt-5">
+          <GhostButton onClick={onClose} className="flex-1">
+            Batal
+          </GhostButton>
+          <PrimaryButton
+            onClick={() => canConfirm && onConfirm(team1, team2)}
+            disabled={!canConfirm}
+            className="flex-1"
+          >
+            Tambahkan
           </PrimaryButton>
         </div>
       </div>
