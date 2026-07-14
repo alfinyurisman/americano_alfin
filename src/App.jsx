@@ -1047,6 +1047,8 @@ function AmericanoPadel() {
   const [courtCost, setCourtCost] = useState(""); // split bill — all optional
   const [adminFee, setAdminFee] = useState("");
   const [ballCost, setBallCost] = useState("");
+  const [paymentPersonId, setPaymentPersonId] = useState(null); // player.id of who collects the split bill
+  const [paymentInfo, setPaymentInfo] = useState([]); // [{platform, number}] max 2
   const [hostPlaying, setHostPlaying] = useState(false);
   const [coHostIds, setCoHostIds] = useState([]); // accountIds granted co-host (edit) access
   const [ownerId, setOwnerId] = useState(null);
@@ -1377,6 +1379,11 @@ function AmericanoPadel() {
     setOwnerUsername(current.ownerUsername || "");
     setPendingRequests(current.pendingRequests || []);
     setHostInvitations(current.hostInvitations || []);
+    setCourtCost(current.courtCost ?? "");
+    setAdminFee(current.adminFee ?? "");
+    setBallCost(current.ballCost ?? "");
+    setPaymentPersonId(current.paymentPersonId ?? null);
+    setPaymentInfo(current.paymentInfo || []);
     setEnded(!!current.ended);
     setEngine(current.engine || null);
     setPlayerMap(current.playerMap || {});
@@ -1418,6 +1425,11 @@ function AmericanoPadel() {
           setScoreFormat(saved.scoreFormat || "points");
           setPointTarget(saved.pointTarget ?? 21);
           setTennisTarget(saved.tennisTarget ?? 4);
+          setCourtCost(saved.courtCost ?? "");
+          setAdminFee(saved.adminFee ?? "");
+          setBallCost(saved.ballCost ?? "");
+          setPaymentPersonId(saved.paymentPersonId ?? null);
+          setPaymentInfo(saved.paymentInfo || []);
           setEnded(!!saved.ended);
           if (saved.engine && screen === "waiting") {
             setScreen("session");
@@ -1446,6 +1458,8 @@ function AmericanoPadel() {
         courtCost,
         adminFee,
         ballCost,
+        paymentPersonId,
+        paymentInfo,
         maxParticipants,
         pendingRequests,
         hostInvitations,
@@ -1506,7 +1520,7 @@ function AmericanoPadel() {
       }
       return;
     },
-    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
+    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
   );
 
   const addPlayerFromInput = () => {
@@ -1708,6 +1722,20 @@ function AmericanoPadel() {
     persist({ engine: newEngine, currentRound: newRoundIdx });
   };
 
+  // Host-only: designates who collects the split bill payment (can be the
+  // host themselves, or any other player).
+  const handleSetPaymentPerson = (playerId) => {
+    setPaymentPersonId(playerId);
+    persist({ paymentPersonId: playerId });
+  };
+
+  // The designated payment person can edit their own payment details; the
+  // host can always edit this too, regardless of who's assigned.
+  const handleSavePaymentInfo = (newInfo) => {
+    setPaymentInfo(newInfo);
+    persist({ paymentInfo: newInfo });
+  };
+
   const handleApproveRequest = (reqId) => {
     const req = pendingRequests.find((r) => r.id === reqId);
     if (!req) return;
@@ -1759,6 +1787,8 @@ function AmericanoPadel() {
     setCourtCost("");
     setAdminFee("");
     setBallCost("");
+    setPaymentPersonId(null);
+    setPaymentInfo([]);
     setOwnerId(null);
     setOwnerUsername("");
     setEngine(null);
@@ -1801,6 +1831,8 @@ function AmericanoPadel() {
     setCourtCost(data.courtCost ?? "");
     setAdminFee(data.adminFee ?? "");
     setBallCost(data.ballCost ?? "");
+    setPaymentPersonId(data.paymentPersonId ?? null);
+    setPaymentInfo(data.paymentInfo || []);
     setOwnerId(data.ownerId || null);
     setOwnerUsername(data.ownerUsername || "");
     setEnded(!!data.ended);
@@ -2278,6 +2310,12 @@ function AmericanoPadel() {
           courtCost={courtCost}
           adminFee={adminFee}
           ballCost={ballCost}
+          isOwner={sessionRole === "owner"}
+          currentAccountId={currentUser?.accountId}
+          paymentPersonId={paymentPersonId}
+          onSetPaymentPerson={handleSetPaymentPerson}
+          paymentInfo={paymentInfo}
+          onSavePaymentInfo={handleSavePaymentInfo}
           onNav={setScreen}
           onBackToLobby={handleBackToLobby}
         />
@@ -3652,20 +3690,29 @@ function SessionScreen(props) {
             <ArrowLeft size={16} /> Lobby
           </button>
           {canManage ? (
-            <div className="flex items-center flex-wrap justify-end gap-x-3 gap-y-1.5">
+            <div className="flex items-center flex-wrap justify-end gap-x-2 gap-y-1.5">
               {!isOwner && <Chip tone="cyan">co-host</Chip>}
               {!ended && (
-                <button onClick={onEndEvent} className="text-xs text-cyan-300 flex items-center gap-1">
+                <button
+                  onClick={onEndEvent}
+                  className="text-xs font-semibold text-white bg-cyan-500 rounded-full px-2.5 py-1.5 flex items-center gap-1"
+                >
                   <Trophy size={12} /> selesaikan
                 </button>
               )}
               {isOwner && (
-                <button onClick={onReshuffle} className="text-xs text-amber-300 flex items-center gap-1">
+                <button
+                  onClick={onReshuffle}
+                  className="text-xs font-semibold text-white bg-amber-500 rounded-full px-2.5 py-1.5 flex items-center gap-1"
+                >
                   <Shuffle size={12} /> kocok ulang
                 </button>
               )}
               {isOwner && (
-                <button onClick={onDelete} className="text-xs text-red-400/80 flex items-center gap-1">
+                <button
+                  onClick={onDelete}
+                  className="text-xs font-semibold text-white bg-red-500 rounded-full px-2.5 py-1.5 flex items-center gap-1"
+                >
                   <Trash2 size={12} /> hapus acara
                 </button>
               )}
@@ -3684,21 +3731,21 @@ function SessionScreen(props) {
             Ronde {currentRound + 1} / {totalRounds}
           </span>
         </div>
-        <div className="mb-3 flex gap-2">
+        <div className="mb-3 flex flex-wrap items-center gap-2">
           <Chip tone="amber">
             <Trophy size={11} />
             {scoreFormat === "tennis" ? `Race to ${tennisTarget} game` : `Target ${pointTarget} poin`}
           </Chip>
           {ended && <Chip tone="lime">Acara selesai</Chip>}
+          {hasSplitBill && (
+            <button
+              onClick={() => onNav("splitbill")}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-950 bg-lime-300 rounded-full px-2.5 py-1"
+            >
+              <Wallet size={11} /> Lihat Split Bill
+            </button>
+          )}
         </div>
-        {hasSplitBill && (
-          <button
-            onClick={() => onNav("splitbill")}
-            className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-950 bg-lime-300 rounded-full px-3 py-1.5 mb-3"
-          >
-            <Wallet size={12} /> Lihat Split Bill
-          </button>
-        )}
         {canManage && allMatchesScored && (
           <button
             onClick={() => setShowAddMatch(true)}
@@ -4471,13 +4518,42 @@ function LeaderboardScreen({ eventName, leaderboard, ended, hasSplitBill, onNav,
 // SPLIT BILL SCREEN — court/admin/ball cost divided evenly among players
 // ---------------------------------------------------------------------------
 
-function SplitBillScreen({ eventName, players, courtCost, adminFee, ballCost, onNav, onBackToLobby }) {
+function SplitBillScreen({
+  eventName, players, courtCost, adminFee, ballCost,
+  isOwner, currentAccountId, paymentPersonId, onSetPaymentPerson,
+  paymentInfo, onSavePaymentInfo,
+  onNav, onBackToLobby,
+}) {
   const court = Number(courtCost) || 0;
   const admin = Number(adminFee) || 0;
   const ball = Number(ballCost) || 0;
   const total = court + admin + ball;
   const n = players.length || 1;
   const perPerson = Math.ceil(total / n);
+
+  const paymentPerson = players.find((p) => p.id === paymentPersonId) || null;
+  const canEditPayment =
+    isOwner || (paymentPerson?.accountId && paymentPerson.accountId === currentAccountId);
+
+  const [draftInfo, setDraftInfo] = useState(paymentInfo && paymentInfo.length ? paymentInfo : []);
+  const [editingPayment, setEditingPayment] = useState(false);
+
+  const addEntry = () => {
+    if (draftInfo.length >= 2) return;
+    setDraftInfo([...draftInfo, { platform: "", number: "" }]);
+  };
+  const updateEntry = (idx, field, value) => {
+    setDraftInfo(draftInfo.map((e, i) => (i === idx ? { ...e, [field]: value } : e)));
+  };
+  const removeEntry = (idx) => {
+    setDraftInfo(draftInfo.filter((_, i) => i !== idx));
+  };
+  const saveEntries = () => {
+    const cleaned = draftInfo.filter((e) => e.platform.trim() || e.number.trim());
+    onSavePaymentInfo(cleaned);
+    setDraftInfo(cleaned);
+    setEditingPayment(false);
+  };
 
   return (
     <div className="pb-24">
@@ -4535,6 +4611,103 @@ function SplitBillScreen({ eventName, players, courtCost, adminFee, ballCost, on
           <div className="font-display text-5xl text-lime-300">{formatRupiah(perPerson)}</div>
         </div>
       </div>
+
+      <Section icon={Wallet} title="Terima Pembayaran">
+        {isOwner && (
+          <div className="mb-4">
+            <p className="text-xs text-slate-500 mb-2">Siapa yang menerima transferan split bill?</p>
+            <div className="flex gap-1.5 overflow-x-auto pb-1">
+              {players.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => onSetPaymentPerson(paymentPersonId === p.id ? null : p.id)}
+                  className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border ${
+                    paymentPersonId === p.id
+                      ? "bg-lime-300 text-slate-950 border-lime-300"
+                      : "bg-slate-900 text-slate-400 border-slate-700"
+                  }`}
+                >
+                  {p.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {!paymentPerson ? (
+          <p className="text-slate-500 text-sm">Belum ada payment person ditentukan.</p>
+        ) : (
+          <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-sm text-slate-300">
+                Kirim ke: <span className="font-semibold text-slate-100">{paymentPerson.name}</span>
+              </span>
+              {canEditPayment && !editingPayment && (
+                <button
+                  onClick={() => {
+                    setDraftInfo(paymentInfo && paymentInfo.length ? paymentInfo : []);
+                    setEditingPayment(true);
+                  }}
+                  className="text-xs font-semibold text-cyan-300"
+                >
+                  Edit
+                </button>
+              )}
+            </div>
+
+            {editingPayment ? (
+              <div className="space-y-3">
+                {draftInfo.map((entry, idx) => (
+                  <div key={idx} className="flex items-center gap-2">
+                    <input
+                      value={entry.platform}
+                      onChange={(e) => updateEntry(idx, "platform", e.target.value)}
+                      placeholder="Platform (mis. BCA, GoPay)"
+                      className="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+                    />
+                    <input
+                      value={entry.number}
+                      onChange={(e) => updateEntry(idx, "number", e.target.value)}
+                      placeholder="No. akun"
+                      className="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+                    />
+                    <button
+                      onClick={() => removeEntry(idx)}
+                      className="w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 hover:text-red-400 flex items-center justify-center shrink-0"
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                ))}
+                {draftInfo.length < 2 && (
+                  <button onClick={addEntry} className="text-xs font-semibold text-cyan-300">
+                    + Tambah platform ({draftInfo.length}/2)
+                  </button>
+                )}
+                <div className="flex items-center gap-2 pt-1">
+                  <GhostButton onClick={() => setEditingPayment(false)} className="flex-1">
+                    Batal
+                  </GhostButton>
+                  <PrimaryButton onClick={saveEntries} className="flex-1">
+                    Simpan
+                  </PrimaryButton>
+                </div>
+              </div>
+            ) : (paymentInfo || []).length > 0 ? (
+              <div className="space-y-1.5">
+                {paymentInfo.map((entry, idx) => (
+                  <div key={idx} className="flex items-center justify-between text-sm">
+                    <span className="text-slate-400">{entry.platform || "-"}</span>
+                    <span className="font-mono2 text-slate-100">{entry.number || "-"}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-slate-500 text-xs">Belum ada info platform/no. akun.</p>
+            )}
+          </div>
+        )}
+      </Section>
 
       <Section icon={Users} title="Rincian per Pemain">
         <div className="space-y-2">
@@ -5306,6 +5479,30 @@ function ViewOnlyApp({ sessionId }) {
                     </div>
                     <div className="font-display text-5xl text-lime-300">{formatRupiah(perPerson)}</div>
                   </div>
+
+                  {(() => {
+                    const paymentPerson = (data.players || []).find((p) => p.id === data.paymentPersonId);
+                    if (!paymentPerson) return null;
+                    return (
+                      <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/50 p-4">
+                        <div className="text-sm text-slate-300 mb-2">
+                          Kirim ke: <span className="font-semibold text-slate-100">{paymentPerson.name}</span>
+                        </div>
+                        {(data.paymentInfo || []).length > 0 ? (
+                          <div className="space-y-1.5">
+                            {data.paymentInfo.map((entry, idx) => (
+                              <div key={idx} className="flex items-center justify-between text-sm">
+                                <span className="text-slate-400">{entry.platform || "-"}</span>
+                                <span className="font-mono2 text-slate-100">{entry.number || "-"}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-slate-500 text-xs">Belum ada info platform/no. akun.</p>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   <div className="mt-6 space-y-2">
                     {(data.players || []).map((p) => (
