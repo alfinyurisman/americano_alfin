@@ -261,6 +261,20 @@ async function updateUserAvatar(usernameLower, avatarDataUrl) {
   return updated;
 }
 
+// Changes only the display name shown to others — NOT the login username
+// (which doubles as the account's permanent ID referenced everywhere: friend
+// lists, session ownership, co-host lists, etc). Renaming that ID safely
+// would need rewriting every reference across every session/account, which
+// isn't practical with this simple key-value store — hence a separate,
+// freely-editable display name instead.
+async function updateDisplayName(usernameLower, newDisplayName) {
+  const existing = await getUserAccount(usernameLower);
+  if (!existing) return null;
+  const updated = { ...existing, displayName: newDisplayName.trim() || existing.username };
+  await window.storage.set(userKey(usernameLower), JSON.stringify(updated), true);
+  return updated;
+}
+
 // Resizes/crops any uploaded image client-side into a small square JPEG data
 // URL before it's ever stored, so profile pictures stay tiny (a few KB) no
 // matter what photo someone picks.
@@ -347,7 +361,9 @@ async function loadFriendsData(accountId) {
   const resolved = await Promise.all(
     friendIds.map(async (id) => {
       const f = await getUserAccount(id);
-      return f ? { accountId: id, username: f.username, avatarUrl: f.avatarUrl || null } : null;
+      return f
+        ? { accountId: id, username: f.displayName || f.username, avatarUrl: f.avatarUrl || null }
+        : null;
     })
   );
   return {
@@ -370,7 +386,7 @@ async function listAllAccounts(myAccountId) {
         if (!acc || acc.accountId === myAccountId) return null;
         return {
           accountId: acc.accountId,
-          username: acc.username,
+          username: acc.displayName || acc.username,
           avatarUrl: acc.avatarUrl || null,
           isFriend: (acc.friends || []).includes(myAccountId),
           requestSentByMe: (acc.incomingFriendRequests || []).some((r) => r.accountId === myAccountId),
@@ -1130,7 +1146,12 @@ function AmericanoPadel() {
       if (remembered) {
         const fresh = await getUserAccount(remembered.accountId);
         const me = fresh
-          ? { accountId: fresh.accountId, username: fresh.username, avatarUrl: fresh.avatarUrl || null }
+          ? {
+              accountId: fresh.accountId,
+              username: fresh.username,
+              displayName: fresh.displayName || fresh.username,
+              avatarUrl: fresh.avatarUrl || null,
+            }
           : remembered;
         setCurrentUser(me);
         if (pendingJoinId) {
@@ -1147,7 +1168,12 @@ function AmericanoPadel() {
   }, []);
 
   const handleAuthenticated = async (account) => {
-    const me = { accountId: account.accountId, username: account.username, avatarUrl: account.avatarUrl || null };
+    const me = {
+      accountId: account.accountId,
+      username: account.username,
+      displayName: account.displayName || account.username,
+      avatarUrl: account.avatarUrl || null,
+    };
     setCurrentUser(me);
     if (pendingJoinId) {
       await handleJoinViaLink(pendingJoinId, me);
@@ -1167,6 +1193,33 @@ function AmericanoPadel() {
       setCurrentUser((u) => (u ? { ...u, avatarUrl: dataUrl } : u));
     } catch (e) {
       alert("Gagal memproses foto. Coba gambar lain.");
+    }
+  };
+
+  const handleChangeDisplayName = async (newName) => {
+    if (!currentUser) return;
+    const updated = await updateDisplayName(currentUser.accountId, newName || "");
+    if (!updated) return;
+    const finalName = updated.displayName || updated.username;
+    setCurrentUser((u) => (u ? { ...u, displayName: finalName } : u));
+
+    // If I'm currently inside a session (waiting room or live match) and I'm
+    // one of the players there, update my name there right away so it
+    // reflects immediately instead of staying stuck with the old snapshot.
+    if (activeId && players.some((p) => p.accountId === currentUser.accountId)) {
+      const newPlayers = players.map((p) =>
+        p.accountId === currentUser.accountId ? { ...p, name: finalName } : p
+      );
+      setPlayers(newPlayers);
+      let newPlayerMap = playerMap;
+      if (engine) {
+        newPlayerMap = { ...playerMap };
+        newPlayers.forEach((p) => {
+          if (newPlayerMap[p.id] !== undefined) newPlayerMap[p.id] = p.name;
+        });
+        setPlayerMap(newPlayerMap);
+      }
+      persist({ players: newPlayers, playerMap: newPlayerMap });
     }
   };
 
@@ -1324,7 +1377,7 @@ function AmericanoPadel() {
       if (!alreadyPlayer && !alreadyPending) {
         const newPending = [
           ...(data.pendingRequests || []),
-          { id: uid(), name: account.username, accountId: account.accountId },
+          { id: uid(), name: account.displayName || account.username, accountId: account.accountId },
         ];
         current = { ...data, pendingRequests: newPending, updatedAt: Date.now() };
         await saveSessionData(id, current);
@@ -1574,7 +1627,7 @@ function AmericanoPadel() {
     setHostPlaying(false);
     setCoHostIds([]);
     setOwnerId(currentUser?.accountId || null);
-    setOwnerUsername(currentUser?.username || "");
+    setOwnerUsername(currentUser?.displayName || currentUser?.username || "");
     setScreen("waiting");
     persist(
       {
@@ -1591,7 +1644,7 @@ function AmericanoPadel() {
         hostInvitations: [],
         players: [],
         ownerId: currentUser?.accountId || null,
-        ownerUsername: currentUser?.username || "",
+        ownerUsername: currentUser?.displayName || currentUser?.username || "",
         engine: null,
         playerMap: {},
         currentRound: 0,
@@ -1613,7 +1666,7 @@ function AmericanoPadel() {
       const already = players.some((p) => p.accountId === currentUser?.accountId);
       newPlayers = already
         ? players
-        : [...players, { id: uid(), name: currentUser.username, accountId: currentUser.accountId }];
+        : [...players, { id: uid(), name: currentUser.displayName || currentUser.username, accountId: currentUser.accountId }];
     } else {
       newPlayers = players.filter((p) => p.accountId !== currentUser?.accountId);
     }
@@ -2028,6 +2081,14 @@ function AmericanoPadel() {
     players.forEach((p) => {
       idToAccountId[p.id] = p.accountId || null;
     });
+    const playedSoFar = {};
+    engine.roundsData.forEach((rd, rIdx) => {
+      if (rIdx > currentRound) return;
+      const playingIds = new Set(rd.courts.flatMap((c) => [...c.team1, ...c.team2]));
+      Object.keys(playerMap).forEach((id) => {
+        if (playingIds.has(id)) playedSoFar[id] = (playedSoFar[id] || 0) + 1;
+      });
+    });
     const ids = Object.keys(playerMap);
     return ids
       .map((id) => {
@@ -2039,6 +2100,7 @@ function AmericanoPadel() {
           id,
           name: playerMap[id],
           matches: engine.playCount[id] || 0,
+          playedSoFar: playedSoFar[id] || 0,
           rests: engine.restCount[id] || 0,
           partners,
           opps,
@@ -2046,7 +2108,7 @@ function AmericanoPadel() {
         };
       })
       .sort((a, b) => b.matches - a.matches);
-  }, [engine, playerMap, players, ownerId, coHostIds]);
+  }, [engine, playerMap, players, ownerId, coHostIds, currentRound]);
 
   const handleShare = async () => {
     if (!engine) return;
@@ -2138,6 +2200,7 @@ function AmericanoPadel() {
           onDiscover={handleOpenDiscover}
           onRefresh={handleRefreshLobby}
           onChangeAvatar={handleChangeAvatar}
+          onChangeDisplayName={handleChangeDisplayName}
           onOpenFriends={handleOpenFriends}
           friendRequestCount={friendRequests.length}
           onRespondInvitation={handleRespondInvitation}
@@ -2384,10 +2447,12 @@ function BottomNav({ active, onNav, showSplitBill }) {
 // LOBBY SCREEN
 // ---------------------------------------------------------------------------
 
-function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover, onRefresh, onChangeAvatar, onOpenFriends, friendRequestCount, onRespondInvitation, currentUser, onLogout }) {
+function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover, onRefresh, onChangeAvatar, onChangeDisplayName, onOpenFriends, friendRequestCount, onRespondInvitation, currentUser, onLogout }) {
   const [accountCount, setAccountCount] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -2410,6 +2475,16 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
     setUploadingAvatar(true);
     await onChangeAvatar(file);
     setUploadingAvatar(false);
+  };
+
+  const startEditingName = () => {
+    setNameDraft(currentUser?.displayName || currentUser?.username || "");
+    setEditingName(true);
+  };
+
+  const saveName = async () => {
+    await onChangeDisplayName(nameDraft);
+    setEditingName(false);
   };
 
   return (
@@ -2446,21 +2521,23 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
           <span className="text-lime-300">SCHEDULER</span>
         </h1>
         {currentUser && (
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="flex items-center gap-2.5 mt-3"
-          >
-            <div className="relative">
-              <Avatar name={currentUser.username} avatarUrl={currentUser.avatarUrl} size={36} />
-              <div className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-lime-300 border-2 border-slate-950 flex items-center justify-center">
-                {uploadingAvatar ? (
-                  <RotateCcw size={8} className="text-slate-950 animate-spin" />
-                ) : (
-                  <Plus size={8} className="text-slate-950" strokeWidth={3} />
-                )}
+          <div className="flex items-center gap-2.5 mt-3">
+            <button onClick={() => fileInputRef.current?.click()} className="shrink-0">
+              <div className="relative">
+                <Avatar
+                  name={currentUser.displayName || currentUser.username}
+                  avatarUrl={currentUser.avatarUrl}
+                  size={36}
+                />
+                <div className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-lime-300 border-2 border-slate-950 flex items-center justify-center">
+                  {uploadingAvatar ? (
+                    <RotateCcw size={8} className="text-slate-950 animate-spin" />
+                  ) : (
+                    <Plus size={8} className="text-slate-950" strokeWidth={3} />
+                  )}
+                </div>
               </div>
-            </div>
-            <span className="text-sm text-slate-300 font-semibold">{currentUser.username}</span>
+            </button>
             <input
               ref={fileInputRef}
               type="file"
@@ -2468,7 +2545,44 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
               onChange={handleAvatarFile}
               className="hidden"
             />
-          </button>
+
+            {editingName ? (
+              <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                <input
+                  autoFocus
+                  value={nameDraft}
+                  onChange={(e) => setNameDraft(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && saveName()}
+                  placeholder={currentUser.username}
+                  className="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+                />
+                <button
+                  onClick={saveName}
+                  className="w-7 h-7 rounded-lg bg-lime-300 text-slate-950 flex items-center justify-center shrink-0"
+                >
+                  <Check size={13} strokeWidth={3} />
+                </button>
+                <button
+                  onClick={() => setEditingName(false)}
+                  className="w-7 h-7 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 flex items-center justify-center shrink-0"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            ) : (
+              <button onClick={startEditingName} className="flex items-center gap-1.5 min-w-0">
+                <span className="text-sm text-slate-300 font-semibold truncate">
+                  {currentUser.displayName || currentUser.username}
+                </span>
+                <Settings2 size={12} className="text-slate-500 shrink-0" />
+              </button>
+            )}
+          </div>
+        )}
+        {currentUser?.displayName && currentUser.displayName !== currentUser.username && (
+          <p className="text-[11px] text-slate-600 mt-1">
+            Username login: <span className="text-slate-500">{currentUser.username}</span>
+          </p>
         )}
         <p className="text-slate-400 text-sm mt-2 max-w-xs">
           Acara yang kamu buat maupun yang kamu ikuti (lewat undangan) muncul di sini.
@@ -3682,38 +3796,38 @@ function SessionScreen(props) {
     <div className="pb-24">
       {/* HEADER */}
       <div className="px-6 pt-12 pb-5 border-b border-slate-800">
-        <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center justify-between gap-2 mb-2">
           <button
             onClick={onBackToLobby}
-            className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform"
+            className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform shrink-0"
           >
             <ArrowLeft size={16} /> Lobby
           </button>
           {canManage ? (
-            <div className="flex items-center flex-wrap justify-end gap-x-2 gap-y-1.5">
+            <div className="flex items-center flex-wrap justify-end gap-1.5">
               {!isOwner && <Chip tone="cyan">co-host</Chip>}
               {!ended && (
                 <button
                   onClick={onEndEvent}
-                  className="text-xs font-semibold text-white bg-cyan-500 rounded-full px-2.5 py-1.5 flex items-center gap-1"
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-white bg-cyan-500 rounded-full px-2.5 py-1 shrink-0 whitespace-nowrap"
                 >
-                  <Trophy size={12} /> selesaikan
+                  <Trophy size={11} /> selesaikan
                 </button>
               )}
               {isOwner && (
                 <button
                   onClick={onReshuffle}
-                  className="text-xs font-semibold text-white bg-amber-500 rounded-full px-2.5 py-1.5 flex items-center gap-1"
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-white bg-amber-500 rounded-full px-2.5 py-1 shrink-0 whitespace-nowrap"
                 >
-                  <Shuffle size={12} /> kocok ulang
+                  <Shuffle size={11} /> reshuffle
                 </button>
               )}
               {isOwner && (
                 <button
                   onClick={onDelete}
-                  className="text-xs font-semibold text-white bg-red-500 rounded-full px-2.5 py-1.5 flex items-center gap-1"
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-white bg-red-500 rounded-full px-2.5 py-1 shrink-0 whitespace-nowrap"
                 >
-                  <Trash2 size={12} /> hapus acara
+                  <Trash2 size={11} /> hapus acara
                 </button>
               )}
             </div>
@@ -4449,7 +4563,7 @@ function LeaderboardScreen({ eventName, leaderboard, ended, hasSplitBill, onNav,
               <col style={{ width: "13%" }} />
             </colgroup>
             <thead>
-              <tr className="text-[9px] text-slate-500 uppercase tracking-wide">
+              <tr className="text-[9px] text-white uppercase tracking-wide">
                 <th className="text-center pb-2">#</th>
                 <th className="text-left pb-2">Nama</th>
                 <th className="text-center pb-2">M</th>
@@ -4479,14 +4593,14 @@ function LeaderboardScreen({ eventName, leaderboard, ended, hasSplitBill, onNav,
                   <td className="py-2.5 font-semibold text-slate-100 truncate text-[13px]">
                     {p.name}
                   </td>
-                  <td className="py-2.5 text-center font-mono2 text-[11px] text-slate-400">
+                  <td className="py-2.5 text-center font-mono2 text-[11px] text-white">
                     {p.matches}
                   </td>
                   {columns.map((c) => (
                     <td
                       key={c.key}
                       className={`py-2.5 pl-1 text-right font-mono2 text-[11px] whitespace-nowrap ${
-                        c.key === activeColKey ? "text-lime-300 font-bold" : "text-slate-400"
+                        c.key === activeColKey ? "text-lime-300 font-bold" : "text-white"
                       }`}
                     >
                       {c.render(p)}
@@ -4499,12 +4613,12 @@ function LeaderboardScreen({ eventName, leaderboard, ended, hasSplitBill, onNav,
         )}
 
         {sorted.length > 0 && (
-          <div className="mt-4 pt-4 border-t border-slate-800 space-y-1 text-[11px] text-slate-500">
-            <div><span className="text-slate-300 font-semibold">M</span> — jumlah match dimainkan</div>
-            <div><span className="text-slate-300 font-semibold">W-L-T</span> — menang-kalah-seri</div>
-            <div><span className="text-slate-300 font-semibold">+/-</span> — selisih poin (poin dapat − poin lawan)</div>
-            <div><span className="text-slate-300 font-semibold">Win%</span> — persentase match dimenangkan</div>
-            <div><span className="text-slate-300 font-semibold">PPM</span> — rata-rata poin per match</div>
+          <div className="mt-4 pt-4 border-t border-slate-800 space-y-1 text-[11px] text-white">
+            <div><span className="text-lime-300 font-semibold">M</span> — jumlah match dimainkan</div>
+            <div><span className="text-lime-300 font-semibold">W-L-T</span> — menang-kalah-seri</div>
+            <div><span className="text-lime-300 font-semibold">+/-</span> — selisih poin (poin dapat − poin lawan)</div>
+            <div><span className="text-lime-300 font-semibold">Win%</span> — persentase match dimenangkan</div>
+            <div><span className="text-lime-300 font-semibold">PPM</span> — rata-rata poin per match</div>
           </div>
         )}
       </div>
@@ -4697,7 +4811,7 @@ function SplitBillScreen({
               <div className="space-y-1.5">
                 {paymentInfo.map((entry, idx) => (
                   <div key={idx} className="flex items-center justify-between text-sm">
-                    <span className="text-slate-400">{entry.platform || "-"}</span>
+                    <span className="text-white font-semibold">{entry.platform || "-"}</span>
                     <span className="font-mono2 text-slate-100">{entry.number || "-"}</span>
                   </div>
                 ))}
@@ -4935,7 +5049,7 @@ function StatsScreen({ eventName, stats, totalPlayers, hasSplitBill, onNav, onBa
               </span>
               <div className="flex gap-2 shrink-0">
                 <Chip tone="lime">
-                  <Check size={11} /> {p.matches} main
+                  <Check size={11} /> {p.playedSoFar}/{p.matches} main
                 </Chip>
                 <Chip tone="amber">
                   <Coffee size={11} /> {p.rests} off
@@ -5297,7 +5411,7 @@ function ViewOnlyApp({ sessionId }) {
                   <col style={{ width: "13%" }} />
                 </colgroup>
                 <thead>
-                  <tr className="text-[9px] text-slate-500 uppercase tracking-wide">
+                  <tr className="text-[9px] text-white uppercase tracking-wide">
                     <th className="text-center pb-2">#</th>
                     <th className="text-left pb-2">Nama</th>
                     <th className="text-center pb-2">M</th>
@@ -5332,7 +5446,7 @@ function ViewOnlyApp({ sessionId }) {
                           {i + 1}
                         </td>
                         <td className="py-2.5 font-semibold text-slate-100 truncate text-[13px]">{p.name}</td>
-                        <td className="py-2.5 text-center font-mono2 text-[11px] text-slate-400">{p.matches}</td>
+                        <td className="py-2.5 text-center font-mono2 text-[11px] text-white">{p.matches}</td>
                         {["wlt", "diff", "winPercent", "ppm"]
                           .filter((k) => k !== lbActiveCol)
                           .concat([lbActiveCol])
@@ -5340,7 +5454,7 @@ function ViewOnlyApp({ sessionId }) {
                             <td
                               key={k}
                               className={`py-2.5 pl-1 text-right font-mono2 text-[11px] whitespace-nowrap ${
-                                k === lbActiveCol ? "text-lime-300 font-bold" : "text-slate-400"
+                                k === lbActiveCol ? "text-lime-300 font-bold" : "text-white"
                               }`}
                             >
                               {cellVal(k)}
@@ -5354,12 +5468,12 @@ function ViewOnlyApp({ sessionId }) {
             )}
 
             {sortedLeaderboard.length > 0 && (
-              <div className="mt-4 pt-4 border-t border-slate-800 space-y-1 text-[11px] text-slate-500">
-                <div><span className="text-slate-300 font-semibold">M</span> — jumlah match dimainkan</div>
-                <div><span className="text-slate-300 font-semibold">W-L-T</span> — menang-kalah-seri</div>
-                <div><span className="text-slate-300 font-semibold">+/-</span> — selisih poin (poin dapat − poin lawan)</div>
-                <div><span className="text-slate-300 font-semibold">Win%</span> — persentase match dimenangkan</div>
-                <div><span className="text-slate-300 font-semibold">PPM</span> — rata-rata poin per match</div>
+              <div className="mt-4 pt-4 border-t border-slate-800 space-y-1 text-[11px] text-white">
+                <div><span className="text-lime-300 font-semibold">M</span> — jumlah match dimainkan</div>
+                <div><span className="text-lime-300 font-semibold">W-L-T</span> — menang-kalah-seri</div>
+                <div><span className="text-lime-300 font-semibold">+/-</span> — selisih poin (poin dapat − poin lawan)</div>
+                <div><span className="text-lime-300 font-semibold">Win%</span> — persentase match dimenangkan</div>
+                <div><span className="text-lime-300 font-semibold">PPM</span> — rata-rata poin per match</div>
               </div>
             )}
           </div>
@@ -5492,7 +5606,7 @@ function ViewOnlyApp({ sessionId }) {
                           <div className="space-y-1.5">
                             {data.paymentInfo.map((entry, idx) => (
                               <div key={idx} className="flex items-center justify-between text-sm">
-                                <span className="text-slate-400">{entry.platform || "-"}</span>
+                                <span className="text-white font-semibold">{entry.platform || "-"}</span>
                                 <span className="font-mono2 text-slate-100">{entry.number || "-"}</span>
                               </div>
                             ))}
