@@ -3,7 +3,7 @@ import {
   Plus, X, Users, Clock, Trophy, Shuffle, ChevronLeft, ChevronRight,
   RotateCcw, Share2, BarChart3, Settings2, Check, Coffee,
   ArrowLeft, Trash2, CalendarDays, ChevronRightCircle, ClipboardList, Link2, Eye, ListOrdered,
-  LogOut, Lock, UserCircle2, Shield,
+  LogOut, Lock, UserCircle2, Shield, Wallet,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -215,6 +215,13 @@ async function getUserAccount(usernameLower) {
 // "Jakarta", " jakarta ", "JAKARTA" should all match.
 function normalizeAnswer(raw) {
   return String(raw || "").trim().toLowerCase();
+}
+
+// Formats a rupiah amount, always rounded UP to a whole number (no decimals),
+// with the standard Indonesian thousands-dot grouping — e.g. 57649.2 -> "Rp.57.650".
+function formatRupiah(amount) {
+  const rounded = Math.ceil(Number(amount) || 0);
+  return "Rp." + rounded.toLocaleString("id-ID");
 }
 
 const SECURITY_QUESTIONS = [
@@ -1037,6 +1044,9 @@ function AmericanoPadel() {
   const [maxParticipants, setMaxParticipants] = useState(8);
   const [pendingRequests, setPendingRequests] = useState([]); // [{id, name, accountId}]
   const [visibility, setVisibility] = useState("private"); // private | public
+  const [courtCost, setCourtCost] = useState(""); // split bill — all optional
+  const [adminFee, setAdminFee] = useState("");
+  const [ballCost, setBallCost] = useState("");
   const [hostPlaying, setHostPlaying] = useState(false);
   const [coHostIds, setCoHostIds] = useState([]); // accountIds granted co-host (edit) access
   const [ownerId, setOwnerId] = useState(null);
@@ -1433,6 +1443,9 @@ function AmericanoPadel() {
         visibility,
         hostPlaying,
         coHostIds,
+        courtCost,
+        adminFee,
+        ballCost,
         maxParticipants,
         pendingRequests,
         hostInvitations,
@@ -1493,7 +1506,7 @@ function AmericanoPadel() {
       }
       return;
     },
-    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
+    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
   );
 
   const addPlayerFromInput = () => {
@@ -1556,6 +1569,9 @@ function AmericanoPadel() {
         visibility,
         hostPlaying: false,
         coHostIds: [],
+        courtCost,
+        adminFee,
+        ballCost,
         maxParticipants,
         pendingRequests: [],
         hostInvitations: [],
@@ -1671,6 +1687,9 @@ function AmericanoPadel() {
     setVisibility("private");
     setHostPlaying(false);
     setCoHostIds([]);
+    setCourtCost("");
+    setAdminFee("");
+    setBallCost("");
     setOwnerId(null);
     setOwnerUsername("");
     setEngine(null);
@@ -1710,6 +1729,9 @@ function AmericanoPadel() {
     setVisibility(data.visibility || "private");
     setHostPlaying(!!data.hostPlaying);
     setCoHostIds(data.coHostIds || []);
+    setCourtCost(data.courtCost ?? "");
+    setAdminFee(data.adminFee ?? "");
+    setBallCost(data.ballCost ?? "");
     setOwnerId(data.ownerId || null);
     setOwnerUsername(data.ownerUsername || "");
     setEnded(!!data.ended);
@@ -1785,7 +1807,8 @@ function AmericanoPadel() {
       return;
     setEnded(true);
     persist({ ended: true });
-    setScreen("leaderboard");
+    const totalCost = (Number(courtCost) || 0) + (Number(adminFee) || 0) + (Number(ballCost) || 0);
+    setScreen(totalCost > 0 ? "splitbill" : "leaderboard");
   };
 
   const goRound = (delta) => {
@@ -1980,6 +2003,7 @@ function AmericanoPadel() {
 
   const isCoHost = coHostIds.includes(currentUser.accountId);
   const canManage = sessionRole === "owner" || isCoHost;
+  const hasSplitBill = (Number(courtCost) || 0) + (Number(adminFee) || 0) + (Number(ballCost) || 0) > 0;
 
   return (
     <div
@@ -2067,6 +2091,12 @@ function AmericanoPadel() {
           setMaxParticipants={setMaxParticipants}
           visibility={visibility}
           setVisibility={setVisibility}
+          courtCost={courtCost}
+          setCourtCost={setCourtCost}
+          adminFee={adminFee}
+          setAdminFee={setAdminFee}
+          ballCost={ballCost}
+          setBallCost={setBallCost}
           computedRounds={computedRounds}
           onGenerate={handleCreateConcept}
           onBackToLobby={handleBackToLobby}
@@ -2103,6 +2133,13 @@ function AmericanoPadel() {
           onSendFriendRequest={handleSendFriendRequest}
           hostInvitations={hostInvitations}
           onCancelInvitation={handleCancelInvitation}
+          courtCost={courtCost}
+          setCourtCost={setCourtCost}
+          adminFee={adminFee}
+          setAdminFee={setAdminFee}
+          ballCost={ballCost}
+          setBallCost={setBallCost}
+          onSaveCosts={() => persist({ courtCost, adminFee, ballCost })}
           onFinalize={handleFinalizeAndGenerate}
           onBackToLobby={handleBackToLobby}
           onDelete={() => handleDeleteSession(activeId)}
@@ -2130,6 +2167,7 @@ function AmericanoPadel() {
           resetTennisMatch={resetTennisMatch}
           setTennisGamesDirect={setTennisGamesDirect}
           ended={ended}
+          hasSplitBill={hasSplitBill}
           onEndEvent={handleEndEvent}
           onNav={setScreen}
           onShare={handleShare}
@@ -2144,6 +2182,19 @@ function AmericanoPadel() {
           eventName={eventName}
           leaderboard={leaderboard}
           ended={ended}
+          hasSplitBill={hasSplitBill}
+          onNav={setScreen}
+          onBackToLobby={handleBackToLobby}
+        />
+      )}
+
+      {screen === "splitbill" && (
+        <SplitBillScreen
+          eventName={eventName}
+          players={players}
+          courtCost={courtCost}
+          adminFee={adminFee}
+          ballCost={ballCost}
           onNav={setScreen}
           onBackToLobby={handleBackToLobby}
         />
@@ -2157,6 +2208,7 @@ function AmericanoPadel() {
           scores={scores}
           scoreFormat={scoreFormat}
           tennisTarget={tennisTarget}
+          hasSplitBill={hasSplitBill}
           onNav={setScreen}
           onBackToLobby={handleBackToLobby}
         />
@@ -2167,6 +2219,7 @@ function AmericanoPadel() {
           eventName={eventName}
           stats={fairnessStats}
           totalPlayers={players.length}
+          hasSplitBill={hasSplitBill}
           onNav={setScreen}
           onBackToLobby={handleBackToLobby}
         />
@@ -2180,12 +2233,13 @@ function AmericanoPadel() {
 // BOTTOM NAV
 // ---------------------------------------------------------------------------
 
-function BottomNav({ active, onNav }) {
+function BottomNav({ active, onNav, showSplitBill }) {
   const items = [
     { key: "session", label: "Jadwal", icon: Clock },
     { key: "leaderboard", label: "Klasemen", icon: Trophy },
     { key: "recap", label: "Rekap", icon: ClipboardList },
     { key: "stats", label: "Statistik", icon: BarChart3 },
+    ...(showSplitBill ? [{ key: "splitbill", label: "Split Bill", icon: Wallet }] : []),
   ];
   return (
     <div className="fixed bottom-0 left-0 right-0 bg-slate-950/95 backdrop-blur border-t border-slate-800 flex z-20 max-w-md mx-auto">
@@ -2690,6 +2744,7 @@ function SetupScreen(props) {
     tennisTarget, setTennisTarget,
     maxParticipants, setMaxParticipants,
     visibility, setVisibility,
+    courtCost, setCourtCost, adminFee, setAdminFee, ballCost, setBallCost,
     computedRounds, onGenerate,
     onBackToLobby,
   } = props;
@@ -2774,6 +2829,43 @@ function SetupScreen(props) {
             ? "Cuma orang yang kamu kirimi link undangan yang bisa lihat & minta gabung acara ini."
             : "Muncul di halaman \"Jelajahi Acara Publik\" — siapa saja bisa lihat & minta gabung, tetap butuh persetujuanmu."}
         </p>
+      </Section>
+
+      {/* SPLIT BILL COSTS (optional) */}
+      <Section icon={Wallet} title="Biaya" subtitle="opsional, buat split bill">
+        <p className="text-xs text-slate-500 mb-3">
+          Kalau diisi, begitu acara di-"selesaikan" nanti otomatis muncul rincian split bill per
+          pemain. Boleh dikosongkan.
+        </p>
+        <div className="space-y-3">
+          <FieldRow label="Harga lapangan (Rp)">
+            <input
+              type="number"
+              value={courtCost}
+              onChange={(e) => setCourtCost(e.target.value)}
+              placeholder="0"
+              className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
+            />
+          </FieldRow>
+          <FieldRow label="Biaya admin (Rp)">
+            <input
+              type="number"
+              value={adminFee}
+              onChange={(e) => setAdminFee(e.target.value)}
+              placeholder="0"
+              className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
+            />
+          </FieldRow>
+          <FieldRow label="Biaya bola (Rp)">
+            <input
+              type="number"
+              value={ballCost}
+              onChange={(e) => setBallCost(e.target.value)}
+              placeholder="0"
+              className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
+            />
+          </FieldRow>
+        </div>
       </Section>
 
       {/* COURTS */}
@@ -3016,6 +3108,7 @@ function WaitingRoomScreen(props) {
     coHostIds, onToggleCoHost,
     friends, onInviteFriend, onSendFriendRequest,
     hostInvitations, onCancelInvitation,
+    courtCost, setCourtCost, adminFee, setAdminFee, ballCost, setBallCost, onSaveCosts,
     onFinalize, onBackToLobby, onDelete,
   } = props;
 
@@ -3356,6 +3449,47 @@ function WaitingRoomScreen(props) {
         )}
       </Section>
 
+      {canManage && (
+        <Section icon={Wallet} title="Biaya" subtitle="opsional, buat split bill">
+          <p className="text-xs text-slate-500 mb-3">
+            Kelewat isi biaya waktu bikin acara? Isi di sini juga masih bisa, sebelum atau sesudah
+            jadwal digenerate. Boleh dikosongkan.
+          </p>
+          <div className="space-y-3">
+            <FieldRow label="Harga lapangan (Rp)">
+              <input
+                type="number"
+                value={courtCost}
+                onChange={(e) => setCourtCost(e.target.value)}
+                onBlur={onSaveCosts}
+                placeholder="0"
+                className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
+              />
+            </FieldRow>
+            <FieldRow label="Biaya admin (Rp)">
+              <input
+                type="number"
+                value={adminFee}
+                onChange={(e) => setAdminFee(e.target.value)}
+                onBlur={onSaveCosts}
+                placeholder="0"
+                className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
+              />
+            </FieldRow>
+            <FieldRow label="Biaya bola (Rp)">
+              <input
+                type="number"
+                value={ballCost}
+                onChange={(e) => setBallCost(e.target.value)}
+                onBlur={onSaveCosts}
+                placeholder="0"
+                className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
+              />
+            </FieldRow>
+          </div>
+        </Section>
+      )}
+
       {canManage ? (
         <div className="px-6">
           <PrimaryButton
@@ -3393,7 +3527,7 @@ function SessionScreen(props) {
     eventName, isOwner, canManage, engine, playerMap, currentRound, goRound, goToRound,
     scores, setScore, setPointsPair, resetPointsScore, scoreFormat, pointTarget, tennisTarget,
     incrementTennisPoint, resetTennisMatch, setTennisGamesDirect,
-    ended, onEndEvent,
+    ended, hasSplitBill, onEndEvent,
     onNav, onShare, onCopyViewLink, onBackToLobby, onDelete,
   } = props;
 
@@ -3468,6 +3602,14 @@ function SessionScreen(props) {
           </Chip>
           {ended && <Chip tone="lime">Acara selesai</Chip>}
         </div>
+        {hasSplitBill && (
+          <button
+            onClick={() => onNav("splitbill")}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-950 bg-lime-300 rounded-full px-3 py-1.5 mb-3"
+          >
+            <Wallet size={12} /> Lihat Split Bill
+          </button>
+        )}
         <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden mb-3">
           <div
             className="h-full bg-lime-300 rounded-full transition-all"
@@ -3611,7 +3753,7 @@ function SessionScreen(props) {
         </div>
       )}
 
-      <BottomNav active="session" onNav={onNav} />
+      <BottomNav active="session" onNav={onNav} showSplitBill={hasSplitBill} />
     </div>
   );
 }
@@ -3950,7 +4092,7 @@ function TennisScoreTracker({ s, target, onPoint, onReset, onSetGames, readOnly 
 // LEADERBOARD / STANDINGS SCREEN
 // ---------------------------------------------------------------------------
 
-function LeaderboardScreen({ eventName, leaderboard, ended, onNav, onBackToLobby }) {
+function LeaderboardScreen({ eventName, leaderboard, ended, hasSplitBill, onNav, onBackToLobby }) {
   const [sortBy, setSortBy] = useState("wins"); // wins | diff | winPercent | ppm
 
   const sorted = React.useMemo(() => {
@@ -4097,7 +4239,97 @@ function LeaderboardScreen({ eventName, leaderboard, ended, onNav, onBackToLobby
         )}
       </div>
 
-      <BottomNav active="leaderboard" onNav={onNav} />
+      <BottomNav active="leaderboard" onNav={onNav} showSplitBill={hasSplitBill} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SPLIT BILL SCREEN — court/admin/ball cost divided evenly among players
+// ---------------------------------------------------------------------------
+
+function SplitBillScreen({ eventName, players, courtCost, adminFee, ballCost, onNav, onBackToLobby }) {
+  const court = Number(courtCost) || 0;
+  const admin = Number(adminFee) || 0;
+  const ball = Number(ballCost) || 0;
+  const total = court + admin + ball;
+  const n = players.length || 1;
+  const perPerson = Math.ceil(total / n);
+
+  return (
+    <div className="pb-24">
+      <div className="px-6 pt-14 pb-6 border-b border-slate-800">
+        <button
+          onClick={onBackToLobby}
+          className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform mb-4"
+        >
+          <ArrowLeft size={16} /> Lobby
+        </button>
+        {eventName && <div className="text-sm font-semibold text-slate-200 mb-1">{eventName}</div>}
+        <div className="flex items-center gap-2 mb-1">
+          <Wallet size={16} className="text-lime-300" />
+          <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
+            Bagi Biaya
+          </span>
+        </div>
+        <h1 className="font-display text-5xl text-slate-50">SPLIT BILL</h1>
+      </div>
+
+      <div className="px-6 pt-6">
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 space-y-2">
+          {court > 0 && (
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-slate-400">Harga lapangan</span>
+              <span className="font-mono2 text-slate-200">{formatRupiah(court)}</span>
+            </div>
+          )}
+          {admin > 0 && (
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-slate-400">Biaya admin</span>
+              <span className="font-mono2 text-slate-200">{formatRupiah(admin)}</span>
+            </div>
+          )}
+          {ball > 0 && (
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-slate-400">Biaya bola</span>
+              <span className="font-mono2 text-slate-200">{formatRupiah(ball)}</span>
+            </div>
+          )}
+          <div className="flex items-center justify-between text-sm pt-2 border-t border-slate-800">
+            <span className="text-slate-300 font-semibold">Total</span>
+            <span className="font-mono2 text-slate-100 font-bold">{formatRupiah(total)}</span>
+          </div>
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-slate-400">Jumlah pemain</span>
+            <span className="font-mono2 text-slate-200">{n} orang</span>
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-2xl border border-lime-400/40 bg-lime-400/5 p-5 text-center">
+          <div className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">
+            Per orang (dibulatkan ke atas)
+          </div>
+          <div className="font-display text-5xl text-lime-300">{formatRupiah(perPerson)}</div>
+        </div>
+      </div>
+
+      <Section icon={Users} title="Rincian per Pemain">
+        <div className="space-y-2">
+          {players.map((p) => (
+            <div
+              key={p.id}
+              className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3"
+            >
+              <span className="font-semibold text-slate-100 truncate">{p.name}</span>
+              <span className="font-mono2 text-lime-300 font-bold shrink-0">
+                {formatRupiah(perPerson)}
+              </span>
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      <BottomNav active="splitbill" onNav={onNav} showSplitBill />
     </div>
   );
 }
@@ -4106,7 +4338,7 @@ function LeaderboardScreen({ eventName, leaderboard, ended, onNav, onBackToLobby
 // RECAP SCREEN (all scored matches, for monitoring rotation fairness)
 // ---------------------------------------------------------------------------
 
-function RecapScreen({ eventName, engine, playerMap, scores, scoreFormat, tennisTarget, onNav, onBackToLobby }) {
+function RecapScreen({ eventName, engine, playerMap, scores, scoreFormat, tennisTarget, hasSplitBill, onNav, onBackToLobby }) {
   const [filterId, setFilterId] = useState("all");
 
   const allRows = React.useMemo(() => {
@@ -4263,7 +4495,7 @@ function RecapScreen({ eventName, engine, playerMap, scores, scoreFormat, tennis
         ))}
       </div>
 
-      <BottomNav active="recap" onNav={onNav} />
+      <BottomNav active="recap" onNav={onNav} showSplitBill={hasSplitBill} />
     </div>
   );
 }
@@ -4272,7 +4504,7 @@ function RecapScreen({ eventName, engine, playerMap, scores, scoreFormat, tennis
 // STATS SCREEN (fairness proof)
 // ---------------------------------------------------------------------------
 
-function StatsScreen({ eventName, stats, totalPlayers, onNav, onBackToLobby }) {
+function StatsScreen({ eventName, stats, totalPlayers, hasSplitBill, onNav, onBackToLobby }) {
   const maxPossible = Math.max(0, totalPlayers - 1);
   return (
     <div className="pb-24">
@@ -4332,7 +4564,7 @@ function StatsScreen({ eventName, stats, totalPlayers, onNav, onBackToLobby }) {
         ))}
       </div>
 
-      <BottomNav active="stats" onNav={onNav} />
+      <BottomNav active="stats" onNav={onNav} showSplitBill={hasSplitBill} />
     </div>
   );
 }
@@ -4417,6 +4649,9 @@ function ViewOnlyApp({ sessionId }) {
     return arr;
   }, [leaderboard, lbSortBy]);
   const lbActiveCol = lbSortBy === "wins" ? "wlt" : lbSortBy;
+  const hasSplitBill =
+    !!data &&
+    (Number(data.courtCost) || 0) + (Number(data.adminFee) || 0) + (Number(data.ballCost) || 0) > 0;
 
   const recapRows = React.useMemo(() => {
     if (!data?.engine) return [];
@@ -4800,6 +5035,73 @@ function ViewOnlyApp({ sessionId }) {
             </div>
           </div>
         )}
+
+        {tab === "splitbill" && hasSplitBill && (
+          <div className="px-6 pt-6">
+            <h2 className="font-display text-3xl text-slate-50 mb-4">SPLIT BILL</h2>
+            {(() => {
+              const court = Number(data.courtCost) || 0;
+              const admin = Number(data.adminFee) || 0;
+              const ball = Number(data.ballCost) || 0;
+              const total = court + admin + ball;
+              const n = (data.players || []).length || 1;
+              const perPerson = Math.ceil(total / n);
+              return (
+                <>
+                  <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 space-y-2">
+                    {court > 0 && (
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-slate-400">Harga lapangan</span>
+                        <span className="font-mono2 text-slate-200">{formatRupiah(court)}</span>
+                      </div>
+                    )}
+                    {admin > 0 && (
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-slate-400">Biaya admin</span>
+                        <span className="font-mono2 text-slate-200">{formatRupiah(admin)}</span>
+                      </div>
+                    )}
+                    {ball > 0 && (
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-slate-400">Biaya bola</span>
+                        <span className="font-mono2 text-slate-200">{formatRupiah(ball)}</span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between text-sm pt-2 border-t border-slate-800">
+                      <span className="text-slate-300 font-semibold">Total</span>
+                      <span className="font-mono2 text-slate-100 font-bold">{formatRupiah(total)}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-slate-400">Jumlah pemain</span>
+                      <span className="font-mono2 text-slate-200">{n} orang</span>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 rounded-2xl border border-lime-400/40 bg-lime-400/5 p-5 text-center">
+                    <div className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">
+                      Per orang (dibulatkan ke atas)
+                    </div>
+                    <div className="font-display text-5xl text-lime-300">{formatRupiah(perPerson)}</div>
+                  </div>
+
+                  <div className="mt-6 space-y-2">
+                    {(data.players || []).map((p) => (
+                      <div
+                        key={p.id}
+                        className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3"
+                      >
+                        <span className="font-semibold text-slate-100 truncate">{p.name}</span>
+                        <span className="font-mono2 text-lime-300 font-bold shrink-0">
+                          {formatRupiah(perPerson)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        )}
       </div>
       </div>
 
@@ -4808,6 +5110,7 @@ function ViewOnlyApp({ sessionId }) {
           { key: "session", label: "Jadwal", icon: Clock },
           { key: "leaderboard", label: "Klasemen", icon: Trophy },
           { key: "recap", label: "Rekap", icon: ClipboardList },
+          ...(hasSplitBill ? [{ key: "splitbill", label: "Split Bill", icon: Wallet }] : []),
         ].map(({ key, label, icon: Icon }) => (
           <button
             key={key}
