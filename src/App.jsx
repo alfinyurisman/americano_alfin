@@ -1819,6 +1819,19 @@ function AmericanoPadel() {
   // accumulated so far (not starting over from zero).
   const handleAdjustSchedule = (newPlayers) => {
     if (!engine) return;
+    try {
+      handleAdjustScheduleInner(newPlayers);
+    } catch (e) {
+      console.error("handleAdjustSchedule failed:", e);
+      alert(
+        "Gagal menyesuaikan jadwal: " +
+          (e?.message || "terjadi kesalahan tak terduga") +
+          "\n\nJadwal belum diubah, coba lagi atau kirim screenshot pesan ini."
+      );
+    }
+  };
+
+  const handleAdjustScheduleInner = (newPlayers) => {
 
     let splitIdx = engine.roundsData.length;
     for (let rIdx = 0; rIdx < engine.roundsData.length; rIdx++) {
@@ -1943,7 +1956,7 @@ function AmericanoPadel() {
       if (rIdx < splitIdx) newScores[key] = scores[key];
     });
 
-    const newCurrentRound = Math.min(splitIdx, newRoundsData.length - 1);
+    const newCurrentRound = Math.max(0, Math.min(splitIdx, newRoundsData.length - 1));
     setPlayers(newPlayers);
     setPlayerMap(map);
     setEngine(newEngine);
@@ -6153,13 +6166,56 @@ function ViewOnlyApp({ sessionId }) {
 // ROOT — decides between the editable app and the read-only viewer link
 // ---------------------------------------------------------------------------
 
+// Catches any unexpected rendering crash so the person sees a recoverable
+// screen (with the actual error text, useful for reporting bugs) instead of
+// a totally blank white page.
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error("Uncaught render error:", error, info);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center px-6">
+          <div className="max-w-sm text-center">
+            <div className="text-4xl mb-3">⚠️</div>
+            <h1 className="font-display text-3xl text-slate-50 mb-2">Terjadi Kesalahan</h1>
+            <p className="text-slate-400 text-sm mb-4">
+              Ada yang salah saat menampilkan halaman ini. Coba muat ulang — kalau masih terjadi,
+              screenshot pesan di bawah ini dan kirim untuk dilaporkan.
+            </p>
+            <div className="bg-slate-900 border border-slate-700 rounded-xl p-3 text-left text-[11px] text-red-300 font-mono2 mb-4 max-h-40 overflow-y-auto break-words">
+              {String(this.state.error?.message || this.state.error)}
+            </div>
+            <button
+              onClick={() => window.location.reload()}
+              className="px-5 py-3 rounded-xl font-bold bg-lime-300 text-slate-950"
+            >
+              Muat Ulang
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 function AppRoot() {
   const params = new URLSearchParams(window.location.search);
   const viewSessionId = params.get("s");
-  if (viewSessionId) {
-    return <ViewOnlyApp sessionId={viewSessionId} />;
-  }
-  return <AmericanoPadel />;
+  return (
+    <ErrorBoundary>
+      {viewSessionId ? <ViewOnlyApp sessionId={viewSessionId} /> : <AmericanoPadel />}
+    </ErrorBoundary>
+  );
 }
 
 export default AppRoot;
