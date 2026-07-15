@@ -10,27 +10,27 @@ import {
 // SCHEDULING ENGINE
 // ---------------------------------------------------------------------------
 
-function generateSchedule(playerIds, courtsInput, numRounds) {
+function generateSchedule(playerIds, courtsInput, numRounds, seed) {
   const n = playerIds.length;
   const usableCourts = Math.max(0, Math.min(courtsInput, Math.floor(n / 4)));
   const capacity = usableCourts * 4;
 
-  const partner = {};
-  const opp = {};
-  const playCount = {};
-  const restCount = {};
-  const lastRested = {};
+  const partner = seed ? JSON.parse(JSON.stringify(seed.partner)) : {};
+  const opp = seed ? JSON.parse(JSON.stringify(seed.opp)) : {};
+  const playCount = seed ? { ...seed.playCount } : {};
+  const restCount = seed ? { ...seed.restCount } : {};
+  const lastRested = seed ? { ...seed.lastRested } : {};
 
   playerIds.forEach((id) => {
-    playCount[id] = 0;
-    restCount[id] = 0;
-    lastRested[id] = -99;
-    partner[id] = {};
-    opp[id] = {};
+    if (playCount[id] === undefined) playCount[id] = 0;
+    if (restCount[id] === undefined) restCount[id] = 0;
+    if (lastRested[id] === undefined) lastRested[id] = -99;
+    if (!partner[id]) partner[id] = {};
+    if (!opp[id]) opp[id] = {};
     playerIds.forEach((o) => {
       if (o !== id) {
-        partner[id][o] = 0;
-        opp[id][o] = 0;
+        if (partner[id][o] === undefined) partner[id][o] = 0;
+        if (opp[id][o] === undefined) opp[id][o] = 0;
       }
     });
   });
@@ -130,7 +130,7 @@ function generateSchedule(playerIds, courtsInput, numRounds) {
     roundsData.push({ resting, courts: courtsResult });
   }
 
-  return { roundsData, playCount, restCount, partner, opp, usableCourts };
+  return { roundsData, playCount, restCount, partner, opp, usableCourts, lastRested };
 }
 
 // ---------------------------------------------------------------------------
@@ -271,6 +271,17 @@ async function updateDisplayName(usernameLower, newDisplayName) {
   const existing = await getUserAccount(usernameLower);
   if (!existing) return null;
   const updated = { ...existing, displayName: newDisplayName.trim() || existing.username };
+  await window.storage.set(userKey(usernameLower), JSON.stringify(updated), true);
+  return updated;
+}
+
+// Account-level default payment details (platform + account number, up to 2)
+// so that when this person gets picked as a session's Payment Person, the
+// split bill can auto-fill instead of asking them to retype it every time.
+async function updateUserPaymentInfo(usernameLower, paymentInfo) {
+  const existing = await getUserAccount(usernameLower);
+  if (!existing) return null;
+  const updated = { ...existing, paymentInfo };
   await window.storage.set(userKey(usernameLower), JSON.stringify(updated), true);
   return updated;
 }
@@ -1170,6 +1181,7 @@ function AmericanoPadel() {
               username: fresh.username,
               displayName: fresh.displayName || fresh.username,
               avatarUrl: fresh.avatarUrl || null,
+              paymentInfo: fresh.paymentInfo || [],
             }
           : remembered;
         setCurrentUser(me);
@@ -1192,6 +1204,7 @@ function AmericanoPadel() {
       username: account.username,
       displayName: account.displayName || account.username,
       avatarUrl: account.avatarUrl || null,
+      paymentInfo: account.paymentInfo || [],
     };
     setCurrentUser(me);
     if (pendingJoinId) {
@@ -1798,11 +1811,171 @@ function AmericanoPadel() {
     persist({ engine: newEngine, currentRound: newRoundIdx });
   };
 
+  // Adds/removes players mid-match and re-generates the schedule for
+  // everything that hasn't been played yet. Rounds that are already fully
+  // scored are treated as locked history and left untouched — only the
+  // remaining (not-yet-complete) rounds get thrown out and rebuilt for the
+  // new roster, continuing the same partner/opponent/rest fairness tracking
+  // accumulated so far (not starting over from zero).
+  const handleAdjustSchedule = (newPlayers) => {
+    if (!engine) return;
+
+    let splitIdx = engine.roundsData.length;
+    for (let rIdx = 0; rIdx < engine.roundsData.length; rIdx++) {
+      const rd = engine.roundsData[rIdx];
+      const allScored = rd.courts.every((_, cIdx) => {
+        const s = scores[`${rIdx}-${cIdx}`];
+        if (!s) return false;
+        if (s.format === "tennis") return (s.gamesA || 0) > 0 || (s.gamesB || 0) > 0;
+        return s.a !== undefined && s.a !== "" && s.b !== undefined && s.b !== "";
+      });
+      if (!allScored) {
+        splitIdx = rIdx;
+        break;
+      }
+    }
+
+    const lockedRounds = engine.roundsData.slice(0, splitIdx);
+    const remainingRoundsCount = engine.roundsData.length - splitIdx;
+
+    if (newPlayers.length < 4) {
+      alert("Minimal 4 pemain diperlukan supaya jadwal bisa disusun.");
+      return;
+    }
+    if (remainingRoundsCount <= 0) {
+      alert(
+        "Semua ronde yang ada sudah lengkap diisi skor, jadi tidak ada yang bisa disesuaikan lagi. Pemain baru bisa ditambahkan lewat 'Tambah Match Manual' di ronde tambahan."
+      );
+      return;
+    }
+
+    // Rebuild the fairness-history seed by replaying ONLY the locked rounds
+    // (not the discarded future ones) against the new roster.
+    const seed = { partner: {}, opp: {}, playCount: {}, restCount: {}, lastRested: {} };
+    newPlayers.forEach((p) => {
+      seed.playCount[p.id] = 0;
+      seed.restCount[p.id] = 0;
+      seed.lastRested[p.id] = -99;
+      seed.partner[p.id] = {};
+      seed.opp[p.id] = {};
+    });
+    lockedRounds.forEach((rd, rIdx) => {
+      rd.resting.forEach((id) => {
+        if (seed.restCount[id] !== undefined) {
+          seed.restCount[id]++;
+          seed.lastRested[id] = rIdx;
+        }
+      });
+      rd.courts.forEach(({ team1, team2 }) => {
+        const [a, b] = team1;
+        const [c, d] = team2;
+        [a, b, c, d].forEach((id) => {
+          if (seed.playCount[id] !== undefined) seed.playCount[id]++;
+        });
+        if (seed.partner[a] && seed.partner[a][b] !== undefined) {
+          seed.partner[a][b]++;
+          seed.partner[b][a]++;
+        }
+        if (seed.partner[c] && seed.partner[c][d] !== undefined) {
+          seed.partner[c][d]++;
+          seed.partner[d][c]++;
+        }
+        [a, b].forEach((x) =>
+          [c, d].forEach((y) => {
+            if (seed.opp[x] && seed.opp[x][y] !== undefined) {
+              seed.opp[x][y]++;
+              seed.opp[y][x]++;
+            }
+          })
+        );
+      });
+    });
+
+    // New players (not in the previous roster) start with restCount=0,
+    // which the algorithm reads as "hasn't rested in ages" and would force
+    // them to sit out first/repeatedly. Instead, treat them as already on
+    // par with the group's current rest rotation — it's fine if they end up
+    // with fewer total matches played than people who joined earlier; the
+    // point here is just to avoid an artificial, unfair queue for them.
+    const oldIds = new Set(players.map((p) => p.id));
+    const newcomers = newPlayers.filter((p) => !oldIds.has(p.id));
+    if (newcomers.length > 0) {
+      const existingRestCounts = newPlayers
+        .filter((p) => oldIds.has(p.id))
+        .map((p) => seed.restCount[p.id]);
+      const avgRest = existingRestCounts.length
+        ? Math.round(existingRestCounts.reduce((a, b) => a + b, 0) / existingRestCounts.length)
+        : 0;
+      const existingLastRested = newPlayers
+        .filter((p) => oldIds.has(p.id))
+        .map((p) => seed.lastRested[p.id])
+        .filter((v) => v > -99);
+      const avgLastRested = existingLastRested.length
+        ? Math.round(existingLastRested.reduce((a, b) => a + b, 0) / existingLastRested.length)
+        : splitIdx - 1;
+      newcomers.forEach((p) => {
+        seed.restCount[p.id] = avgRest;
+        seed.lastRested[p.id] = avgLastRested;
+      });
+    }
+
+    const ids = newPlayers.map((p) => p.id);
+    const map = {};
+    newPlayers.forEach((p) => (map[p.id] = p.name));
+    const freshPart = generateSchedule(ids, courts, remainingRoundsCount, seed);
+
+    const newRoundsData = [...lockedRounds, ...freshPart.roundsData];
+    const newEngine = {
+      roundsData: newRoundsData,
+      playCount: freshPart.playCount,
+      restCount: freshPart.restCount,
+      partner: freshPart.partner,
+      opp: freshPart.opp,
+      usableCourts: freshPart.usableCourts,
+      lastRested: freshPart.lastRested,
+    };
+
+    // Keep scores for locked (already-complete) rounds; drop everything else
+    // since those matchups no longer exist in the new schedule.
+    const newScores = {};
+    Object.keys(scores).forEach((key) => {
+      const rIdx = parseInt(key.split("-")[0], 10);
+      if (rIdx < splitIdx) newScores[key] = scores[key];
+    });
+
+    const newCurrentRound = Math.min(splitIdx, newRoundsData.length - 1);
+    setPlayers(newPlayers);
+    setPlayerMap(map);
+    setEngine(newEngine);
+    setScores(newScores);
+    setCurrentRound(newCurrentRound);
+    persist({
+      players: newPlayers,
+      playerMap: map,
+      engine: newEngine,
+      scores: newScores,
+      currentRound: newCurrentRound,
+    });
+  };
+
   // Host-only: designates who collects the split bill payment (can be the
-  // host themselves, or any other player).
-  const handleSetPaymentPerson = (playerId) => {
+  // host themselves, or any other player). If that person already saved a
+  // default platform/account in their own profile (see Lobby), and this
+  // session doesn't have payment info yet, auto-fill it from there.
+  const handleSetPaymentPerson = async (playerId) => {
     setPaymentPersonId(playerId);
-    persist({ paymentPersonId: playerId });
+    let newPaymentInfo = paymentInfo;
+    if (playerId && (!paymentInfo || paymentInfo.length === 0)) {
+      const player = players.find((p) => p.id === playerId);
+      if (player?.accountId) {
+        const acc = await getUserAccount(player.accountId);
+        if (acc?.paymentInfo && acc.paymentInfo.length > 0) {
+          newPaymentInfo = acc.paymentInfo;
+          setPaymentInfo(newPaymentInfo);
+        }
+      }
+    }
+    persist({ paymentPersonId: playerId, paymentInfo: newPaymentInfo });
   };
 
   // The designated payment person can edit their own payment details; the
@@ -1810,6 +1983,15 @@ function AmericanoPadel() {
   const handleSavePaymentInfo = (newInfo) => {
     setPaymentInfo(newInfo);
     persist({ paymentInfo: newInfo });
+  };
+
+  // Saves MY default platform/account info to my profile (not tied to any
+  // one session) — set from the Lobby, used to auto-fill split bill whenever
+  // I'm picked as Payment Person later.
+  const handleSaveMyPaymentInfo = async (newInfo) => {
+    if (!currentUser) return;
+    await updateUserPaymentInfo(currentUser.accountId, newInfo);
+    setCurrentUser((u) => (u ? { ...u, paymentInfo: newInfo } : u));
   };
 
   const handleApproveRequest = (reqId) => {
@@ -2231,8 +2413,17 @@ function AmericanoPadel() {
           onOpenFriends={handleOpenFriends}
           friendRequestCount={friendRequests.length}
           onRespondInvitation={handleRespondInvitation}
+          onOpenMyPayment={() => setScreen("my-payment")}
           currentUser={currentUser}
           onLogout={handleLogout}
+        />
+      )}
+
+      {screen === "my-payment" && (
+        <MyPaymentScreen
+          currentUser={currentUser}
+          onSave={handleSaveMyPaymentInfo}
+          onBackToLobby={handleBackToLobby}
         />
       )}
 
@@ -2374,6 +2565,8 @@ function AmericanoPadel() {
           allMatchesScored={allMatchesScored}
           players={players}
           onAddManualMatch={handleAddManualMatch}
+          friends={friends}
+          onAdjustSchedule={handleAdjustSchedule}
           onNav={setScreen}
           onShare={handleShare}
           onCopyViewLink={handleCopyViewLink}
@@ -2474,7 +2667,7 @@ function BottomNav({ active, onNav, showSplitBill }) {
 // LOBBY SCREEN
 // ---------------------------------------------------------------------------
 
-function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover, onRefresh, onChangeAvatar, onChangeDisplayName, onOpenFriends, friendRequestCount, onRespondInvitation, currentUser, onLogout }) {
+function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover, onRefresh, onChangeAvatar, onChangeDisplayName, onOpenFriends, friendRequestCount, onRespondInvitation, onOpenMyPayment, currentUser, onLogout }) {
   const [accountCount, setAccountCount] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
@@ -2644,6 +2837,12 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
             </span>
           )}
         </button>
+      </div>
+
+      <div className="px-6 pt-3">
+        <GhostButton onClick={onOpenMyPayment} icon={Wallet} className="w-full">
+          Info Pembayaran Saya
+        </GhostButton>
       </div>
 
       <div className="px-6 pt-6">
@@ -2819,6 +3018,103 @@ function PublicEventsScreen({ events, onJoinRequest, onBackToLobby }) {
             </button>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// MY PAYMENT SCREEN — save default platform/account so it auto-fills split
+// bill whenever this person is picked as Payment Person later
+// ---------------------------------------------------------------------------
+
+function MyPaymentScreen({ currentUser, onSave, onBackToLobby }) {
+  const [draftInfo, setDraftInfo] = useState(currentUser?.paymentInfo || []);
+  const [saved, setSaved] = useState(false);
+
+  const addEntry = () => {
+    if (draftInfo.length >= 2) return;
+    setDraftInfo([...draftInfo, { platform: "", number: "" }]);
+    setSaved(false);
+  };
+  const updateEntry = (idx, field, value) => {
+    setDraftInfo(draftInfo.map((e, i) => (i === idx ? { ...e, [field]: value } : e)));
+    setSaved(false);
+  };
+  const removeEntry = (idx) => {
+    setDraftInfo(draftInfo.filter((_, i) => i !== idx));
+    setSaved(false);
+  };
+  const handleSave = async () => {
+    const cleaned = draftInfo.filter((e) => e.platform.trim() || e.number.trim());
+    await onSave(cleaned);
+    setDraftInfo(cleaned);
+    setSaved(true);
+  };
+
+  return (
+    <div className="pb-10">
+      <div className="px-6 pt-14 pb-6 border-b border-slate-800">
+        <button
+          onClick={onBackToLobby}
+          className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform mb-4"
+        >
+          <ArrowLeft size={16} /> Lobby
+        </button>
+        <div className="flex items-center gap-2 mb-1">
+          <Wallet size={16} className="text-lime-300" />
+          <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
+            Profil
+          </span>
+        </div>
+        <h1 className="font-display text-5xl text-slate-50">INFO PEMBAYARAN</h1>
+        <p className="text-slate-500 text-sm mt-2">
+          Simpan platform &amp; nomor akun kamu di sini sekali saja. Nanti kalau kamu ditunjuk
+          jadi Payment Person di acara manapun, split bill-nya otomatis keisi sendiri — nggak
+          perlu ketik ulang tiap kali. Boleh dikosongkan kalau belum mau isi; masih bisa diisi
+          manual nanti di menu Split Bill pas acara selesai.
+        </p>
+      </div>
+
+      <div className="px-6 pt-6">
+        <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 space-y-3">
+          {draftInfo.map((entry, idx) => (
+            <div key={idx} className="flex items-center gap-2">
+              <input
+                value={entry.platform}
+                onChange={(e) => updateEntry(idx, "platform", e.target.value)}
+                placeholder="Platform (mis. BCA, GoPay)"
+                className="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+              />
+              <input
+                value={entry.number}
+                onChange={(e) => updateEntry(idx, "number", e.target.value)}
+                placeholder="No. akun"
+                className="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+              />
+              <button
+                onClick={() => removeEntry(idx)}
+                className="w-9 h-9 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 hover:text-red-400 flex items-center justify-center shrink-0"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+
+          {draftInfo.length === 0 && (
+            <p className="text-slate-500 text-sm">Belum ada platform pembayaran tersimpan.</p>
+          )}
+
+          {draftInfo.length < 2 && (
+            <button onClick={addEntry} className="text-xs font-semibold text-cyan-300">
+              + Tambah platform ({draftInfo.length}/2)
+            </button>
+          )}
+        </div>
+
+        <PrimaryButton onClick={handleSave} className="w-full mt-4">
+          {saved ? "Tersimpan ✓" : "Simpan"}
+        </PrimaryButton>
       </div>
     </div>
   );
@@ -3790,12 +4086,14 @@ function SessionScreen(props) {
     scores, setScore, setPointsPair, resetPointsScore, scoreFormat, pointTarget, tennisTarget,
     incrementTennisPoint, resetTennisMatch, setTennisGamesDirect,
     ended, hasSplitBill, onEndEvent, onReshuffle, allMatchesScored, players, onAddManualMatch,
+    friends, onAdjustSchedule,
     onNav, onShare, onCopyViewLink, onBackToLobby, onDelete,
   } = props;
 
   const [scoreModal, setScoreModal] = useState(null); // court index being edited, or null
   const [viewMode, setViewMode] = useState("single"); // single | all
   const [showAddMatch, setShowAddMatch] = useState(false);
+  const [showManagePlayers, setShowManagePlayers] = useState(false);
 
   useEffect(() => {
     setScoreModal(null);
@@ -3879,14 +4177,24 @@ function SessionScreen(props) {
             </button>
           )}
         </div>
-        {canManage && allMatchesScored && (
-          <button
-            onClick={() => setShowAddMatch(true)}
-            className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-950 bg-cyan-300 rounded-full px-3 py-1.5 mb-3"
-          >
-            <Plus size={12} /> Tambah Match Manual
-          </button>
-        )}
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          {canManage && (
+            <button
+              onClick={() => setShowAddMatch(true)}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-950 bg-cyan-300 rounded-full px-3 py-1.5"
+            >
+              <Plus size={12} /> Tambah Match Manual
+            </button>
+          )}
+          {canManage && (
+            <button
+              onClick={() => setShowManagePlayers(true)}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-950 bg-lime-300 rounded-full px-3 py-1.5"
+            >
+              <Users size={12} /> Kelola Pemain
+            </button>
+          )}
+        </div>
         <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden mb-3">
           <div
             className="h-full bg-lime-300 rounded-full transition-all"
@@ -4006,6 +4314,20 @@ function SessionScreen(props) {
             setShowAddMatch(false);
           }}
           onClose={() => setShowAddMatch(false)}
+        />
+      )}
+
+      {showManagePlayers && (
+        <ManagePlayersModal
+          players={players}
+          friends={friends || []}
+          engine={engine}
+          scores={scores}
+          onConfirm={(newPlayers) => {
+            onAdjustSchedule(newPlayers);
+            setShowManagePlayers(false);
+          }}
+          onClose={() => setShowManagePlayers(false)}
         />
       )}
 
@@ -4375,6 +4697,143 @@ function AddMatchModal({ players, onConfirm, onClose }) {
             className="flex-1"
           >
             Tambahkan
+          </PrimaryButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Lets host/co-host add or remove players mid-match, then re-generate the
+// remaining (not-yet-scored) rounds for the new roster — already-completed
+// rounds are left untouched.
+function ManagePlayersModal({ players, friends, engine, scores, onConfirm, onClose }) {
+  const [roster, setRoster] = useState(players);
+  const [nameInput, setNameInput] = useState("");
+
+  const lockedCount = React.useMemo(() => {
+    if (!engine) return 0;
+    let count = 0;
+    for (let rIdx = 0; rIdx < engine.roundsData.length; rIdx++) {
+      const rd = engine.roundsData[rIdx];
+      const allScored = rd.courts.every((_, cIdx) => {
+        const s = (scores || {})[`${rIdx}-${cIdx}`];
+        if (!s) return false;
+        if (s.format === "tennis") return (s.gamesA || 0) > 0 || (s.gamesB || 0) > 0;
+        return s.a !== undefined && s.a !== "" && s.b !== undefined && s.b !== "";
+      });
+      if (!allScored) break;
+      count++;
+    }
+    return count;
+  }, [engine, scores]);
+
+  const totalRounds = engine ? engine.roundsData.length : 0;
+  const remainingCount = totalRounds - lockedCount;
+  const changed = roster.length !== players.length || roster.some((p, i) => players[i]?.id !== p.id);
+
+  const removePlayer = (id) => setRoster(roster.filter((p) => p.id !== id));
+
+  const addManual = () => {
+    const name = nameInput.trim();
+    if (!name) return;
+    setRoster([...roster, { id: uid(), name }]);
+    setNameInput("");
+  };
+
+  const addFriend = (f) => {
+    if (roster.some((p) => p.accountId === f.accountId)) return;
+    setRoster([...roster, { id: uid(), name: f.username, accountId: f.accountId }]);
+  };
+
+  const availableFriends = friends.filter((f) => !roster.some((p) => p.accountId === f.accountId));
+
+  return (
+    <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center" onClick={onClose}>
+      <div
+        className="bg-slate-950 border border-slate-800 rounded-t-3xl sm:rounded-3xl w-full sm:max-w-sm max-h-[85vh] overflow-y-auto p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="text-xs font-semibold tracking-[0.15em] text-lime-300 uppercase mb-1">
+          Kelola Pemain
+        </div>
+        <p className="text-xs text-slate-500 mb-4">
+          {lockedCount > 0
+            ? `${lockedCount} ronde yang sudah lengkap skornya akan tetap dipertahankan. ${remainingCount} ronde sisanya akan disusun ulang dengan daftar pemain baru.`
+            : `Semua ${totalRounds} ronde belum ada yang lengkap skornya, jadi seluruh jadwal akan disusun ulang dengan daftar pemain baru.`}
+        </p>
+
+        <div className="flex gap-2 mb-3">
+          <input
+            value={nameInput}
+            onChange={(e) => setNameInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addManual()}
+            placeholder="Nama pemain baru (manual)"
+            className="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+          />
+          <button
+            onClick={addManual}
+            className="w-10 h-10 rounded-lg bg-lime-300 text-slate-950 flex items-center justify-center shrink-0"
+          >
+            <Plus size={16} strokeWidth={3} />
+          </button>
+        </div>
+
+        {availableFriends.length > 0 && (
+          <div className="mb-4">
+            <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-1.5">
+              Tambah dari teman
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {availableFriends.map((f) => (
+                <button
+                  key={f.accountId}
+                  onClick={() => addFriend(f)}
+                  className="px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-900 border border-slate-700 text-slate-300"
+                >
+                  + {f.username}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-1.5">
+          Daftar pemain ({roster.length})
+        </div>
+        <div className="space-y-2 max-h-56 overflow-y-auto mb-4">
+          {roster.map((p) => (
+            <div
+              key={p.id}
+              className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-2"
+            >
+              <span className="font-semibold text-slate-100 flex-1 min-w-0 truncate text-sm">
+                {p.name}
+              </span>
+              <button
+                onClick={() => removePlayer(p.id)}
+                className="w-7 h-7 rounded-full bg-slate-800 border border-slate-700 text-slate-400 hover:text-red-400 flex items-center justify-center shrink-0"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {roster.length < 4 && (
+          <p className="text-amber-400 text-xs mb-3">Minimal 4 pemain diperlukan.</p>
+        )}
+
+        <div className="flex items-center gap-3">
+          <GhostButton onClick={onClose} className="flex-1">
+            Batal
+          </GhostButton>
+          <PrimaryButton
+            onClick={() => onConfirm(roster)}
+            disabled={roster.length < 4 || !changed}
+            className="flex-1"
+          >
+            Sesuaikan Jadwal
           </PrimaryButton>
         </div>
       </div>
