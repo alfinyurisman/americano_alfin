@@ -1020,21 +1020,34 @@ function findFirstUnscoredRound(engine, scores) {
   return Math.max(0, engine.roundsData.length - 1);
 }
 
-function buildLeaderboard(engine, playerMap, scores) {
+function buildLeaderboard(engine, playerMap, scores, activeIds) {
   if (!engine) return [];
   const totals = {};
+  const activeSet = activeIds ? new Set(activeIds) : null;
+  // Historical (locked) rounds can still reference a player who was later
+  // removed from the roster via "Kelola Pemain". playerMap keeps their name
+  // around (see handleAdjustSchedule), so we can still label them clearly
+  // instead of losing their identity or crashing on a missing lookup.
+  const ensure = (id) => {
+    if (!totals[id]) {
+      const isRemoved = activeSet && !activeSet.has(id);
+      const rawName = playerMap[id] || id;
+      totals[id] = {
+        id,
+        name: isRemoved ? `Pemain Dihapus (${rawName})` : rawName,
+        points: 0,
+        wins: 0,
+        losses: 0,
+        ties: 0,
+        diff: 0,
+        matches: 0,
+        rests: engine.restCount[id] || 0,
+      };
+    }
+    return totals[id];
+  };
   Object.keys(playerMap).forEach((id) => {
-    totals[id] = {
-      id,
-      name: playerMap[id],
-      points: 0,
-      wins: 0,
-      losses: 0,
-      ties: 0,
-      diff: 0,
-      matches: 0,
-      rests: engine.restCount[id] || 0,
-    };
+    if (!activeSet || activeSet.has(id)) ensure(id);
   });
   engine.roundsData.forEach((rd, rIdx) => {
     rd.courts.forEach((match, cIdx) => {
@@ -1044,32 +1057,36 @@ function buildLeaderboard(engine, playerMap, scores) {
       const { a, b } = ab;
       if (!Number.isFinite(a) || !Number.isFinite(b)) return;
       match.team1.forEach((id) => {
-        totals[id].points += a;
-        totals[id].diff += a - b;
-        totals[id].matches += 1;
+        const t = ensure(id);
+        t.points += a;
+        t.diff += a - b;
+        t.matches += 1;
       });
       match.team2.forEach((id) => {
-        totals[id].points += b;
-        totals[id].diff += b - a;
-        totals[id].matches += 1;
+        const t = ensure(id);
+        t.points += b;
+        t.diff += b - a;
+        t.matches += 1;
       });
       if (a > b) {
-        match.team1.forEach((id) => (totals[id].wins += 1));
-        match.team2.forEach((id) => (totals[id].losses += 1));
+        match.team1.forEach((id) => (ensure(id).wins += 1));
+        match.team2.forEach((id) => (ensure(id).losses += 1));
       } else if (b > a) {
-        match.team2.forEach((id) => (totals[id].wins += 1));
-        match.team1.forEach((id) => (totals[id].losses += 1));
+        match.team2.forEach((id) => (ensure(id).wins += 1));
+        match.team1.forEach((id) => (ensure(id).losses += 1));
       } else {
-        match.team1.forEach((id) => (totals[id].ties += 1));
-        match.team2.forEach((id) => (totals[id].ties += 1));
+        match.team1.forEach((id) => (ensure(id).ties += 1));
+        match.team2.forEach((id) => (ensure(id).ties += 1));
       }
     });
   });
-  return Object.values(totals).map((t) => ({
-    ...t,
-    winPercent: t.matches > 0 ? (t.wins / t.matches) * 100 : 0,
-    ppm: t.matches > 0 ? t.points / t.matches : 0,
-  }));
+  return Object.values(totals)
+    .filter((t) => !activeSet || activeSet.has(t.id))
+    .map((t) => ({
+      ...t,
+      winPercent: t.matches > 0 ? (t.wins / t.matches) * 100 : 0,
+      ppm: t.matches > 0 ? t.points / t.matches : 0,
+    }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1933,7 +1950,10 @@ function AmericanoPadel() {
     }
 
     const ids = newPlayers.map((p) => p.id);
-    const map = {};
+    // Merge instead of replacing outright — anyone removed from the roster
+    // still has their name preserved here for historical rounds/leaderboard,
+    // it's just no longer part of the active `ids` used for future rounds.
+    const map = { ...playerMap };
     newPlayers.forEach((p) => (map[p.id] = p.name));
     const freshPart = generateSchedule(ids, courts, remainingRoundsCount, seed);
 
@@ -2293,8 +2313,8 @@ function AmericanoPadel() {
   };
 
   const leaderboard = React.useMemo(
-    () => buildLeaderboard(engine, playerMap, scores),
-    [engine, playerMap, scores]
+    () => buildLeaderboard(engine, playerMap, scores, players.map((p) => p.id)),
+    [engine, playerMap, scores, players]
   );
 
   const fairnessStats = React.useMemo(() => {
@@ -2311,7 +2331,7 @@ function AmericanoPadel() {
         if (playingIds.has(id)) playedSoFar[id] = (playedSoFar[id] || 0) + 1;
       });
     });
-    const ids = Object.keys(playerMap);
+    const ids = players.map((p) => p.id);
     return ids
       .map((id) => {
         const partners = Object.values(engine.partner[id] || {}).filter((v) => v > 0).length;
@@ -5641,7 +5661,10 @@ function ViewOnlyApp({ sessionId }) {
   }, [sessionId]);
 
   const leaderboard = React.useMemo(
-    () => (data?.engine ? buildLeaderboard(data.engine, data.playerMap, data.scores) : []),
+    () =>
+      data?.engine
+        ? buildLeaderboard(data.engine, data.playerMap, data.scores, (data.players || []).map((p) => p.id))
+        : [],
     [data]
   );
   const [lbSortBy, setLbSortBy] = useState("wins"); // wins | diff | winPercent | ppm
