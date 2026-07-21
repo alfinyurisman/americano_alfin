@@ -60,18 +60,17 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
       });
 
       // Anyone waiting strictly LONGER than the cutoff is locked in — their
-      // turn is never traded away. Only players right at the cutoff boundary
-      // (or up to 1 round short of it) are treated as flexible: among just
-      // those, try many combinations and keep whichever gives the best
-      // partner/opponent variety. This keeps the wait-time cost of chasing
-      // variety small and bounded (at most 1 extra round of rest for anyone)
-      // while still actively avoiding repeat matchups when there's room to.
+      // turn is never traded away. Only players EXACTLY tied at the cutoff
+      // boundary are treated as flexible: among just those (never reaching
+      // into a lower-priority tier), try many combinations and keep
+      // whichever gives the best partner/opponent variety. Because the tied
+      // group at the cutoff is, by construction, always at least as large as
+      // the remaining slots needed, this never costs anyone extra wait time
+      // — it only smartly picks WHICH of the already-tied people play,
+      // instead of a plain random tiebreak.
       const cutoffWait = globalR - lastPlayed[sorted[capacity - 1]];
       const guaranteed = sorted.filter((id) => globalR - lastPlayed[id] > cutoffWait);
-      const flexCandidates = sorted.filter((id) => {
-        const w = globalR - lastPlayed[id];
-        return w === cutoffWait || w === cutoffWait - 1;
-      });
+      const flexCandidates = sorted.filter((id) => globalR - lastPlayed[id] === cutoffWait);
       const neededFromFlex = capacity - guaranteed.length;
 
       if (flexCandidates.length <= neededFromFlex) {
