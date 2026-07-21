@@ -1906,6 +1906,44 @@ function AmericanoPadel() {
     persist({ engine: newEngine, currentRound: newRoundIdx });
   };
 
+  // Auto-generates N more fairness-optimized rounds (same algorithm as the
+  // original schedule — picks teams automatically instead of the host
+  // manually assigning them) — for when there's still time left after the
+  // planned schedule is done. Continues the same partner/opponent/rest
+  // history so it's treated as one continuous rotation, not a fresh start.
+  const handleAddAutoRound = (count = 1) => {
+    if (!engine) return;
+    const activePlayers = players.filter((p) => p.arrived !== false);
+    if (activePlayers.length < 4) {
+      alert("Minimal 4 pemain yang hadir diperlukan supaya bisa generate ronde baru.");
+      return;
+    }
+    const n = Math.max(1, Math.min(50, Math.floor(count) || 1));
+    const ids = activePlayers.map((p) => p.id);
+    const seed = {
+      partner: engine.partner,
+      opp: engine.opp,
+      playCount: engine.playCount,
+      restCount: engine.restCount,
+      lastRested: engine.lastRested || {},
+    };
+    const part = generateSchedule(ids, courts, n, seed);
+    const newRoundsData = [...engine.roundsData, ...part.roundsData];
+    const newEngine = {
+      roundsData: newRoundsData,
+      playCount: part.playCount,
+      restCount: part.restCount,
+      partner: part.partner,
+      opp: part.opp,
+      usableCourts: part.usableCourts,
+      lastRested: part.lastRested,
+    };
+    const newRoundIdx = newRoundsData.length - 1;
+    setEngine(newEngine);
+    setCurrentRound(newRoundIdx);
+    persist({ engine: newEngine, currentRound: newRoundIdx });
+  };
+
   // Adds/removes players mid-match and re-generates the schedule for
   // everything that hasn't been played yet. Rounds that are already fully
   // scored are treated as locked history and left untouched — only the
@@ -2743,6 +2781,7 @@ function AmericanoPadel() {
           allMatchesScored={allMatchesScored}
           players={players}
           onAddManualMatch={handleAddManualMatch}
+          onAddAutoRound={handleAddAutoRound}
           friends={friends}
           onAdjustSchedule={handleAdjustSchedule}
           onToggleArrival={handleToggleArrival}
@@ -4417,7 +4456,7 @@ function SessionScreen(props) {
     eventName, isOwner, canManage, engine, playerMap, currentRound, goRound, goToRound,
     scores, setScore, setPointsPair, resetPointsScore, scoreFormat, pointTarget, tennisTarget,
     incrementTennisPoint, resetTennisMatch, setTennisGamesDirect,
-    ended, hasSplitBill, onEndEvent, onReshuffle, allMatchesScored, players, onAddManualMatch,
+    ended, hasSplitBill, onEndEvent, onReshuffle, allMatchesScored, players, onAddManualMatch, onAddAutoRound,
     friends, onAdjustSchedule, courts, onToggleArrival,
     onNav, onShare, onCopyViewLink, onBackToLobby, onDelete,
   } = props;
@@ -4427,6 +4466,7 @@ function SessionScreen(props) {
   const [showAddMatch, setShowAddMatch] = useState(false);
   const [showManagePlayers, setShowManagePlayers] = useState(false);
   const [showAttendance, setShowAttendance] = useState(false);
+  const [showAddAutoRound, setShowAddAutoRound] = useState(false);
 
   useEffect(() => {
     setScoreModal(null);
@@ -4517,6 +4557,14 @@ function SessionScreen(props) {
               className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-950 bg-cyan-300 rounded-full px-3 py-1.5"
             >
               <Plus size={12} /> Tambah Match Manual
+            </button>
+          )}
+          {canManage && (
+            <button
+              onClick={() => setShowAddAutoRound(true)}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-950 bg-teal-300 rounded-full px-3 py-1.5"
+            >
+              <Shuffle size={12} /> Tambah Ronde Otomatis
             </button>
           )}
           {isOwner && (
@@ -4681,6 +4729,17 @@ function SessionScreen(props) {
         />
       )}
 
+      {showAddAutoRound && (
+        <AddAutoRoundModal
+          totalRounds={totalRounds}
+          onConfirm={(count) => {
+            onAddAutoRound(count);
+            setShowAddAutoRound(false);
+          }}
+          onClose={() => setShowAddAutoRound(false)}
+        />
+      )}
+
       {/* NAV */}
       <div className="px-6 pt-6 flex gap-3">
         <GhostButton onClick={() => goRound(-1)} disabled={currentRound === 0} icon={ChevronLeft} className="flex-1">
@@ -4751,20 +4810,18 @@ function AllRoundsList({ engine, playerMap, scores, scoreFormat, currentRound, o
                 <button
                   key={cIdx}
                   onClick={() => onJump(rIdx)}
-                  className="w-full text-left rounded-xl border border-slate-800 bg-slate-900/40 px-3 py-2.5 flex items-center justify-between gap-3"
+                  className="w-full rounded-xl border border-slate-800 bg-slate-900/40 px-3 py-3 flex flex-col items-center gap-1.5 text-center"
                 >
-                  <div className="min-w-0">
-                    <div className="text-[10px] text-slate-500 uppercase tracking-wide">
-                      Lap. {cIdx + 1}
-                    </div>
-                    <div className="text-sm text-slate-200 truncate">
-                      {match.team1.map((id) => playerMap[id]).join(" & ")}{" "}
-                      <span className="text-slate-600">vs</span>{" "}
-                      {match.team2.map((id) => playerMap[id]).join(" & ")}
-                    </div>
+                  <div className="text-[10px] text-slate-500 uppercase tracking-wide">
+                    Lap. {cIdx + 1}
+                  </div>
+                  <div className="text-sm text-slate-200 leading-snug">
+                    {match.team1.map((id) => playerMap[id]).join(" & ")}{" "}
+                    <span className="text-slate-600">vs</span>{" "}
+                    {match.team2.map((id) => playerMap[id]).join(" & ")}
                   </div>
                   <div
-                    className={`font-mono2 text-sm shrink-0 ${
+                    className={`font-mono2 text-sm ${
                       scoreLabel === "belum ada skor" ? "text-slate-600" : "text-lime-300"
                     }`}
                   >
@@ -5276,6 +5333,63 @@ function AttendanceModal({ players, onToggle, onClose }) {
         <PrimaryButton onClick={onClose} className="w-full mt-5">
           Tutup
         </PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+// Asks how many extra fairness-optimized rounds to auto-generate at once
+// (default 1) — for when there's still time left after the planned
+// schedule is done.
+function AddAutoRoundModal({ totalRounds, onConfirm, onClose }) {
+  const [count, setCount] = useState(1);
+  const firstNew = totalRounds + 1;
+  const lastNew = totalRounds + count;
+
+  return (
+    <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center" onClick={onClose}>
+      <div
+        className="bg-slate-950 border border-slate-800 rounded-t-3xl sm:rounded-3xl w-full sm:max-w-sm p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="text-xs font-semibold tracking-[0.15em] text-teal-300 uppercase mb-1">
+          Tambah Ronde Otomatis
+        </div>
+        <p className="text-xs text-slate-500 mb-4">
+          Bisa dipakai kapan saja — nggak peduli masih ada ronde yang belum jalan atau semuanya
+          sudah kelar. Sistem yang pilihin pasangan & lawannya, tetap adil dan nyambung dari
+          histori yang sudah ada. Ronde yang ada sekarang tidak berubah sama sekali.
+        </p>
+
+        <div className="flex items-center gap-4 mb-3 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3">
+          <button
+            onClick={() => setCount((c) => Math.max(1, c - 1))}
+            className="w-10 h-10 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 flex items-center justify-center font-bold text-lg shrink-0"
+          >
+            −
+          </button>
+          <span className="flex-1 text-center font-display text-3xl text-slate-100">{count}</span>
+          <button
+            onClick={() => setCount((c) => Math.min(50, c + 1))}
+            className="w-10 h-10 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 flex items-center justify-center font-bold text-lg shrink-0"
+          >
+            +
+          </button>
+        </div>
+
+        <p className="text-[11px] text-teal-300 mb-5 text-center">
+          Akan ditambahkan berurutan di paling akhir:{" "}
+          {count > 1 ? `Ronde ${firstNew}–${lastNew}` : `Ronde ${firstNew}`}
+        </p>
+
+        <div className="flex items-center gap-3">
+          <GhostButton onClick={onClose} className="flex-1">
+            Batal
+          </GhostButton>
+          <PrimaryButton onClick={() => onConfirm(count)} className="flex-1">
+            Tambahkan {count} Ronde
+          </PrimaryButton>
+        </div>
       </div>
     </div>
   );
