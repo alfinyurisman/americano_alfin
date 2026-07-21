@@ -1527,7 +1527,17 @@ function AmericanoPadel() {
           setCoHostIds(saved.coHostIds || []);
           setEngine(saved.engine || null);
           setPlayerMap(saved.playerMap || {});
-          setCurrentRound(saved.currentRound || 0);
+          // Deliberately NOT syncing currentRound from shared storage here —
+          // which round each person is LOOKING AT should be their own local
+          // browsing position, not something that jumps around whenever
+          // someone else navigates. Scores/engine still update live either
+          // way. Just defensively clamp in case the round count shrank
+          // (e.g. someone else reshuffled/adjusted the schedule).
+          setCurrentRound((prev) => {
+            const total = (saved.engine?.roundsData || []).length;
+            if (total === 0) return 0;
+            return Math.min(prev, total - 1);
+          });
           setScores(saved.scores || {});
           setScoreFormat(saved.scoreFormat || "points");
           setPointTarget(saved.pointTarget ?? 21);
@@ -1750,9 +1760,10 @@ function AmericanoPadel() {
       return;
     }
 
-    const ids = players.map((p) => p.id);
+    const arrivedPlayers = players.map((p) => ({ ...p, arrived: true }));
+    const ids = arrivedPlayers.map((p) => p.id);
     const map = {};
-    players.forEach((p) => (map[p.id] = p.name));
+    arrivedPlayers.forEach((p) => (map[p.id] = p.name));
 
     let result;
     if (validStages.length > 1) {
@@ -1790,13 +1801,14 @@ function AmericanoPadel() {
 
     setEngine(result);
     setPlayerMap(map);
+    setPlayers(arrivedPlayers);
     setCurrentRound(0);
     setScores({});
     setStatus("active");
     setScreen("session");
     persist({
       status: "active",
-      players,
+      players: arrivedPlayers,
       engine: result,
       playerMap: map,
       currentRound: 0,
@@ -1914,8 +1926,13 @@ function AmericanoPadel() {
     const lockedRounds = engine.roundsData.slice(0, splitIdx);
     const remainingRoundsCount = engine.roundsData.length - splitIdx;
 
-    if (newPlayers.length < 4) {
-      alert("Minimal 4 pemain diperlukan supaya jadwal bisa disusun.");
+    // Only players marked as arrived (default true) actually get scheduled
+    // into upcoming rounds — anyone marked "belum datang" stays listed but
+    // is excluded from future rounds until marked as arrived again.
+    const activePlayers = newPlayers.filter((p) => p.arrived !== false);
+
+    if (activePlayers.length < 4) {
+      alert("Minimal 4 pemain yang sudah datang diperlukan supaya jadwal bisa disusun.");
       return;
     }
     if (remainingRoundsCount <= 0) {
@@ -1926,9 +1943,9 @@ function AmericanoPadel() {
     }
 
     // Rebuild the fairness-history seed by replaying ONLY the locked rounds
-    // (not the discarded future ones) against the new roster.
+    // (not the discarded future ones) against the active roster.
     const seed = { partner: {}, opp: {}, playCount: {}, restCount: {}, lastRested: {} };
-    newPlayers.forEach((p) => {
+    activePlayers.forEach((p) => {
       seed.playCount[p.id] = 0;
       seed.restCount[p.id] = 0;
       seed.lastRested[p.id] = -99;
@@ -1967,23 +1984,24 @@ function AmericanoPadel() {
       });
     });
 
-    // New players (not in the previous roster) start with restCount=0,
-    // which the algorithm reads as "hasn't rested in ages" and would force
-    // them to sit out first/repeatedly. Instead, treat them as already on
-    // par with the group's current rest rotation — it's fine if they end up
-    // with fewer total matches played than people who joined earlier; the
+    // Anyone newly active (joined the roster, OR just marked "sudah
+    // datang" after being away) starts with restCount=0, which the
+    // algorithm reads as "hasn't rested in ages" and would force them to
+    // sit out first/repeatedly. Instead, treat them as already on par with
+    // the group's current rest rotation — it's fine if they end up with
+    // fewer total matches played than people who were active earlier; the
     // point here is just to avoid an artificial, unfair queue for them.
-    const oldIds = new Set(players.map((p) => p.id));
-    const newcomers = newPlayers.filter((p) => !oldIds.has(p.id));
+    const oldActiveIds = new Set(players.filter((p) => p.arrived !== false).map((p) => p.id));
+    const newcomers = activePlayers.filter((p) => !oldActiveIds.has(p.id));
     if (newcomers.length > 0) {
-      const existingRestCounts = newPlayers
-        .filter((p) => oldIds.has(p.id))
+      const existingRestCounts = activePlayers
+        .filter((p) => oldActiveIds.has(p.id))
         .map((p) => seed.restCount[p.id]);
       const avgRest = existingRestCounts.length
         ? Math.round(existingRestCounts.reduce((a, b) => a + b, 0) / existingRestCounts.length)
         : 0;
-      const existingLastRested = newPlayers
-        .filter((p) => oldIds.has(p.id))
+      const existingLastRested = activePlayers
+        .filter((p) => oldActiveIds.has(p.id))
         .map((p) => seed.lastRested[p.id])
         .filter((v) => v > -99);
       const avgLastRested = existingLastRested.length
@@ -1995,10 +2013,10 @@ function AmericanoPadel() {
       });
     }
 
-    const ids = newPlayers.map((p) => p.id);
-    // Merge instead of replacing outright — anyone removed from the roster
+    const ids = activePlayers.map((p) => p.id);
+    // Merge instead of replacing outright — anyone removed/not-yet-arrived
     // still has their name preserved here for historical rounds/leaderboard,
-    // it's just no longer part of the active `ids` used for future rounds.
+    // it's just not part of the active `ids` used for future rounds.
     const map = { ...playerMap };
     newPlayers.forEach((p) => (map[p.id] = p.name));
     const freshPart = generateSchedule(ids, newCourts, remainingRoundsCount, seed);
@@ -2037,6 +2055,19 @@ function AmericanoPadel() {
       currentRound: newCurrentRound,
       courts: newCourts,
     });
+  };
+
+  // Marks a player as arrived / not-yet-arrived. This does NOT remove them
+  // from the roster — they stay listed and can be toggled back — it just
+  // reuses the same "adjust schedule" mechanism to keep them out of (or put
+  // them back into) upcoming rounds, preserving already-scored history and
+  // fairness tracking either way.
+  const handleToggleArrival = (playerId) => {
+    const target = players.find((p) => p.id === playerId);
+    if (!target) return;
+    const nowArrived = target.arrived === false; // toggling from not-arrived -> arrived
+    const newPlayers = players.map((p) => (p.id === playerId ? { ...p, arrived: nowArrived } : p));
+    handleAdjustSchedule(newPlayers, courts);
   };
 
   // Host-only: designates who collects the split bill payment (can be the
@@ -2261,14 +2292,12 @@ function AmericanoPadel() {
     if (!engine) return;
     const next = Math.min(Math.max(0, currentRound + delta), engine.roundsData.length - 1);
     setCurrentRound(next);
-    persist({ currentRound: next });
   };
 
   const goToRound = (idx) => {
     if (!engine) return;
     const next = Math.min(Math.max(0, idx), engine.roundsData.length - 1);
     setCurrentRound(next);
-    persist({ currentRound: next });
   };
 
   const setScore = (courtIdx, side, value) => {
@@ -2363,7 +2392,13 @@ function AmericanoPadel() {
   };
 
   const leaderboard = React.useMemo(
-    () => buildLeaderboard(engine, playerMap, scores, players.map((p) => p.id)),
+    () =>
+      buildLeaderboard(
+        engine,
+        playerMap,
+        scores,
+        players.filter((p) => p.arrived !== false).map((p) => p.id)
+      ),
     [engine, playerMap, scores, players]
   );
 
@@ -2381,7 +2416,7 @@ function AmericanoPadel() {
         if (playingIds.has(id)) playedSoFar[id] = (playedSoFar[id] || 0) + 1;
       });
     });
-    const ids = players.map((p) => p.id);
+    const ids = players.filter((p) => p.arrived !== false).map((p) => p.id);
     return ids
       .map((id) => {
         const partners = Object.values(engine.partner[id] || {}).filter((v) => v > 0).length;
@@ -2652,6 +2687,7 @@ function AmericanoPadel() {
           onAddManualMatch={handleAddManualMatch}
           friends={friends}
           onAdjustSchedule={handleAdjustSchedule}
+          onToggleArrival={handleToggleArrival}
           courts={courts}
           onNav={setScreen}
           onShare={handleShare}
@@ -4324,7 +4360,7 @@ function SessionScreen(props) {
     scores, setScore, setPointsPair, resetPointsScore, scoreFormat, pointTarget, tennisTarget,
     incrementTennisPoint, resetTennisMatch, setTennisGamesDirect,
     ended, hasSplitBill, onEndEvent, onReshuffle, allMatchesScored, players, onAddManualMatch,
-    friends, onAdjustSchedule, courts,
+    friends, onAdjustSchedule, courts, onToggleArrival,
     onNav, onShare, onCopyViewLink, onBackToLobby, onDelete,
   } = props;
 
@@ -4332,6 +4368,7 @@ function SessionScreen(props) {
   const [viewMode, setViewMode] = useState("single"); // single | all
   const [showAddMatch, setShowAddMatch] = useState(false);
   const [showManagePlayers, setShowManagePlayers] = useState(false);
+  const [showAttendance, setShowAttendance] = useState(false);
 
   useEffect(() => {
     setScoreModal(null);
@@ -4430,6 +4467,14 @@ function SessionScreen(props) {
               className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-950 bg-lime-300 rounded-full px-3 py-1.5"
             >
               <Users size={12} /> Kelola Pertandingan
+            </button>
+          )}
+          {canManage && (
+            <button
+              onClick={() => setShowAttendance(true)}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-950 bg-amber-300 rounded-full px-3 py-1.5"
+            >
+              <UserCircle2 size={12} /> Kedatangan Pemain
             </button>
           )}
         </div>
@@ -4567,6 +4612,14 @@ function SessionScreen(props) {
             setShowManagePlayers(false);
           }}
           onClose={() => setShowManagePlayers(false)}
+        />
+      )}
+
+      {showAttendance && (
+        <AttendanceModal
+          players={players}
+          onToggle={onToggleArrival}
+          onClose={() => setShowAttendance(false)}
         />
       )}
 
@@ -5107,6 +5160,64 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, onConfir
             Sesuaikan Jadwal
           </PrimaryButton>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Lets host/co-host mark who's actually shown up. Toggling someone to
+// "belum datang" immediately reshuffles the not-yet-scored rounds to only
+// include arrived players; toggling them back to "sudah datang" slots them
+// back into the rotation fairly. Nobody is removed from the list.
+function AttendanceModal({ players, onToggle, onClose }) {
+  const arrivedCount = players.filter((p) => p.arrived !== false).length;
+  return (
+    <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center" onClick={onClose}>
+      <div
+        className="bg-slate-950 border border-slate-800 rounded-t-3xl sm:rounded-3xl w-full sm:max-w-sm max-h-[85vh] overflow-y-auto p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="text-xs font-semibold tracking-[0.15em] text-amber-300 uppercase mb-1">
+          Kedatangan Pemain
+        </div>
+        <p className="text-xs text-slate-500 mb-4">
+          Default-nya semua dianggap sudah datang. Tandai "Belum Datang" buat yang telat — ronde
+          yang belum ada skornya otomatis disusun ulang cuma buat yang sudah hadir. Begitu mereka
+          datang, tandai balik "Sudah Datang" untuk masuk rotasi lagi.
+        </p>
+        <p className="text-[11px] text-slate-400 mb-3">
+          {arrivedCount} dari {players.length} pemain sudah datang.
+        </p>
+
+        <div className="space-y-2">
+          {players.map((p) => {
+            const arrived = p.arrived !== false;
+            return (
+              <div
+                key={p.id}
+                className={`flex items-center justify-between gap-3 rounded-xl border px-4 py-3 ${
+                  arrived ? "border-slate-800 bg-slate-900/50" : "border-amber-400/40 bg-amber-400/5"
+                }`}
+              >
+                <span className="font-semibold text-slate-100 truncate">{p.name}</span>
+                <button
+                  onClick={() => onToggle(p.id)}
+                  className={`px-3 py-1.5 rounded-full text-xs font-semibold shrink-0 ${
+                    arrived
+                      ? "bg-lime-300 text-slate-950"
+                      : "bg-slate-800 border border-amber-400/60 text-amber-300"
+                  }`}
+                >
+                  {arrived ? "Sudah Datang" : "Belum Datang"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        <PrimaryButton onClick={onClose} className="w-full mt-5">
+          Tutup
+        </PrimaryButton>
       </div>
     </div>
   );
