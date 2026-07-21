@@ -58,7 +58,46 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
         if (waitA !== waitB) return waitB - waitA; // longest wait plays next
         return Math.random() - 0.5;
       });
-      active = sorted.slice(0, capacity);
+
+      // Anyone waiting strictly LONGER than the cutoff is locked in — their
+      // turn is never traded away. Only players right at the cutoff boundary
+      // (or up to 1 round short of it) are treated as flexible: among just
+      // those, try many combinations and keep whichever gives the best
+      // partner/opponent variety. This keeps the wait-time cost of chasing
+      // variety small and bounded (at most 1 extra round of rest for anyone)
+      // while still actively avoiding repeat matchups when there's room to.
+      const cutoffWait = globalR - lastPlayed[sorted[capacity - 1]];
+      const guaranteed = sorted.filter((id) => globalR - lastPlayed[id] > cutoffWait);
+      const flexCandidates = sorted.filter((id) => {
+        const w = globalR - lastPlayed[id];
+        return w === cutoffWait || w === cutoffWait - 1;
+      });
+      const neededFromFlex = capacity - guaranteed.length;
+
+      if (flexCandidates.length <= neededFromFlex) {
+        active = [...guaranteed, ...flexCandidates];
+      } else {
+        let bestActive = null;
+        let bestActiveCost = Infinity;
+        for (let st = 0; st < 40; st++) {
+          const shuffledFlex = [...flexCandidates].sort(() => Math.random() - 0.5);
+          const candidateActive = [...guaranteed, ...shuffledFlex.slice(0, neededFromFlex)];
+          let cost = 0;
+          for (let i = 0; i < candidateActive.length; i++) {
+            for (let j = i + 1; j < candidateActive.length; j++) {
+              const p1 = candidateActive[i];
+              const p2 = candidateActive[j];
+              cost += (partner[p1][p2] || 0) * 10 + (opp[p1][p2] || 0);
+            }
+          }
+          if (cost < bestActiveCost) {
+            bestActiveCost = cost;
+            bestActive = candidateActive;
+          }
+        }
+        active = bestActive;
+      }
+
       const activeSet = new Set(active);
       resting = playerIds.filter((id) => !activeSet.has(id));
       resting.forEach((id) => {
