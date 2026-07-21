@@ -10,7 +10,7 @@ import {
 // SCHEDULING ENGINE
 // ---------------------------------------------------------------------------
 
-function generateSchedule(playerIds, courtsInput, numRounds, seed) {
+function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset = 0) {
   const n = playerIds.length;
   const usableCourts = Math.max(0, Math.min(courtsInput, Math.floor(n / 4)));
   const capacity = usableCourts * 4;
@@ -19,12 +19,20 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed) {
   const opp = seed ? JSON.parse(JSON.stringify(seed.opp)) : {};
   const playCount = seed ? { ...seed.playCount } : {};
   const restCount = seed ? { ...seed.restCount } : {};
-  const lastRested = seed ? { ...seed.lastRested } : {};
+  // lastPlayed tracks the last round each person actually PLAYED (not
+  // rested). Selection is driven by "who's waited longest since they last
+  // played" — this directly minimizes everyone's wait between turns, which
+  // matters a lot when court count is small relative to player count (e.g.
+  // 1 court for 14 people): picking who rests by lowest rest-count used to
+  // let a "just played" group get stuck resting round after round while
+  // their rest-count stayed low relative to everyone else, badly delaying
+  // their next turn. Tracking wait-to-play directly avoids that.
+  const lastPlayed = seed ? { ...seed.lastPlayed } : {};
 
   playerIds.forEach((id) => {
     if (playCount[id] === undefined) playCount[id] = 0;
     if (restCount[id] === undefined) restCount[id] = 0;
-    if (lastRested[id] === undefined) lastRested[id] = -99;
+    if (lastPlayed[id] === undefined) lastPlayed[id] = -1;
     if (!partner[id]) partner[id] = {};
     if (!opp[id]) opp[id] = {};
     playerIds.forEach((o) => {
@@ -38,24 +46,26 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed) {
   const roundsData = [];
 
   for (let r = 0; r < numRounds; r++) {
+    const globalR = r + roundOffset;
     const numResting = n - capacity;
     let resting = [];
     let active = [...playerIds];
 
     if (numResting > 0) {
       const sorted = [...playerIds].sort((a, b) => {
-        if (restCount[a] !== restCount[b]) return restCount[a] - restCount[b];
-        const agoA = r - lastRested[a];
-        const agoB = r - lastRested[b];
-        if (agoA !== agoB) return agoB - agoA;
+        const waitA = globalR - lastPlayed[a];
+        const waitB = globalR - lastPlayed[b];
+        if (waitA !== waitB) return waitB - waitA; // longest wait plays next
         return Math.random() - 0.5;
       });
-      resting = sorted.slice(0, numResting);
-      const restingSet = new Set(resting);
-      active = playerIds.filter((id) => !restingSet.has(id));
+      active = sorted.slice(0, capacity);
+      const activeSet = new Set(active);
+      resting = playerIds.filter((id) => !activeSet.has(id));
       resting.forEach((id) => {
         restCount[id]++;
-        lastRested[id] = r;
+      });
+      active.forEach((id) => {
+        lastPlayed[id] = globalR;
       });
     }
 
@@ -130,7 +140,7 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed) {
     roundsData.push({ resting, courts: courtsResult });
   }
 
-  return { roundsData, playCount, restCount, partner, opp, usableCourts, lastRested };
+  return { roundsData, playCount, restCount, partner, opp, usableCourts, lastPlayed };
 }
 
 // ---------------------------------------------------------------------------
@@ -1795,15 +1805,17 @@ function AmericanoPadel() {
       let seed = null;
       let allRounds = [];
       let lastPart = null;
+      let stageOffset = 0;
       validStages.forEach((stage) => {
-        const part = generateSchedule(ids, stage.courts, stage.rounds, seed);
+        const part = generateSchedule(ids, stage.courts, stage.rounds, seed, stageOffset);
         allRounds = [...allRounds, ...part.roundsData];
+        stageOffset += stage.rounds;
         seed = {
           partner: part.partner,
           opp: part.opp,
           playCount: part.playCount,
           restCount: part.restCount,
-          lastRested: part.lastRested,
+          lastPlayed: part.lastPlayed,
         };
         lastPart = part;
       });
@@ -1814,7 +1826,7 @@ function AmericanoPadel() {
         partner: lastPart.partner,
         opp: lastPart.opp,
         usableCourts: lastPart.usableCourts,
-        lastRested: lastPart.lastRested,
+        lastPlayed: lastPart.lastPlayed,
       };
     } else {
       result = generateSchedule(ids, courts, computedRounds);
@@ -1925,9 +1937,9 @@ function AmericanoPadel() {
       opp: engine.opp,
       playCount: engine.playCount,
       restCount: engine.restCount,
-      lastRested: engine.lastRested || {},
+      lastPlayed: engine.lastPlayed || {},
     };
-    const part = generateSchedule(ids, courts, n, seed);
+    const part = generateSchedule(ids, courts, n, seed, engine.roundsData.length);
     const newRoundsData = [...engine.roundsData, ...part.roundsData];
     const newEngine = {
       roundsData: newRoundsData,
@@ -1936,12 +1948,90 @@ function AmericanoPadel() {
       partner: part.partner,
       opp: part.opp,
       usableCourts: part.usableCourts,
-      lastRested: part.lastRested,
+      lastPlayed: part.lastPlayed,
     };
     const newRoundIdx = newRoundsData.length - 1;
     setEngine(newEngine);
     setCurrentRound(newRoundIdx);
     persist({ engine: newEngine, currentRound: newRoundIdx });
+  };
+
+  // Deletes one specific round entirely (host & co-host). Any scores it had
+  // are lost, later rounds shift down by one, and its contribution to the
+  // partner/opponent/rest fairness counters is subtracted out (rather than
+  // replaying everything from scratch).
+  const handleDeleteRound = (roundIdx) => {
+    if (!engine) return;
+    if (engine.roundsData.length <= 1) {
+      alert("Nggak bisa hapus — minimal harus tersisa 1 ronde.");
+      return;
+    }
+    if (
+      !window.confirm(
+        `Hapus Ronde ${roundIdx + 1}? Skor yang sudah diisi di ronde ini ikut hilang, dan ronde-ronde setelahnya bakal bergeser nomornya.`
+      )
+    )
+      return;
+
+    const rd = engine.roundsData[roundIdx];
+    const newPlayCount = { ...engine.playCount };
+    const newRestCount = { ...engine.restCount };
+    const newPartner = {};
+    const newOpp = {};
+    Object.keys(engine.partner).forEach((id) => (newPartner[id] = { ...engine.partner[id] }));
+    Object.keys(engine.opp).forEach((id) => (newOpp[id] = { ...engine.opp[id] }));
+
+    rd.resting.forEach((id) => {
+      if (newRestCount[id] !== undefined) newRestCount[id] = Math.max(0, newRestCount[id] - 1);
+    });
+    rd.courts.forEach(({ team1, team2 }) => {
+      const [a, b] = team1;
+      const [c, d] = team2;
+      [a, b, c, d].forEach((id) => {
+        if (newPlayCount[id] !== undefined) newPlayCount[id] = Math.max(0, newPlayCount[id] - 1);
+      });
+      if (newPartner[a]) newPartner[a][b] = Math.max(0, (newPartner[a][b] || 0) - 1);
+      if (newPartner[b]) newPartner[b][a] = Math.max(0, (newPartner[b][a] || 0) - 1);
+      if (newPartner[c]) newPartner[c][d] = Math.max(0, (newPartner[c][d] || 0) - 1);
+      if (newPartner[d]) newPartner[d][c] = Math.max(0, (newPartner[d][c] || 0) - 1);
+      [a, b].forEach((x) =>
+        [c, d].forEach((y) => {
+          if (newOpp[x]) newOpp[x][y] = Math.max(0, (newOpp[x][y] || 0) - 1);
+          if (newOpp[y]) newOpp[y][x] = Math.max(0, (newOpp[y][x] || 0) - 1);
+        })
+      );
+    });
+
+    const newRoundsData = engine.roundsData.filter((_, i) => i !== roundIdx);
+
+    // Re-index scores: drop the deleted round's own, shift every round after
+    // it down by one so keys still line up with their round's new position.
+    const newScores = {};
+    Object.keys(scores).forEach((key) => {
+      const [rStr, cStr] = key.split("-");
+      const r = parseInt(rStr, 10);
+      if (r === roundIdx) return;
+      const newR = r > roundIdx ? r - 1 : r;
+      newScores[`${newR}-${cStr}`] = scores[key];
+    });
+
+    const newEngine = {
+      ...engine,
+      roundsData: newRoundsData,
+      playCount: newPlayCount,
+      restCount: newRestCount,
+      partner: newPartner,
+      opp: newOpp,
+    };
+    const newCurrentRound = Math.max(
+      0,
+      Math.min(currentRound > roundIdx ? currentRound - 1 : currentRound, newRoundsData.length - 1)
+    );
+
+    setEngine(newEngine);
+    setScores(newScores);
+    setCurrentRound(newCurrentRound);
+    persist({ engine: newEngine, scores: newScores, currentRound: newCurrentRound });
   };
 
   // Adds/removes players mid-match and re-generates the schedule for
@@ -2003,11 +2093,11 @@ function AmericanoPadel() {
 
     // Rebuild the fairness-history seed by replaying ONLY the locked rounds
     // (not the discarded future ones) against the active roster.
-    const seed = { partner: {}, opp: {}, playCount: {}, restCount: {}, lastRested: {} };
+    const seed = { partner: {}, opp: {}, playCount: {}, restCount: {}, lastPlayed: {} };
     activePlayers.forEach((p) => {
       seed.playCount[p.id] = 0;
       seed.restCount[p.id] = 0;
-      seed.lastRested[p.id] = -99;
+      seed.lastPlayed[p.id] = -1;
       seed.partner[p.id] = {};
       seed.opp[p.id] = {};
     });
@@ -2015,7 +2105,6 @@ function AmericanoPadel() {
       rd.resting.forEach((id) => {
         if (seed.restCount[id] !== undefined) {
           seed.restCount[id]++;
-          seed.lastRested[id] = rIdx;
         }
       });
       rd.courts.forEach(({ team1, team2 }) => {
@@ -2023,6 +2112,7 @@ function AmericanoPadel() {
         const [c, d] = team2;
         [a, b, c, d].forEach((id) => {
           if (seed.playCount[id] !== undefined) seed.playCount[id]++;
+          if (seed.lastPlayed[id] !== undefined) seed.lastPlayed[id] = rIdx;
         });
         if (seed.partner[a] && seed.partner[a][b] !== undefined) {
           seed.partner[a][b]++;
@@ -2044,31 +2134,24 @@ function AmericanoPadel() {
     });
 
     // Anyone newly active (joined the roster, OR just marked "sudah
-    // datang" after being away) starts with restCount=0, which the
-    // algorithm reads as "hasn't rested in ages" and would force them to
-    // sit out first/repeatedly. Instead, treat them as already on par with
-    // the group's current rest rotation — it's fine if they end up with
-    // fewer total matches played than people who were active earlier; the
-    // point here is just to avoid an artificial, unfair queue for them.
+    // datang" after being away) starts with lastPlayed=-1, which the
+    // algorithm reads as "never played" and gives them top priority to play
+    // immediately — which is fine for a genuinely brand-new person, but for
+    // someone who was only briefly away it's more natural to slot them into
+    // the current waiting rotation at a neutral point (the group's average
+    // "last played" position) rather than jumping the whole queue.
     const oldActiveIds = new Set(players.filter((p) => p.arrived !== false).map((p) => p.id));
     const newcomers = activePlayers.filter((p) => !oldActiveIds.has(p.id));
     if (newcomers.length > 0) {
-      const existingRestCounts = activePlayers
+      const existingLastPlayed = activePlayers
         .filter((p) => oldActiveIds.has(p.id))
-        .map((p) => seed.restCount[p.id]);
-      const avgRest = existingRestCounts.length
-        ? Math.round(existingRestCounts.reduce((a, b) => a + b, 0) / existingRestCounts.length)
-        : 0;
-      const existingLastRested = activePlayers
-        .filter((p) => oldActiveIds.has(p.id))
-        .map((p) => seed.lastRested[p.id])
-        .filter((v) => v > -99);
-      const avgLastRested = existingLastRested.length
-        ? Math.round(existingLastRested.reduce((a, b) => a + b, 0) / existingLastRested.length)
+        .map((p) => seed.lastPlayed[p.id])
+        .filter((v) => v > -1);
+      const avgLastPlayed = existingLastPlayed.length
+        ? Math.round(existingLastPlayed.reduce((a, b) => a + b, 0) / existingLastPlayed.length)
         : splitIdx - 1;
       newcomers.forEach((p) => {
-        seed.restCount[p.id] = avgRest;
-        seed.lastRested[p.id] = avgLastRested;
+        seed.lastPlayed[p.id] = avgLastPlayed;
       });
     }
 
@@ -2094,21 +2177,23 @@ function AmericanoPadel() {
       let stageSeed = seed;
       let allRounds = [];
       let lastPart = null;
+      let stageOffset = splitIdx;
       stageSegments.forEach((seg) => {
-        const part = generateSchedule(ids, seg.courts, seg.rounds, stageSeed);
+        const part = generateSchedule(ids, seg.courts, seg.rounds, stageSeed, stageOffset);
         allRounds = [...allRounds, ...part.roundsData];
+        stageOffset += seg.rounds;
         stageSeed = {
           partner: part.partner,
           opp: part.opp,
           playCount: part.playCount,
           restCount: part.restCount,
-          lastRested: part.lastRested,
+          lastPlayed: part.lastPlayed,
         };
         lastPart = part;
       });
       freshPart = { ...lastPart, roundsData: allRounds };
     } else {
-      freshPart = generateSchedule(ids, newCourts, remainingRoundsCount, seed);
+      freshPart = generateSchedule(ids, newCourts, remainingRoundsCount, seed, splitIdx);
     }
 
     const newRoundsData = [...lockedRounds, ...freshPart.roundsData];
@@ -2119,7 +2204,7 @@ function AmericanoPadel() {
       partner: freshPart.partner,
       opp: freshPart.opp,
       usableCourts: freshPart.usableCourts,
-      lastRested: freshPart.lastRested,
+      lastPlayed: freshPart.lastPlayed,
     };
 
     // Keep scores for locked (already-complete) rounds; drop everything else
@@ -2782,6 +2867,7 @@ function AmericanoPadel() {
           players={players}
           onAddManualMatch={handleAddManualMatch}
           onAddAutoRound={handleAddAutoRound}
+          onDeleteRound={handleDeleteRound}
           friends={friends}
           onAdjustSchedule={handleAdjustSchedule}
           onToggleArrival={handleToggleArrival}
@@ -4456,7 +4542,7 @@ function SessionScreen(props) {
     eventName, isOwner, canManage, engine, playerMap, currentRound, goRound, goToRound,
     scores, setScore, setPointsPair, resetPointsScore, scoreFormat, pointTarget, tennisTarget,
     incrementTennisPoint, resetTennisMatch, setTennisGamesDirect,
-    ended, hasSplitBill, onEndEvent, onReshuffle, allMatchesScored, players, onAddManualMatch, onAddAutoRound,
+    ended, hasSplitBill, onEndEvent, onReshuffle, allMatchesScored, players, onAddManualMatch, onAddAutoRound, onDeleteRound,
     friends, onAdjustSchedule, courts, onToggleArrival,
     onNav, onShare, onCopyViewLink, onBackToLobby, onDelete,
   } = props;
@@ -4606,6 +4692,8 @@ function SessionScreen(props) {
           scores={scores}
           scoreFormat={scoreFormat}
           currentRound={currentRound}
+          canManage={canManage}
+          onDeleteRound={onDeleteRound}
           onJump={(idx) => {
             goToRound(idx);
             setViewMode("single");
@@ -4786,16 +4874,26 @@ function SessionScreen(props) {
   );
 }
 
-function AllRoundsList({ engine, playerMap, scores, scoreFormat, currentRound, onJump }) {
+function AllRoundsList({ engine, playerMap, scores, scoreFormat, currentRound, canManage, onDeleteRound, onJump }) {
   return (
     <div className="px-6 pt-6 pb-4 space-y-6">
       {engine.roundsData.map((rd, rIdx) => (
         <div key={rIdx}>
-          <div className="flex items-center gap-2 mb-2">
-            <span className="font-display text-2xl text-slate-100 tracking-wide">
-              Ronde {rIdx + 1}
-            </span>
-            {rIdx === currentRound && <Chip tone="lime">Sekarang</Chip>}
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <div className="flex items-center gap-2">
+              <span className="font-display text-2xl text-slate-100 tracking-wide">
+                Ronde {rIdx + 1}
+              </span>
+              {rIdx === currentRound && <Chip tone="lime">Sekarang</Chip>}
+            </div>
+            {canManage && (
+              <button
+                onClick={() => onDeleteRound(rIdx)}
+                className="w-7 h-7 rounded-full bg-slate-900 border border-slate-700 text-slate-500 hover:text-red-400 hover:border-red-400/50 flex items-center justify-center shrink-0"
+              >
+                <Trash2 size={13} />
+              </button>
+            )}
           </div>
           <div className="space-y-2">
             {rd.courts.map((match, cIdx) => {
