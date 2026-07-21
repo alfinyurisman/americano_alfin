@@ -1020,6 +1020,27 @@ function findFirstUnscoredRound(engine, scores) {
   return Math.max(0, engine.roundsData.length - 1);
 }
 
+// Given the original staged court plan (e.g. "7 rounds @ 1 court, then 8
+// rounds @ 2 courts") and a range of round-indices that still need to be
+// (re)generated, returns the portion of each stage that falls inside that
+// range — so regenerating just the "remaining" rounds (say, after someone's
+// attendance changes) still respects the original per-stage court counts
+// instead of collapsing everything to one flat court count.
+function sliceStagesFrom(courtStages, fromIdx, totalRounds) {
+  if (!courtStages || courtStages.length === 0) return null;
+  const segments = [];
+  let cursor = 0;
+  for (const stage of courtStages) {
+    const segStart = cursor;
+    const segEnd = cursor + (stage.rounds || 0);
+    cursor = segEnd;
+    const start = Math.max(segStart, fromIdx);
+    const end = Math.min(segEnd, totalRounds);
+    if (end > start) segments.push({ rounds: end - start, courts: stage.courts });
+  }
+  return segments.length > 0 ? segments : null;
+}
+
 function buildLeaderboard(engine, playerMap, scores, activeIds) {
   if (!engine) return [];
   const totals = {};
@@ -2019,7 +2040,38 @@ function AmericanoPadel() {
     // it's just not part of the active `ids` used for future rounds.
     const map = { ...playerMap };
     newPlayers.forEach((p) => (map[p.id] = p.name));
-    const freshPart = generateSchedule(ids, newCourts, remainingRoundsCount, seed);
+
+    // If a "Lapangan Bertahap" plan was set up front (e.g. 1 court for the
+    // first 7 rounds, then 2 courts for the rest) and this adjustment wasn't
+    // an explicit court-count override from "Kelola Pertandingan", keep
+    // respecting that original plan for whatever portion of it still falls
+    // in the remaining (not-yet-scored) rounds — instead of collapsing
+    // everything to one flat court count.
+    const stageSegments = newCourtsInput
+      ? null
+      : sliceStagesFrom(courtStages, splitIdx, engine.roundsData.length);
+
+    let freshPart;
+    if (stageSegments) {
+      let stageSeed = seed;
+      let allRounds = [];
+      let lastPart = null;
+      stageSegments.forEach((seg) => {
+        const part = generateSchedule(ids, seg.courts, seg.rounds, stageSeed);
+        allRounds = [...allRounds, ...part.roundsData];
+        stageSeed = {
+          partner: part.partner,
+          opp: part.opp,
+          playCount: part.playCount,
+          restCount: part.restCount,
+          lastRested: part.lastRested,
+        };
+        lastPart = part;
+      });
+      freshPart = { ...lastPart, roundsData: allRounds };
+    } else {
+      freshPart = generateSchedule(ids, newCourts, remainingRoundsCount, seed);
+    }
 
     const newRoundsData = [...lockedRounds, ...freshPart.roundsData];
     const newEngine = {
@@ -2041,12 +2093,17 @@ function AmericanoPadel() {
     });
 
     const newCurrentRound = Math.max(0, Math.min(splitIdx, newRoundsData.length - 1));
+    // An explicit court override (from "Kelola Pertandingan") supersedes any
+    // earlier staged plan for the rounds going forward — clear it so a later
+    // attendance toggle doesn't fall back to the now-stale stage boundaries.
+    const newCourtStages = newCourtsInput ? [] : courtStages;
     setPlayers(newPlayers);
     setPlayerMap(map);
     setEngine(newEngine);
     setScores(newScores);
     setCurrentRound(newCurrentRound);
     setCourts(newCourts);
+    if (newCourtsInput) setCourtStages([]);
     persist({
       players: newPlayers,
       playerMap: map,
@@ -2054,6 +2111,7 @@ function AmericanoPadel() {
       scores: newScores,
       currentRound: newCurrentRound,
       courts: newCourts,
+      courtStages: newCourtStages,
     });
   };
 
@@ -2067,7 +2125,7 @@ function AmericanoPadel() {
     if (!target) return;
     const nowArrived = target.arrived === false; // toggling from not-arrived -> arrived
     const newPlayers = players.map((p) => (p.id === playerId ? { ...p, arrived: nowArrived } : p));
-    handleAdjustSchedule(newPlayers, courts);
+    handleAdjustSchedule(newPlayers);
   };
 
   // Host-only: designates who collects the split bill payment (can be the
@@ -5153,7 +5211,7 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, onConfir
             Batal
           </GhostButton>
           <PrimaryButton
-            onClick={() => onConfirm(roster, courtsValue)}
+            onClick={() => onConfirm(roster, courtsChanged ? courtsValue : undefined)}
             disabled={roster.length < 4 || !changed}
             className="flex-1"
           >
