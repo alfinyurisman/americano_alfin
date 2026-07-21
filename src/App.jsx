@@ -4519,7 +4519,7 @@ function SessionScreen(props) {
               <Plus size={12} /> Tambah Match Manual
             </button>
           )}
-          {canManage && (
+          {isOwner && (
             <button
               onClick={() => setShowManagePlayers(true)}
               className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-950 bg-lime-300 rounded-full px-3 py-1.5"
@@ -4527,7 +4527,7 @@ function SessionScreen(props) {
               <Users size={12} /> Kelola Pertandingan
             </button>
           )}
-          {canManage && (
+          {isOwner && (
             <button
               onClick={() => setShowAttendance(true)}
               className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-950 bg-amber-300 rounded-full px-3 py-1.5"
