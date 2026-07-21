@@ -1112,6 +1112,7 @@ function AmericanoPadel() {
   const [ballCost, setBallCost] = useState("");
   const [paymentPersonId, setPaymentPersonId] = useState(null); // player.id of who collects the split bill
   const [paymentInfo, setPaymentInfo] = useState([]); // [{platform, number}] max 2
+  const [courtStages, setCourtStages] = useState([]); // [{id, rounds, courts}] — empty = simple single-court-count mode
   const [hostPlaying, setHostPlaying] = useState(false);
   const [coHostIds, setCoHostIds] = useState([]); // accountIds granted co-host (edit) access
   const [ownerId, setOwnerId] = useState(null);
@@ -1566,6 +1567,7 @@ function AmericanoPadel() {
         ballCost,
         paymentPersonId,
         paymentInfo,
+        courtStages,
         maxParticipants,
         pendingRequests,
         hostInvitations,
@@ -1626,7 +1628,7 @@ function AmericanoPadel() {
       }
       return;
     },
-    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
+    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, courtStages, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
   );
 
   const addPlayerFromInput = () => {
@@ -1739,10 +1741,53 @@ function AmericanoPadel() {
     ) {
       return;
     }
+    const validStages = courtStages.filter((s) => s.rounds > 0);
+    const stagesTotal = validStages.reduce((sum, s) => sum + s.rounds, 0);
+    if (validStages.length > 0 && stagesTotal !== computedRounds) {
+      alert(
+        `Total ronde di tahapan lapangan (${stagesTotal}) belum sama dengan total ronde acara (${computedRounds}). Sesuaikan dulu di section "Lapangan Bertahap" sebelum generate.`
+      );
+      return;
+    }
+
     const ids = players.map((p) => p.id);
     const map = {};
     players.forEach((p) => (map[p.id] = p.name));
-    const result = generateSchedule(ids, courts, computedRounds);
+
+    let result;
+    if (validStages.length > 1) {
+      // Generate stage by stage, carrying the fairness-tracking state
+      // (partner/opponent/rest history) forward across stages instead of
+      // resetting it — so switching from 1 court to 2 courts partway
+      // through still counts as one continuous, fair rotation.
+      let seed = null;
+      let allRounds = [];
+      let lastPart = null;
+      validStages.forEach((stage) => {
+        const part = generateSchedule(ids, stage.courts, stage.rounds, seed);
+        allRounds = [...allRounds, ...part.roundsData];
+        seed = {
+          partner: part.partner,
+          opp: part.opp,
+          playCount: part.playCount,
+          restCount: part.restCount,
+          lastRested: part.lastRested,
+        };
+        lastPart = part;
+      });
+      result = {
+        roundsData: allRounds,
+        playCount: lastPart.playCount,
+        restCount: lastPart.restCount,
+        partner: lastPart.partner,
+        opp: lastPart.opp,
+        usableCourts: lastPart.usableCourts,
+        lastRested: lastPart.lastRested,
+      };
+    } else {
+      result = generateSchedule(ids, courts, computedRounds);
+    }
+
     setEngine(result);
     setPlayerMap(map);
     setCurrentRound(0);
@@ -1834,10 +1879,10 @@ function AmericanoPadel() {
   // remaining (not-yet-complete) rounds get thrown out and rebuilt for the
   // new roster, continuing the same partner/opponent/rest fairness tracking
   // accumulated so far (not starting over from zero).
-  const handleAdjustSchedule = (newPlayers) => {
+  const handleAdjustSchedule = (newPlayers, newCourts) => {
     if (!engine) return;
     try {
-      handleAdjustScheduleInner(newPlayers);
+      handleAdjustScheduleInner(newPlayers, newCourts);
     } catch (e) {
       console.error("handleAdjustSchedule failed:", e);
       alert(
@@ -1848,7 +1893,8 @@ function AmericanoPadel() {
     }
   };
 
-  const handleAdjustScheduleInner = (newPlayers) => {
+  const handleAdjustScheduleInner = (newPlayers, newCourtsInput) => {
+    const newCourts = newCourtsInput || courts;
 
     let splitIdx = engine.roundsData.length;
     for (let rIdx = 0; rIdx < engine.roundsData.length; rIdx++) {
@@ -1955,7 +2001,7 @@ function AmericanoPadel() {
     // it's just no longer part of the active `ids` used for future rounds.
     const map = { ...playerMap };
     newPlayers.forEach((p) => (map[p.id] = p.name));
-    const freshPart = generateSchedule(ids, courts, remainingRoundsCount, seed);
+    const freshPart = generateSchedule(ids, newCourts, remainingRoundsCount, seed);
 
     const newRoundsData = [...lockedRounds, ...freshPart.roundsData];
     const newEngine = {
@@ -1982,12 +2028,14 @@ function AmericanoPadel() {
     setEngine(newEngine);
     setScores(newScores);
     setCurrentRound(newCurrentRound);
+    setCourts(newCourts);
     persist({
       players: newPlayers,
       playerMap: map,
       engine: newEngine,
       scores: newScores,
       currentRound: newCurrentRound,
+      courts: newCourts,
     });
   };
 
@@ -2080,6 +2128,7 @@ function AmericanoPadel() {
     setBallCost("");
     setPaymentPersonId(null);
     setPaymentInfo([]);
+    setCourtStages([]);
     setOwnerId(null);
     setOwnerUsername("");
     setEngine(null);
@@ -2124,6 +2173,7 @@ function AmericanoPadel() {
     setBallCost(data.ballCost ?? "");
     setPaymentPersonId(data.paymentPersonId ?? null);
     setPaymentInfo(data.paymentInfo || []);
+    setCourtStages(data.courtStages || []);
     setOwnerId(data.ownerId || null);
     setOwnerUsername(data.ownerUsername || "");
     setEnded(!!data.ended);
@@ -2546,6 +2596,8 @@ function AmericanoPadel() {
           maxParticipants={maxParticipants}
           courts={courts}
           computedRounds={computedRounds}
+          courtStages={courtStages}
+          setCourtStages={setCourtStages}
           pendingRequests={pendingRequests}
           onApprove={handleApproveRequest}
           onReject={handleRejectRequest}
@@ -2600,6 +2652,7 @@ function AmericanoPadel() {
           onAddManualMatch={handleAddManualMatch}
           friends={friends}
           onAdjustSchedule={handleAdjustSchedule}
+          courts={courts}
           onNav={setScreen}
           onShare={handleShare}
           onCopyViewLink={handleCopyViewLink}
@@ -3675,6 +3728,29 @@ function FieldRow({ label, children }) {
   );
 }
 
+// Explicit save button for cost fields — relying only on onBlur to persist
+// turned out unreliable on some mobile browsers (tapping straight from the
+// input to another button can skip the blur event), so this gives a clear,
+// guaranteed-to-fire save action with visible confirmation.
+function CostSaveButton({ onSave }) {
+  const [saved, setSaved] = useState(false);
+  const handleClick = () => {
+    onSave();
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+  return (
+    <button
+      onClick={handleClick}
+      className={`w-full mt-3 py-2.5 rounded-xl font-semibold text-sm transition-colors ${
+        saved ? "bg-lime-300 text-slate-950" : "bg-slate-800 border border-slate-700 text-slate-200"
+      }`}
+    >
+      {saved ? "Tersimpan ✓" : "Simpan Biaya"}
+    </button>
+  );
+}
+
 function PreviewStat({ label, value }) {
   return (
     <div>
@@ -3693,7 +3769,7 @@ function WaitingRoomScreen(props) {
     eventName, activeId, isOwner, canManage, myAccountId,
     players, nameInput, setNameInput, bulkInput, setBulkInput,
     addPlayerFromInput, addBulk, removePlayer,
-    maxParticipants, courts, computedRounds,
+    maxParticipants, courts, computedRounds, courtStages, setCourtStages,
     pendingRequests, onApprove, onReject,
     hostPlaying, onToggleHostPlaying,
     coHostIds, onToggleCoHost,
@@ -4050,9 +4126,9 @@ function WaitingRoomScreen(props) {
             <FieldRow label="Harga lapangan (Rp)">
               <input
                 type="number"
+                inputMode="numeric"
                 value={courtCost}
                 onChange={(e) => setCourtCost(e.target.value)}
-                onBlur={onSaveCosts}
                 placeholder="0"
                 className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
               />
@@ -4060,9 +4136,9 @@ function WaitingRoomScreen(props) {
             <FieldRow label="Biaya admin (Rp)">
               <input
                 type="number"
+                inputMode="numeric"
                 value={adminFee}
                 onChange={(e) => setAdminFee(e.target.value)}
-                onBlur={onSaveCosts}
                 placeholder="0"
                 className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
               />
@@ -4070,14 +4146,143 @@ function WaitingRoomScreen(props) {
             <FieldRow label="Biaya bola (Rp)">
               <input
                 type="number"
+                inputMode="numeric"
                 value={ballCost}
                 onChange={(e) => setBallCost(e.target.value)}
-                onBlur={onSaveCosts}
                 placeholder="0"
                 className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
               />
             </FieldRow>
           </div>
+          <CostSaveButton onSave={onSaveCosts} />
+        </Section>
+      )}
+
+      {canManage && (
+        <Section icon={Settings2} title="Lapangan Bertahap" subtitle="opsional">
+          {courtStages.length === 0 ? (
+            <>
+              <p className="text-xs text-slate-500 mb-3">
+                Kalau jumlah lapangan berubah di tengah acara (misal jam 7-8 cuma 1 lapangan, jam
+                8-9 jadi 2 lapangan), atur di sini dari awal — nggak perlu nunggu nyesuaikan manual
+                pas acara sudah jalan.
+              </p>
+              <GhostButton
+                onClick={() => {
+                  const half = Math.max(1, Math.floor(computedRounds / 2));
+                  setCourtStages([
+                    { id: uid(), rounds: half, courts },
+                    { id: uid(), rounds: computedRounds - half, courts },
+                  ]);
+                }}
+                icon={Settings2}
+                className="w-full"
+              >
+                Aktifkan Lapangan Bertahap
+              </GhostButton>
+            </>
+          ) : (
+            <>
+              <p className="text-xs text-slate-500 mb-3">
+                Total ronde acara ini: {computedRounds}. Bagi jadi beberapa tahap dengan jumlah
+                lapangan berbeda-beda — jumlah ronde tiap tahap harus totalnya pas.
+              </p>
+              <div className="space-y-3">
+                {courtStages.map((s, i) => (
+                  <div key={s.id} className="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-semibold text-slate-300">Tahap {i + 1}</span>
+                      {courtStages.length > 1 && (
+                        <button
+                          onClick={() => setCourtStages(courtStages.filter((x) => x.id !== s.id))}
+                          className="text-slate-500 hover:text-red-400"
+                        >
+                          <X size={14} />
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1">
+                        <div className="text-[10px] text-slate-500 uppercase mb-1">Jumlah Ronde</div>
+                        <input
+                          type="number"
+                          inputMode="numeric"
+                          value={s.rounds}
+                          onChange={(e) =>
+                            setCourtStages(
+                              courtStages.map((x) =>
+                                x.id === s.id ? { ...x, rounds: parseInt(e.target.value, 10) || 0 } : x
+                              )
+                            )
+                          }
+                          className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100"
+                        />
+                      </div>
+                      <div className="flex-1">
+                        <div className="text-[10px] text-slate-500 uppercase mb-1">Lapangan</div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() =>
+                              setCourtStages(
+                                courtStages.map((x) =>
+                                  x.id === s.id ? { ...x, courts: Math.max(1, x.courts - 1) } : x
+                                )
+                              )
+                            }
+                            className="w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 font-bold"
+                          >
+                            −
+                          </button>
+                          <span className="flex-1 text-center font-semibold text-slate-100">
+                            {s.courts}
+                          </span>
+                          <button
+                            onClick={() =>
+                              setCourtStages(
+                                courtStages.map((x) =>
+                                  x.id === s.id ? { ...x, courts: x.courts + 1 } : x
+                                )
+                              )
+                            }
+                            className="w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 font-bold"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {(() => {
+                const total = courtStages.reduce((sum, x) => sum + (x.rounds || 0), 0);
+                const ok = total === computedRounds;
+                return (
+                  <p className={`text-xs mt-3 ${ok ? "text-lime-400" : "text-amber-400"}`}>
+                    Total tahapan: {total} / {computedRounds} ronde{" "}
+                    {ok ? "✓ sudah pas" : "— sesuaikan supaya totalnya pas"}
+                  </p>
+                );
+              })()}
+              <div className="flex items-center gap-2 mt-3">
+                <GhostButton
+                  onClick={() => {
+                    const used = courtStages.reduce((sum, x) => sum + (x.rounds || 0), 0);
+                    const remain = Math.max(0, computedRounds - used);
+                    const lastCourts = courtStages[courtStages.length - 1]?.courts || courts;
+                    setCourtStages([...courtStages, { id: uid(), rounds: remain, courts: lastCourts }]);
+                  }}
+                  icon={Plus}
+                  className="flex-1"
+                >
+                  Tambah Tahap
+                </GhostButton>
+                <GhostButton onClick={() => setCourtStages([])} className="flex-1">
+                  Nonaktifkan
+                </GhostButton>
+              </div>
+            </>
+          )}
         </Section>
       )}
 
@@ -4119,7 +4324,7 @@ function SessionScreen(props) {
     scores, setScore, setPointsPair, resetPointsScore, scoreFormat, pointTarget, tennisTarget,
     incrementTennisPoint, resetTennisMatch, setTennisGamesDirect,
     ended, hasSplitBill, onEndEvent, onReshuffle, allMatchesScored, players, onAddManualMatch,
-    friends, onAdjustSchedule,
+    friends, onAdjustSchedule, courts,
     onNav, onShare, onCopyViewLink, onBackToLobby, onDelete,
   } = props;
 
@@ -4224,7 +4429,7 @@ function SessionScreen(props) {
               onClick={() => setShowManagePlayers(true)}
               className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-950 bg-lime-300 rounded-full px-3 py-1.5"
             >
-              <Users size={12} /> Kelola Pemain
+              <Users size={12} /> Kelola Pertandingan
             </button>
           )}
         </div>
@@ -4356,8 +4561,9 @@ function SessionScreen(props) {
           friends={friends || []}
           engine={engine}
           scores={scores}
-          onConfirm={(newPlayers) => {
-            onAdjustSchedule(newPlayers);
+          courts={courts}
+          onConfirm={(newPlayers, newCourts) => {
+            onAdjustSchedule(newPlayers, newCourts);
             setShowManagePlayers(false);
           }}
           onClose={() => setShowManagePlayers(false)}
@@ -4740,9 +4946,10 @@ function AddMatchModal({ players, onConfirm, onClose }) {
 // Lets host/co-host add or remove players mid-match, then re-generate the
 // remaining (not-yet-scored) rounds for the new roster — already-completed
 // rounds are left untouched.
-function ManagePlayersModal({ players, friends, engine, scores, onConfirm, onClose }) {
+function ManagePlayersModal({ players, friends, engine, scores, courts, onConfirm, onClose }) {
   const [roster, setRoster] = useState(players);
   const [nameInput, setNameInput] = useState("");
+  const [courtsValue, setCourtsValue] = useState(courts);
 
   const lockedCount = React.useMemo(() => {
     if (!engine) return 0;
@@ -4763,7 +4970,9 @@ function ManagePlayersModal({ players, friends, engine, scores, onConfirm, onClo
 
   const totalRounds = engine ? engine.roundsData.length : 0;
   const remainingCount = totalRounds - lockedCount;
-  const changed = roster.length !== players.length || roster.some((p, i) => players[i]?.id !== p.id);
+  const rosterChanged = roster.length !== players.length || roster.some((p, i) => players[i]?.id !== p.id);
+  const courtsChanged = courtsValue !== courts;
+  const changed = rosterChanged || courtsChanged;
 
   const removePlayer = (id) => setRoster(roster.filter((p) => p.id !== id));
 
@@ -4780,6 +4989,7 @@ function ManagePlayersModal({ players, friends, engine, scores, onConfirm, onClo
   };
 
   const availableFriends = friends.filter((f) => !roster.some((p) => p.accountId === f.accountId));
+  const maxUsableCourts = Math.max(1, Math.floor(roster.length / 4)) || 1;
 
   return (
     <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center" onClick={onClose}>
@@ -4788,13 +4998,41 @@ function ManagePlayersModal({ players, friends, engine, scores, onConfirm, onClo
         onClick={(e) => e.stopPropagation()}
       >
         <div className="text-xs font-semibold tracking-[0.15em] text-lime-300 uppercase mb-1">
-          Kelola Pemain
+          Kelola Pertandingan
         </div>
         <p className="text-xs text-slate-500 mb-4">
           {lockedCount > 0
-            ? `${lockedCount} ronde yang sudah lengkap skornya akan tetap dipertahankan. ${remainingCount} ronde sisanya akan disusun ulang dengan daftar pemain baru.`
-            : `Semua ${totalRounds} ronde belum ada yang lengkap skornya, jadi seluruh jadwal akan disusun ulang dengan daftar pemain baru.`}
+            ? `${lockedCount} ronde yang sudah lengkap skornya akan tetap dipertahankan. ${remainingCount} ronde sisanya akan disusun ulang.`
+            : `Semua ${totalRounds} ronde belum ada yang lengkap skornya, jadi seluruh jadwal akan disusun ulang.`}
         </p>
+
+        <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-1.5">
+          Jumlah Lapangan
+        </div>
+        <div className="flex items-center gap-4 mb-4 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3">
+          <button
+            onClick={() => setCourtsValue((c) => Math.max(1, c - 1))}
+            className="w-9 h-9 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 flex items-center justify-center font-bold text-lg shrink-0"
+          >
+            −
+          </button>
+          <span className="flex-1 text-center font-display text-2xl text-slate-100">
+            {courtsValue}
+          </span>
+          <button
+            onClick={() => setCourtsValue((c) => c + 1)}
+            className="w-9 h-9 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 flex items-center justify-center font-bold text-lg shrink-0"
+          >
+            +
+          </button>
+        </div>
+        {courtsValue > maxUsableCourts && (
+          <p className="text-amber-400 text-[11px] -mt-2 mb-4">
+            Dengan {roster.length} pemain, cuma {maxUsableCourts} lapangan yang kepakai sekaligus
+            per ronde — sisanya nganggur. Tambah pemain kalau mau pakai semua {courtsValue}{" "}
+            lapangan.
+          </p>
+        )}
 
         <div className="flex gap-2 mb-3">
           <input
@@ -4862,7 +5100,7 @@ function ManagePlayersModal({ players, friends, engine, scores, onConfirm, onClo
             Batal
           </GhostButton>
           <PrimaryButton
-            onClick={() => onConfirm(roster)}
+            onClick={() => onConfirm(roster, courtsValue)}
             disabled={roster.length < 4 || !changed}
             className="flex-1"
           >
