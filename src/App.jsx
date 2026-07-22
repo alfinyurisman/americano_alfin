@@ -60,25 +60,36 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
       });
 
       // Anyone waiting strictly LONGER than the cutoff is locked in — their
-      // turn is never traded away. Only players EXACTLY tied at the cutoff
-      // boundary are treated as flexible: among just those (never reaching
-      // into a lower-priority tier), try many combinations and keep
-      // whichever gives the best partner/opponent variety. Because the tied
-      // group at the cutoff is, by construction, always at least as large as
-      // the remaining slots needed, this never costs anyone extra wait time
-      // — it only smartly picks WHICH of the already-tied people play,
-      // instead of a plain random tiebreak.
+      // turn is never traded away. Players EXACTLY tied at the cutoff
+      // boundary are treated as flexible: among just those, try many
+      // combinations and keep whichever gives the best partner/opponent
+      // variety — this never costs anyone extra wait time since the tied
+      // group is, by construction, always at least as large as the slots
+      // needed. When that alone doesn't give much room to work with, we
+      // cautiously widen the flexible pool to include people exactly 1
+      // round further along too — but ONLY when doing so can't create an
+      // unfair repeat: never if the cutoff tier is people who've never
+      // played yet (that gap always matters, no matter the numbers), and
+      // never if the round below is "just played last round" (wait 1) since
+      // reusing them back-to-back is never worth it for variety's sake.
       const cutoffWait = globalR - lastPlayed[sorted[capacity - 1]];
       const guaranteed = sorted.filter((id) => globalR - lastPlayed[id] > cutoffWait);
-      const flexCandidates = sorted.filter((id) => globalR - lastPlayed[id] === cutoffWait);
+      const tier0 = sorted.filter((id) => globalR - lastPlayed[id] === cutoffWait);
       const neededFromFlex = capacity - guaranteed.length;
+
+      const cutoffIsNeverPlayedTier = tier0.some((id) => lastPlayed[id] === -1);
+      let flexCandidates = tier0;
+      if (!cutoffIsNeverPlayedTier && cutoffWait - 1 >= 2 && tier0.length < neededFromFlex + 2) {
+        const tier1 = sorted.filter((id) => globalR - lastPlayed[id] === cutoffWait - 1);
+        flexCandidates = [...tier0, ...tier1];
+      }
 
       if (flexCandidates.length <= neededFromFlex) {
         active = [...guaranteed, ...flexCandidates];
       } else {
         let bestActive = null;
         let bestActiveCost = Infinity;
-        for (let st = 0; st < 40; st++) {
+        for (let st = 0; st < 60; st++) {
           const shuffledFlex = [...flexCandidates].sort(() => Math.random() - 0.5);
           const candidateActive = [...guaranteed, ...shuffledFlex.slice(0, neededFromFlex)];
           let cost = 0;
@@ -2325,6 +2336,15 @@ function AmericanoPadel() {
     setCurrentUser((u) => (u ? { ...u, paymentInfo: newInfo } : u));
   };
 
+  // Lets host/co-host edit the split bill cost breakdown anytime — while
+  // the match is still going, or even after it's already been ended.
+  const handleUpdateCosts = (newCourtCost, newAdminFee, newBallCost) => {
+    setCourtCost(newCourtCost);
+    setAdminFee(newAdminFee);
+    setBallCost(newBallCost);
+    persist({ courtCost: newCourtCost, adminFee: newAdminFee, ballCost: newBallCost });
+  };
+
   const handleApproveRequest = (reqId) => {
     const req = pendingRequests.find((r) => r.id === reqId);
     if (!req) return;
@@ -2937,6 +2957,8 @@ function AmericanoPadel() {
           adminFee={adminFee}
           ballCost={ballCost}
           isOwner={sessionRole === "owner"}
+          canManage={canManage}
+          onUpdateCosts={handleUpdateCosts}
           currentAccountId={currentUser?.accountId}
           paymentPersonId={paymentPersonId}
           onSetPaymentPerson={handleSetPaymentPerson}
@@ -5811,7 +5833,8 @@ function LeaderboardScreen({ eventName, leaderboard, ended, hasSplitBill, onNav,
 
 function SplitBillScreen({
   eventName, players, courtCost, adminFee, ballCost,
-  isOwner, currentAccountId, paymentPersonId, onSetPaymentPerson,
+  isOwner, canManage, onUpdateCosts,
+  currentAccountId, paymentPersonId, onSetPaymentPerson,
   paymentInfo, onSavePaymentInfo,
   onNav, onBackToLobby,
 }) {
@@ -5821,6 +5844,26 @@ function SplitBillScreen({
   const total = court + admin + ball;
   const n = players.length || 1;
   const perPerson = Math.ceil(total / n);
+
+  const [editingCosts, setEditingCosts] = useState(false);
+  const [draftCourt, setDraftCourt] = useState(courtCost);
+  const [draftAdmin, setDraftAdmin] = useState(adminFee);
+  const [draftBall, setDraftBall] = useState(ballCost);
+  const [costsSaved, setCostsSaved] = useState(false);
+
+  const startEditingCosts = () => {
+    setDraftCourt(courtCost);
+    setDraftAdmin(adminFee);
+    setDraftBall(ballCost);
+    setCostsSaved(false);
+    setEditingCosts(true);
+  };
+  const saveCosts = () => {
+    onUpdateCosts(draftCourt, draftAdmin, draftBall);
+    setEditingCosts(false);
+    setCostsSaved(true);
+    setTimeout(() => setCostsSaved(false), 2000);
+  };
 
   const paymentPerson = players.find((p) => p.id === paymentPersonId) || null;
   const canEditPayment =
@@ -5867,32 +5910,90 @@ function SplitBillScreen({
 
       <div className="px-6 pt-6">
         <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 space-y-2">
-          {court > 0 && (
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-slate-400">Harga lapangan</span>
-              <span className="font-mono2 text-slate-200">{formatRupiah(court)}</span>
-            </div>
+          {editingCosts ? (
+            <>
+              <FieldRow label="Harga lapangan (Rp)">
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  value={draftCourt}
+                  onChange={(e) => setDraftCourt(e.target.value)}
+                  placeholder="0"
+                  className="w-28 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2 text-slate-100"
+                />
+              </FieldRow>
+              <FieldRow label="Biaya admin (Rp)">
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  value={draftAdmin}
+                  onChange={(e) => setDraftAdmin(e.target.value)}
+                  placeholder="0"
+                  className="w-28 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2 text-slate-100"
+                />
+              </FieldRow>
+              <FieldRow label="Biaya bola (Rp)">
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  value={draftBall}
+                  onChange={(e) => setDraftBall(e.target.value)}
+                  placeholder="0"
+                  className="w-28 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2 text-slate-100"
+                />
+              </FieldRow>
+              <div className="flex items-center gap-2 pt-2">
+                <GhostButton onClick={() => setEditingCosts(false)} className="flex-1">
+                  Batal
+                </GhostButton>
+                <PrimaryButton onClick={saveCosts} className="flex-1">
+                  Simpan
+                </PrimaryButton>
+              </div>
+            </>
+          ) : (
+            <>
+              {court > 0 && (
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-slate-400">Harga lapangan</span>
+                  <span className="font-mono2 text-slate-200">{formatRupiah(court)}</span>
+                </div>
+              )}
+              {admin > 0 && (
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-slate-400">Biaya admin</span>
+                  <span className="font-mono2 text-slate-200">{formatRupiah(admin)}</span>
+                </div>
+              )}
+              {ball > 0 && (
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-slate-400">Biaya bola</span>
+                  <span className="font-mono2 text-slate-200">{formatRupiah(ball)}</span>
+                </div>
+              )}
+              {total === 0 && (
+                <p className="text-slate-500 text-sm">Belum ada biaya yang diisi.</p>
+              )}
+              <div className="flex items-center justify-between text-sm pt-2 border-t border-slate-800">
+                <span className="text-slate-300 font-semibold">Total</span>
+                <span className="font-mono2 text-slate-100 font-bold">{formatRupiah(total)}</span>
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-slate-400">Jumlah pemain</span>
+                <span className="font-mono2 text-slate-200">{n} orang</span>
+              </div>
+              {canManage && (
+                <button
+                  onClick={startEditingCosts}
+                  className={`w-full mt-2 py-2 rounded-xl text-xs font-semibold ${
+                    costsSaved ? "bg-lime-300 text-slate-950" : "bg-slate-800 border border-slate-700 text-slate-200"
+                  }`}
+                >
+                  {costsSaved ? "Tersimpan ✓" : "Edit Biaya"}
+                </button>
+              )}
+            </>
           )}
-          {admin > 0 && (
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-slate-400">Biaya admin</span>
-              <span className="font-mono2 text-slate-200">{formatRupiah(admin)}</span>
-            </div>
-          )}
-          {ball > 0 && (
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-slate-400">Biaya bola</span>
-              <span className="font-mono2 text-slate-200">{formatRupiah(ball)}</span>
-            </div>
-          )}
-          <div className="flex items-center justify-between text-sm pt-2 border-t border-slate-800">
-            <span className="text-slate-300 font-semibold">Total</span>
-            <span className="font-mono2 text-slate-100 font-bold">{formatRupiah(total)}</span>
-          </div>
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-slate-400">Jumlah pemain</span>
-            <span className="font-mono2 text-slate-200">{n} orang</span>
-          </div>
         </div>
 
         <div className="mt-4 rounded-2xl border border-lime-400/40 bg-lime-400/5 p-5 text-center">
