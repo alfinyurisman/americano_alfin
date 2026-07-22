@@ -1192,6 +1192,7 @@ function AmericanoPadel() {
   const [ballCost, setBallCost] = useState("");
   const [paymentPersonId, setPaymentPersonId] = useState(null); // player.id of who collects the split bill
   const [paymentInfo, setPaymentInfo] = useState([]); // [{platform, number}] max 2
+  const [paidStatus, setPaidStatus] = useState({}); // { [playerId]: true } — missing/false = belum bayar
   const [courtStages, setCourtStages] = useState([]); // [{id, rounds, courts}] — empty = simple single-court-count mode
   const [hostPlaying, setHostPlaying] = useState(false);
   const [coHostIds, setCoHostIds] = useState([]); // accountIds granted co-host (edit) access
@@ -1657,6 +1658,7 @@ function AmericanoPadel() {
         ballCost,
         paymentPersonId,
         paymentInfo,
+        paidStatus,
         courtStages,
         maxParticipants,
         pendingRequests,
@@ -1718,7 +1720,7 @@ function AmericanoPadel() {
       }
       return;
     },
-    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, courtStages, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
+    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, courtStages, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
   );
 
   const addPlayerFromInput = () => {
@@ -2345,6 +2347,14 @@ function AmericanoPadel() {
     persist({ courtCost: newCourtCost, adminFee: newAdminFee, ballCost: newBallCost });
   };
 
+  // Host/co-host-only checklist marking who's already paid their split bill
+  // share — default everyone is unpaid until manually checked off.
+  const handleTogglePaid = (playerId) => {
+    const newPaidStatus = { ...paidStatus, [playerId]: !paidStatus[playerId] };
+    setPaidStatus(newPaidStatus);
+    persist({ paidStatus: newPaidStatus });
+  };
+
   const handleApproveRequest = (reqId) => {
     const req = pendingRequests.find((r) => r.id === reqId);
     if (!req) return;
@@ -2398,6 +2408,7 @@ function AmericanoPadel() {
     setBallCost("");
     setPaymentPersonId(null);
     setPaymentInfo([]);
+    setPaidStatus({});
     setCourtStages([]);
     setOwnerId(null);
     setOwnerUsername("");
@@ -2443,6 +2454,7 @@ function AmericanoPadel() {
     setBallCost(data.ballCost ?? "");
     setPaymentPersonId(data.paymentPersonId ?? null);
     setPaymentInfo(data.paymentInfo || []);
+    setPaidStatus(data.paidStatus || {});
     setCourtStages(data.courtStages || []);
     setOwnerId(data.ownerId || null);
     setOwnerUsername(data.ownerUsername || "");
@@ -2959,6 +2971,8 @@ function AmericanoPadel() {
           isOwner={sessionRole === "owner"}
           canManage={canManage}
           onUpdateCosts={handleUpdateCosts}
+          paidStatus={paidStatus}
+          onTogglePaid={handleTogglePaid}
           currentAccountId={currentUser?.accountId}
           paymentPersonId={paymentPersonId}
           onSetPaymentPerson={handleSetPaymentPerson}
@@ -5836,6 +5850,7 @@ function SplitBillScreen({
   isOwner, canManage, onUpdateCosts,
   currentAccountId, paymentPersonId, onSetPaymentPerson,
   paymentInfo, onSavePaymentInfo,
+  paidStatus, onTogglePaid,
   onNav, onBackToLobby,
 }) {
   const court = Number(courtCost) || 0;
@@ -6101,20 +6116,50 @@ function SplitBillScreen({
         )}
       </Section>
 
-      <Section icon={Users} title="Rincian per Pemain">
+      <Section
+        icon={Check}
+        title="Ceklis Pembayaran"
+        subtitle={`${players.filter((p) => paidStatus[p.id]).length}/${players.length} sudah bayar`}
+      >
         <div className="space-y-2">
-          {players.map((p) => (
-            <div
-              key={p.id}
-              className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3"
-            >
-              <span className="font-semibold text-slate-100 truncate">{p.name}</span>
-              <span className="font-mono2 text-lime-300 font-bold shrink-0">
-                {formatRupiah(perPerson)}
-              </span>
-            </div>
-          ))}
+          {players.map((p) => {
+            const isPaid = !!paidStatus[p.id];
+            return (
+              <button
+                key={p.id}
+                onClick={() => canManage && onTogglePaid(p.id)}
+                disabled={!canManage}
+                className={`w-full flex items-center justify-between gap-3 rounded-xl border px-4 py-3 ${
+                  isPaid ? "border-lime-400/50 bg-lime-400/5" : "border-slate-800 bg-slate-900/50"
+                }`}
+              >
+                <span className="flex items-center gap-2.5 min-w-0">
+                  <span
+                    className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${
+                      isPaid ? "bg-lime-300 border-lime-300" : "border-slate-600"
+                    }`}
+                  >
+                    {isPaid && <Check size={13} strokeWidth={3} className="text-slate-950" />}
+                  </span>
+                  <span className="font-semibold text-slate-100 truncate">{p.name}</span>
+                </span>
+                <span className="flex items-center gap-2 shrink-0">
+                  <span className="font-mono2 text-lime-300 font-bold">
+                    {formatRupiah(perPerson)}
+                  </span>
+                  <Chip tone={isPaid ? "lime" : "slate"}>
+                    {isPaid ? "Sudah bayar" : "Belum bayar"}
+                  </Chip>
+                </span>
+              </button>
+            );
+          })}
         </div>
+        {!canManage && (
+          <p className="text-[11px] text-slate-500 mt-3">
+            Cuma host & co-host yang bisa tandai status pembayaran.
+          </p>
+        )}
       </Section>
 
       <BottomNav active="splitbill" onNav={onNav} showSplitBill />
@@ -6900,17 +6945,36 @@ function ViewOnlyApp({ sessionId }) {
                   })()}
 
                   <div className="mt-6 space-y-2">
-                    {(data.players || []).map((p) => (
-                      <div
-                        key={p.id}
-                        className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3"
-                      >
-                        <span className="font-semibold text-slate-100 truncate">{p.name}</span>
-                        <span className="font-mono2 text-lime-300 font-bold shrink-0">
-                          {formatRupiah(perPerson)}
-                        </span>
-                      </div>
-                    ))}
+                    {(data.players || []).map((p) => {
+                      const isPaid = !!(data.paidStatus || {})[p.id];
+                      return (
+                        <div
+                          key={p.id}
+                          className={`flex items-center justify-between gap-3 rounded-xl border px-4 py-3 ${
+                            isPaid ? "border-lime-400/50 bg-lime-400/5" : "border-slate-800 bg-slate-900/50"
+                          }`}
+                        >
+                          <span className="flex items-center gap-2.5 min-w-0">
+                            <span
+                              className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${
+                                isPaid ? "bg-lime-300 border-lime-300" : "border-slate-600"
+                              }`}
+                            >
+                              {isPaid && <Check size={13} strokeWidth={3} className="text-slate-950" />}
+                            </span>
+                            <span className="font-semibold text-slate-100 truncate">{p.name}</span>
+                          </span>
+                          <span className="flex items-center gap-2 shrink-0">
+                            <span className="font-mono2 text-lime-300 font-bold">
+                              {formatRupiah(perPerson)}
+                            </span>
+                            <Chip tone={isPaid ? "lime" : "slate"}>
+                              {isPaid ? "Sudah bayar" : "Belum bayar"}
+                            </Chip>
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
                 </>
               );
