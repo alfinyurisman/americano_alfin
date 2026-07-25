@@ -1424,6 +1424,7 @@ function computeOverallProfileStats(myLog) {
     avgPointsPerMatch: totalPointsWon / matches,
     bestStreak,
     eventsCount,
+    pointRatio: totalPointsLost > 0 ? totalPointsWon / totalPointsLost : totalPointsWon > 0 ? Infinity : 0,
     lastUpdated: sorted[sorted.length - 1].ts,
   };
 }
@@ -3478,21 +3479,25 @@ function BottomNav({ active, onNav, showSplitBill }) {
 // LOBBY SCORECARD — profile + career stats, replaces the old small avatar row
 // ---------------------------------------------------------------------------
 
-function ScoreStat({ icon: Icon, iconColor, bgColor, value, label, progress, progressColor }) {
+function ScoreStat({ icon: Icon, iconColor, iconBg, value, label, progress, progressColor }) {
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-2 py-2">
+    <div
+      className="rounded-2xl border border-white/[0.06] px-4 py-4 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-black/30"
+      style={{ backgroundColor: "#131A2B" }}
+    >
       <div
-        className={`w-6 h-6 rounded-full flex items-center justify-center mb-1.5 ${bgColor}`}
+        className="w-9 h-9 rounded-full flex items-center justify-center mb-3"
+        style={{ backgroundColor: iconBg }}
       >
-        <Icon size={12} className={iconColor} />
+        <Icon size={16} style={{ color: iconColor }} />
       </div>
-      <div className="font-display text-lg text-slate-50 leading-none">{value}</div>
-      <div className="text-[8.5px] text-slate-500 mt-1 leading-tight">{label}</div>
+      <div className="font-sans font-extrabold text-[26px] leading-none text-white">{value}</div>
+      <div className="text-[11px] text-slate-400 mt-1.5 leading-tight">{label}</div>
       {progress !== undefined && (
-        <div className="h-1 rounded-full bg-slate-800 mt-1.5 overflow-hidden">
+        <div className="h-1 rounded-full bg-white/[0.06] mt-2.5 overflow-hidden">
           <div
-            className={`h-full rounded-full ${progressColor}`}
-            style={{ width: `${Math.max(0, Math.min(100, progress))}%` }}
+            className="h-full rounded-full transition-all duration-300 ease-out"
+            style={{ width: `${Math.max(0, Math.min(100, progress))}%`, backgroundColor: progressColor }}
           />
         </div>
       )}
@@ -3560,222 +3565,257 @@ function LobbyScoreCard({ currentUser, onChangeAvatar, onChangeDisplayName, onSa
     setEditingCaption(false);
   };
 
+  const ACCENT = "#B8F34A";
   const winsProgress = stats && stats.matches > 0 ? (stats.wins / stats.matches) * 100 : 0;
   const lossesProgress = stats && stats.matches > 0 ? (stats.losses / stats.matches) * 100 : 0;
+  const name = currentUser.displayName || currentUser.username;
+  const initial = name?.[0]?.toUpperCase() || "?";
 
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
-      <div className="flex gap-3 items-start">
-        {/* LEFT: profile column (narrow, matches reference layout) */}
-        <div className="flex flex-col items-center text-center shrink-0 w-[92px]">
-          <button onClick={() => fileInputRef.current?.click()} className="shrink-0">
-            <div className="relative">
-              <Avatar
-                name={currentUser.displayName || currentUser.username}
-                avatarUrl={currentUser.avatarUrl}
-                size={64}
-                className="ring-2 ring-lime-400/40"
-              />
-              <div className="absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-full bg-lime-300 border-2 border-slate-950 flex items-center justify-center">
-                {uploadingAvatar ? (
-                  <RotateCcw size={9} className="text-slate-950 animate-spin" />
-                ) : (
-                  <Camera size={9} className="text-slate-950" strokeWidth={2.5} />
-                )}
-              </div>
+    <div
+      className="rounded-[24px] border border-white/[0.06] shadow-lg shadow-black/20 overflow-hidden flex flex-col md:flex-row"
+      style={{ backgroundColor: "#131A2B" }}
+    >
+      {/* LEFT: hero photo + profile (~35%) */}
+      <div className="w-full md:w-[35%] p-4 md:p-5 flex flex-col shrink-0">
+        <div
+          className="relative w-full rounded-[20px] overflow-hidden shrink-0"
+          style={{ aspectRatio: "4 / 5", border: `2px solid ${ACCENT}66` }}
+        >
+          {currentUser.avatarUrl ? (
+            <img
+              src={currentUser.avatarUrl}
+              alt={name}
+              className="absolute inset-0 w-full h-full object-cover"
+            />
+          ) : (
+            <div
+              className="absolute inset-0 w-full h-full flex items-center justify-center"
+              style={{ background: "linear-gradient(160deg, #1c2740, #0f1626)" }}
+            >
+              <span className="font-sans font-extrabold text-6xl text-white/20">{initial}</span>
             </div>
+          )}
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="absolute bottom-2.5 right-2.5 w-8 h-8 rounded-full flex items-center justify-center shadow-lg"
+            style={{ backgroundColor: ACCENT }}
+          >
+            {uploadingAvatar ? (
+              <RotateCcw size={13} className="text-slate-950 animate-spin" />
+            ) : (
+              <Camera size={13} className="text-slate-950" strokeWidth={2.5} />
+            )}
           </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            onChange={handleAvatarFile}
-            className="hidden"
-          />
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          onChange={handleAvatarFile}
+          className="hidden"
+        />
 
+        <div className="mt-4">
           {editingName ? (
-            <div className="flex flex-col items-center gap-1 mt-2 w-full">
+            <div className="flex items-center gap-1.5">
               <input
                 autoFocus
                 value={nameDraft}
                 onChange={(e) => setNameDraft(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && saveName()}
                 placeholder={currentUser.username}
-                className="w-full min-w-0 bg-slate-950 border border-slate-700 rounded-lg px-1.5 py-1 text-[11px] text-center text-slate-100 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+                className="flex-1 min-w-0 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-base text-white focus:outline-none focus:ring-2 focus:ring-lime-400/50"
               />
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={saveName}
-                  className="w-6 h-6 rounded-lg bg-lime-300 text-slate-950 flex items-center justify-center shrink-0"
-                >
-                  <Check size={11} strokeWidth={3} />
-                </button>
-                <button
-                  onClick={() => setEditingName(false)}
-                  className="w-6 h-6 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 flex items-center justify-center shrink-0"
-                >
-                  <X size={11} />
-                </button>
-              </div>
+              <button
+                onClick={saveName}
+                className="w-7 h-7 rounded-lg text-slate-950 flex items-center justify-center shrink-0"
+                style={{ backgroundColor: ACCENT }}
+              >
+                <Check size={13} strokeWidth={3} />
+              </button>
+              <button
+                onClick={() => setEditingName(false)}
+                className="w-7 h-7 rounded-lg bg-white/5 border border-white/10 text-slate-400 flex items-center justify-center shrink-0"
+              >
+                <X size={13} />
+              </button>
             </div>
           ) : (
-            <button onClick={startEditingName} className="flex items-center gap-1 mt-2 min-w-0 max-w-full">
-              <span className="text-[13px] font-semibold text-slate-50 truncate">
-                {currentUser.displayName || currentUser.username}
+            <button onClick={startEditingName} className="flex items-center gap-1.5 min-w-0 max-w-full">
+              <span className="font-sans font-bold text-[28px] md:text-[36px] leading-[1.05] text-white truncate">
+                {name}
               </span>
-              <Settings2 size={10} className="text-slate-500 shrink-0" />
+              <Settings2 size={14} className="text-slate-500 shrink-0" />
             </button>
           )}
 
-          <div className="flex items-center gap-1 text-[9px] text-slate-500 mt-1.5">
-            <CalendarDays size={9} className="shrink-0" />
-            <span className="truncate">
+          <div className="w-8 h-[3px] rounded-full mt-2 mb-3" style={{ backgroundColor: ACCENT }} />
+
+          <div className="flex items-center gap-2 text-[13px] text-slate-400 mb-1.5">
+            <CalendarDays size={13} className="shrink-0" style={{ color: ACCENT }} />
+            <span>
+              Bergabung{" "}
               {currentUser.createdAt
-                ? new Date(currentUser.createdAt).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })
+                ? new Date(currentUser.createdAt).toLocaleDateString("id-ID", {
+                    day: "numeric",
+                    month: "short",
+                    year: "numeric",
+                  })
                 : "—"}
             </span>
           </div>
 
           {editingLocation ? (
-            <div className="flex flex-col items-center gap-1 mt-1 w-full">
+            <div className="flex items-center gap-1.5 mt-1">
               <input
                 autoFocus
                 value={locationDraft}
                 onChange={(e) => setLocationDraft(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && saveLocation()}
-                placeholder="Lokasi"
-                className="w-full min-w-0 bg-slate-950 border border-slate-700 rounded-lg px-1.5 py-1 text-[10px] text-center text-slate-100 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+                placeholder="mis. Jakarta Selatan"
+                className="flex-1 min-w-0 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1 text-[13px] text-white focus:outline-none focus:ring-2 focus:ring-lime-400/50"
               />
               <button
                 onClick={saveLocation}
-                className="w-6 h-6 rounded-lg bg-lime-300 text-slate-950 flex items-center justify-center shrink-0"
+                className="w-6 h-6 rounded-lg text-slate-950 flex items-center justify-center shrink-0"
+                style={{ backgroundColor: ACCENT }}
               >
                 <Check size={11} strokeWidth={3} />
               </button>
             </div>
           ) : (
-            <button
-              onClick={startEditingLocation}
-              className="flex items-center gap-1 text-[9px] text-slate-500 mt-1 min-w-0 max-w-full"
-            >
-              <MapPin size={9} className="shrink-0" />
-              <span className="truncate">{currentUser.location || "+ lokasi"}</span>
+            <button onClick={startEditingLocation} className="flex items-center gap-2 text-[13px] text-slate-400 min-w-0 max-w-full">
+              <MapPin size={13} className="shrink-0" style={{ color: ACCENT }} />
+              <span className="truncate">{currentUser.location || "Tambah lokasi bermain"}</span>
             </button>
           )}
         </div>
 
-        {/* RIGHT: stats */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center justify-between mb-2 gap-2">
-            <span className="text-[11px] font-semibold tracking-wide text-slate-300 uppercase flex items-center gap-1 min-w-0">
-              <BarChart3 size={12} className="text-lime-300 shrink-0" />
-              <span className="truncate">Ringkasan Statistik</span>
-            </span>
-            {stats?.lastUpdated && (
-              <span className="text-[9px] text-slate-600 shrink-0">
-                {new Date(stats.lastUpdated).toLocaleDateString("id-ID", { day: "numeric", month: "short" })}
-              </span>
-            )}
-          </div>
-
-          {!stats ? (
-            <p className="text-slate-500 text-[11px] py-1">
-              Belum ada data — otomatis keisi begitu kamu main dan skornya selesai.
-            </p>
+        {/* Caption */}
+        <div className="mt-4 pt-3 border-t border-white/[0.06]">
+          {editingCaption ? (
+            <div className="flex items-center gap-1.5">
+              <input
+                autoFocus
+                value={captionDraft}
+                onChange={(e) => setCaptionDraft(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && saveCaption()}
+                placeholder="Terus bermain, terus berkembang."
+                maxLength={80}
+                className="flex-1 min-w-0 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs italic text-slate-200 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+              />
+              <button
+                onClick={saveCaption}
+                className="w-7 h-7 rounded-lg text-slate-950 flex items-center justify-center shrink-0"
+                style={{ backgroundColor: ACCENT }}
+              >
+                <Check size={13} strokeWidth={3} />
+              </button>
+            </div>
           ) : (
-            <div className="grid grid-cols-2 gap-1.5">
+            <button onClick={startEditingCaption} className="flex items-center gap-1.5 min-w-0 w-full">
+              <span className="text-xs italic text-slate-400 truncate flex-1 text-left">
+                "{currentUser.caption || "Terus bermain, terus berkembang."}"
+              </span>
+              <Settings2 size={11} className="text-slate-600 shrink-0" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* RIGHT: stats (~65%) */}
+      <div className="w-full md:w-[65%] p-4 md:p-6 border-t md:border-t-0 md:border-l border-white/[0.06]">
+        <div className="flex items-center justify-between gap-2 mb-1">
+          <span className="font-sans font-bold text-lg md:text-[22px] text-white flex items-center gap-2 min-w-0">
+            <BarChart3 size={18} style={{ color: ACCENT }} className="shrink-0" />
+            <span className="truncate tracking-wide">RINGKASAN STATISTIK</span>
+          </span>
+          {stats?.lastUpdated && (
+            <span className="flex items-center gap-1.5 text-[11px] text-slate-400 border border-white/10 rounded-full px-2.5 py-1 shrink-0">
+              <CalendarDays size={11} />
+              {new Date(stats.lastUpdated).toLocaleDateString("id-ID", {
+                day: "numeric",
+                month: "short",
+                year: "numeric",
+              })}
+            </span>
+          )}
+        </div>
+        <p className="text-[13px] text-slate-500 mb-4">Performa terbaik datang dari konsistensi.</p>
+
+        {!stats ? (
+          <p className="text-slate-500 text-[13px] py-2">
+            Belum ada data — otomatis keisi begitu kamu main dan skornya selesai diisi.
+          </p>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-2.5 md:gap-3">
               <ScoreStat
                 icon={Trophy}
-                iconColor="text-lime-300"
-                bgColor="bg-lime-400/10"
+                iconColor="#8CE85C"
+                iconBg="#8CE85C22"
                 value={stats.matches}
                 label="Match Dimainkan"
               />
               <ScoreStat
                 icon={TrendingUp}
-                iconColor="text-cyan-300"
-                bgColor="bg-cyan-400/10"
+                iconColor="#5EA8FF"
+                iconBg="#5EA8FF22"
                 value={`${Math.round(stats.winRate)}%`}
                 label="Win Rate"
               />
               <ScoreStat
                 icon={Flame}
-                iconColor="text-amber-400"
-                bgColor="bg-amber-400/10"
+                iconColor="#FFB347"
+                iconBg="#FFB34722"
                 value={stats.totalPointsWon}
                 label="Total Poin Menang"
               />
               <ScoreStat
                 icon={Star}
-                iconColor="text-purple-300"
-                bgColor="bg-purple-400/10"
+                iconColor="#B794F6"
+                iconBg="#B794F622"
                 value={stats.avgPointsPerMatch.toFixed(1)}
-                label="Rata² Poin/Match"
+                label="Rata-rata Poin / Match"
               />
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 md:gap-3 mt-2.5 md:mt-3">
               <ScoreStat
                 icon={Trophy}
-                iconColor="text-lime-300"
-                bgColor="bg-lime-400/10"
+                iconColor="#8CE85C"
+                iconBg="#8CE85C22"
                 value={stats.wins}
                 label="Match Menang"
                 progress={winsProgress}
-                progressColor="bg-lime-300"
+                progressColor="#8CE85C"
               />
               <ScoreStat
                 icon={X}
-                iconColor="text-red-400"
-                bgColor="bg-red-400/10"
+                iconColor="#FF6B6B"
+                iconBg="#FF6B6B22"
                 value={stats.losses}
                 label="Match Kalah"
                 progress={lossesProgress}
-                progressColor="bg-red-400"
+                progressColor="#FF6B6B"
               />
               <ScoreStat
                 icon={Zap}
-                iconColor="text-amber-300"
-                bgColor="bg-amber-400/10"
+                iconColor={ACCENT}
+                iconBg={`${ACCENT}22`}
                 value={stats.bestStreak}
-                label="Menang Beruntun"
+                label="Streak Terbaik"
               />
               <ScoreStat
                 icon={Target}
-                iconColor="text-teal-300"
-                bgColor="bg-teal-400/10"
-                value={stats.eventsCount}
-                label="Acara Diikuti"
+                iconColor="#4DDDD8"
+                iconBg="#4DDDD822"
+                value={stats.pointRatio === Infinity ? "∞" : stats.pointRatio.toFixed(2)}
+                label="Rasio Poin (Menang/Kalah)"
               />
             </div>
-          )}
-        </div>
-      </div>
-
-      {/* Caption — full width below both columns */}
-      <div className="mt-3 pt-3 border-t border-slate-800">
-        {editingCaption ? (
-          <div className="flex items-center gap-1.5">
-            <input
-              autoFocus
-              value={captionDraft}
-              onChange={(e) => setCaptionDraft(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && saveCaption()}
-              placeholder="Terus bermain, terus berkembang."
-              maxLength={80}
-              className="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs italic text-slate-200 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
-            />
-            <button
-              onClick={saveCaption}
-              className="w-7 h-7 rounded-lg bg-lime-300 text-slate-950 flex items-center justify-center shrink-0"
-            >
-              <Check size={13} strokeWidth={3} />
-            </button>
-          </div>
-        ) : (
-          <button onClick={startEditingCaption} className="flex items-center gap-1.5 min-w-0 w-full">
-            <span className="text-xs italic text-slate-400 truncate flex-1 text-left">
-              "{currentUser.caption || "Terus bermain, terus berkembang."}"
-            </span>
-            <Settings2 size={11} className="text-slate-600 shrink-0" />
-          </button>
+          </>
         )}
       </div>
     </div>
