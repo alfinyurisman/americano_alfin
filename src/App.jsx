@@ -1414,6 +1414,7 @@ function computeOverallProfileStats(myLog) {
   const totalPointsWon = sorted.reduce((s, r) => s + r.pointsFor, 0);
   const totalPointsLost = sorted.reduce((s, r) => s + r.pointsAgainst, 0);
   const { longest: bestStreak } = computeStreaks(sorted);
+  const eventsCount = new Set(sorted.map((r) => r.eventId)).size;
   return {
     matches,
     wins,
@@ -1422,7 +1423,7 @@ function computeOverallProfileStats(myLog) {
     totalPointsWon,
     avgPointsPerMatch: totalPointsWon / matches,
     bestStreak,
-    pointRatio: totalPointsLost > 0 ? totalPointsWon / totalPointsLost : totalPointsWon > 0 ? Infinity : 0,
+    eventsCount,
     lastUpdated: sorted[sorted.length - 1].ts,
   };
 }
@@ -3479,16 +3480,16 @@ function BottomNav({ active, onNav, showSplitBill }) {
 
 function ScoreStat({ icon: Icon, iconColor, bgColor, value, label, progress, progressColor }) {
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-3">
+    <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-2 py-2">
       <div
-        className={`w-8 h-8 rounded-full flex items-center justify-center mb-2 ${bgColor}`}
+        className={`w-6 h-6 rounded-full flex items-center justify-center mb-1.5 ${bgColor}`}
       >
-        <Icon size={15} className={iconColor} />
+        <Icon size={12} className={iconColor} />
       </div>
-      <div className="font-display text-2xl text-slate-50 leading-none">{value}</div>
-      <div className="text-[10px] text-slate-500 mt-1 leading-tight">{label}</div>
+      <div className="font-display text-lg text-slate-50 leading-none">{value}</div>
+      <div className="text-[8.5px] text-slate-500 mt-1 leading-tight">{label}</div>
       {progress !== undefined && (
-        <div className="h-1 rounded-full bg-slate-800 mt-2 overflow-hidden">
+        <div className="h-1 rounded-full bg-slate-800 mt-1.5 overflow-hidden">
           <div
             className={`h-full rounded-full ${progressColor}`}
             style={{ width: `${Math.max(0, Math.min(100, progress))}%` }}
@@ -3564,82 +3565,86 @@ function LobbyScoreCard({ currentUser, onChangeAvatar, onChangeDisplayName, onSa
 
   return (
     <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
-      {/* Profile row */}
-      <div className="flex items-center gap-3">
-        <button onClick={() => fileInputRef.current?.click()} className="shrink-0">
-          <div className="relative">
-            <Avatar
-              name={currentUser.displayName || currentUser.username}
-              avatarUrl={currentUser.avatarUrl}
-              size={56}
-              className="ring-2 ring-lime-400/40"
-            />
-            <div className="absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-full bg-lime-300 border-2 border-slate-950 flex items-center justify-center">
-              {uploadingAvatar ? (
-                <RotateCcw size={9} className="text-slate-950 animate-spin" />
-              ) : (
-                <Camera size={9} className="text-slate-950" strokeWidth={2.5} />
-              )}
+      <div className="flex gap-3 items-start">
+        {/* LEFT: profile column (narrow, matches reference layout) */}
+        <div className="flex flex-col items-center text-center shrink-0 w-[92px]">
+          <button onClick={() => fileInputRef.current?.click()} className="shrink-0">
+            <div className="relative">
+              <Avatar
+                name={currentUser.displayName || currentUser.username}
+                avatarUrl={currentUser.avatarUrl}
+                size={64}
+                className="ring-2 ring-lime-400/40"
+              />
+              <div className="absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-full bg-lime-300 border-2 border-slate-950 flex items-center justify-center">
+                {uploadingAvatar ? (
+                  <RotateCcw size={9} className="text-slate-950 animate-spin" />
+                ) : (
+                  <Camera size={9} className="text-slate-950" strokeWidth={2.5} />
+                )}
+              </div>
             </div>
-          </div>
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*"
-          onChange={handleAvatarFile}
-          className="hidden"
-        />
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            onChange={handleAvatarFile}
+            className="hidden"
+          />
 
-        <div className="min-w-0 flex-1">
           {editingName ? (
-            <div className="flex items-center gap-1.5">
+            <div className="flex flex-col items-center gap-1 mt-2 w-full">
               <input
                 autoFocus
                 value={nameDraft}
                 onChange={(e) => setNameDraft(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && saveName()}
                 placeholder={currentUser.username}
-                className="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+                className="w-full min-w-0 bg-slate-950 border border-slate-700 rounded-lg px-1.5 py-1 text-[11px] text-center text-slate-100 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
               />
-              <button
-                onClick={saveName}
-                className="w-7 h-7 rounded-lg bg-lime-300 text-slate-950 flex items-center justify-center shrink-0"
-              >
-                <Check size={13} strokeWidth={3} />
-              </button>
-              <button
-                onClick={() => setEditingName(false)}
-                className="w-7 h-7 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 flex items-center justify-center shrink-0"
-              >
-                <X size={13} />
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={saveName}
+                  className="w-6 h-6 rounded-lg bg-lime-300 text-slate-950 flex items-center justify-center shrink-0"
+                >
+                  <Check size={11} strokeWidth={3} />
+                </button>
+                <button
+                  onClick={() => setEditingName(false)}
+                  className="w-6 h-6 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 flex items-center justify-center shrink-0"
+                >
+                  <X size={11} />
+                </button>
+              </div>
             </div>
           ) : (
-            <button onClick={startEditingName} className="flex items-center gap-1.5 min-w-0">
-              <span className="font-display text-2xl text-slate-50 truncate">
+            <button onClick={startEditingName} className="flex items-center gap-1 mt-2 min-w-0 max-w-full">
+              <span className="text-[13px] font-semibold text-slate-50 truncate">
                 {currentUser.displayName || currentUser.username}
               </span>
-              <Settings2 size={12} className="text-slate-500 shrink-0" />
+              <Settings2 size={10} className="text-slate-500 shrink-0" />
             </button>
           )}
 
-          <div className="flex items-center gap-1.5 text-[11px] text-slate-500 mt-0.5">
-            <CalendarDays size={11} className="shrink-0" />
-            <span>
-              Bergabung {currentUser.createdAt ? formatEventDate(currentUser.createdAt) : "—"}
+          <div className="flex items-center gap-1 text-[9px] text-slate-500 mt-1.5">
+            <CalendarDays size={9} className="shrink-0" />
+            <span className="truncate">
+              {currentUser.createdAt
+                ? new Date(currentUser.createdAt).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })
+                : "—"}
             </span>
           </div>
 
           {editingLocation ? (
-            <div className="flex items-center gap-1.5 mt-1">
+            <div className="flex flex-col items-center gap-1 mt-1 w-full">
               <input
                 autoFocus
                 value={locationDraft}
                 onChange={(e) => setLocationDraft(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && saveLocation()}
-                placeholder="mis. Jakarta Selatan"
-                className="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+                placeholder="Lokasi"
+                className="w-full min-w-0 bg-slate-950 border border-slate-700 rounded-lg px-1.5 py-1 text-[10px] text-center text-slate-100 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
               />
               <button
                 onClick={saveLocation}
@@ -3651,99 +3656,100 @@ function LobbyScoreCard({ currentUser, onChangeAvatar, onChangeDisplayName, onSa
           ) : (
             <button
               onClick={startEditingLocation}
-              className="flex items-center gap-1.5 text-[11px] text-slate-500 mt-0.5 min-w-0"
+              className="flex items-center gap-1 text-[9px] text-slate-500 mt-1 min-w-0 max-w-full"
             >
-              <MapPin size={11} className="shrink-0" />
-              <span className="truncate">{currentUser.location || "Tambah lokasi"}</span>
-              <Settings2 size={10} className="text-slate-600 shrink-0" />
+              <MapPin size={9} className="shrink-0" />
+              <span className="truncate">{currentUser.location || "+ lokasi"}</span>
             </button>
+          )}
+        </div>
+
+        {/* RIGHT: stats */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between mb-2 gap-2">
+            <span className="text-[11px] font-semibold tracking-wide text-slate-300 uppercase flex items-center gap-1 min-w-0">
+              <BarChart3 size={12} className="text-lime-300 shrink-0" />
+              <span className="truncate">Ringkasan Statistik</span>
+            </span>
+            {stats?.lastUpdated && (
+              <span className="text-[9px] text-slate-600 shrink-0">
+                {new Date(stats.lastUpdated).toLocaleDateString("id-ID", { day: "numeric", month: "short" })}
+              </span>
+            )}
+          </div>
+
+          {!stats ? (
+            <p className="text-slate-500 text-[11px] py-1">
+              Belum ada data — otomatis keisi begitu kamu main dan skornya selesai.
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 gap-1.5">
+              <ScoreStat
+                icon={Trophy}
+                iconColor="text-lime-300"
+                bgColor="bg-lime-400/10"
+                value={stats.matches}
+                label="Match Dimainkan"
+              />
+              <ScoreStat
+                icon={TrendingUp}
+                iconColor="text-cyan-300"
+                bgColor="bg-cyan-400/10"
+                value={`${Math.round(stats.winRate)}%`}
+                label="Win Rate"
+              />
+              <ScoreStat
+                icon={Flame}
+                iconColor="text-amber-400"
+                bgColor="bg-amber-400/10"
+                value={stats.totalPointsWon}
+                label="Total Poin Menang"
+              />
+              <ScoreStat
+                icon={Star}
+                iconColor="text-purple-300"
+                bgColor="bg-purple-400/10"
+                value={stats.avgPointsPerMatch.toFixed(1)}
+                label="Rata² Poin/Match"
+              />
+              <ScoreStat
+                icon={Trophy}
+                iconColor="text-lime-300"
+                bgColor="bg-lime-400/10"
+                value={stats.wins}
+                label="Match Menang"
+                progress={winsProgress}
+                progressColor="bg-lime-300"
+              />
+              <ScoreStat
+                icon={X}
+                iconColor="text-red-400"
+                bgColor="bg-red-400/10"
+                value={stats.losses}
+                label="Match Kalah"
+                progress={lossesProgress}
+                progressColor="bg-red-400"
+              />
+              <ScoreStat
+                icon={Zap}
+                iconColor="text-amber-300"
+                bgColor="bg-amber-400/10"
+                value={stats.bestStreak}
+                label="Menang Beruntun"
+              />
+              <ScoreStat
+                icon={Target}
+                iconColor="text-teal-300"
+                bgColor="bg-teal-400/10"
+                value={stats.eventsCount}
+                label="Acara Diikuti"
+              />
+            </div>
           )}
         </div>
       </div>
 
-      {/* Stats */}
-      <div className="flex items-center justify-between mt-4 mb-2">
-        <span className="text-xs font-semibold tracking-wide text-slate-300 uppercase flex items-center gap-1.5">
-          <BarChart3 size={13} className="text-lime-300" /> Ringkasan Statistik
-        </span>
-        {stats?.lastUpdated && (
-          <span className="text-[10px] text-slate-600">
-            {new Date(stats.lastUpdated).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })}
-          </span>
-        )}
-      </div>
-
-      {!stats ? (
-        <p className="text-slate-500 text-xs py-2">
-          Belum ada data pertandingan. Statistik ini keisi otomatis begitu kamu main dan skornya
-          selesai diisi.
-        </p>
-      ) : (
-        <div className="grid grid-cols-2 gap-2">
-          <ScoreStat
-            icon={Trophy}
-            iconColor="text-lime-300"
-            bgColor="bg-lime-400/10"
-            value={stats.matches}
-            label="Match Dimainkan"
-          />
-          <ScoreStat
-            icon={TrendingUp}
-            iconColor="text-cyan-300"
-            bgColor="bg-cyan-400/10"
-            value={`${Math.round(stats.winRate)}%`}
-            label="Win Rate"
-          />
-          <ScoreStat
-            icon={Flame}
-            iconColor="text-amber-400"
-            bgColor="bg-amber-400/10"
-            value={stats.totalPointsWon}
-            label="Total Poin Menang"
-          />
-          <ScoreStat
-            icon={Star}
-            iconColor="text-purple-300"
-            bgColor="bg-purple-400/10"
-            value={stats.avgPointsPerMatch.toFixed(1)}
-            label="Rata-rata Poin per Match"
-          />
-          <ScoreStat
-            icon={Trophy}
-            iconColor="text-lime-300"
-            bgColor="bg-lime-400/10"
-            value={stats.wins}
-            label="Total Match Menang"
-            progress={winsProgress}
-            progressColor="bg-lime-300"
-          />
-          <ScoreStat
-            icon={X}
-            iconColor="text-red-400"
-            bgColor="bg-red-400/10"
-            value={stats.losses}
-            label="Total Match Kalah"
-            progress={lossesProgress}
-            progressColor="bg-red-400"
-          />
-          <ScoreStat
-            icon={Zap}
-            iconColor="text-amber-300"
-            bgColor="bg-amber-400/10"
-            value={stats.bestStreak}
-            label="Kemenangan Beruntun"
-          />
-          <ScoreStat
-            icon={Target}
-            iconColor="text-teal-300"
-            bgColor="bg-teal-400/10"
-            value={stats.pointRatio === Infinity ? "∞" : stats.pointRatio.toFixed(2)}
-            label="Rasio Poin Menang/Kalah"
-          />
-        </div>
-      )}
-
-      {/* Caption */}
+      {/* Caption — full width below both columns */}
       <div className="mt-3 pt-3 border-t border-slate-800">
         {editingCaption ? (
           <div className="flex items-center gap-1.5">
@@ -4692,12 +4698,7 @@ function SetupScreen(props) {
 
       {/* PLAY DATE (optional) */}
       <Section icon={CalendarDays} title="Tanggal Bermain" subtitle="opsional">
-        <input
-          type="date"
-          value={playDate}
-          onChange={(e) => setPlayDate(e.target.value)}
-          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
-        />
+        <DateInputField value={playDate} onChange={(e) => setPlayDate(e.target.value)} />
         <p className="text-[11px] text-slate-500 mt-2">
           Kalau dikosongkan, tanggal yang muncul di Lobby otomatis pakai tanggal acara ini dibuat.
         </p>
@@ -4992,6 +4993,40 @@ function FieldRow({ label, children }) {
     <div className="flex items-center justify-between">
       <span className="text-sm text-slate-300">{label}</span>
       {children}
+    </div>
+  );
+}
+
+// Native <input type="date"> renders with the browser's own pill-shaped
+// chrome on iOS/Android that ignores most of our styling, making it look
+// wider/rounder than every other text input next to it. This wraps the real
+// (invisible) date input over a normally-styled box we fully control, so it
+// visually matches every other field while still opening the native picker.
+function DateInputField({ value, onChange, placeholder = "Pilih tanggal" }) {
+  const display = value
+    ? (() => {
+        const [y, m, d] = value.split("-").map(Number);
+        return new Date(y, m - 1, d).toLocaleDateString("id-ID", {
+          day: "numeric",
+          month: "short",
+          year: "numeric",
+        });
+      })()
+    : null;
+  return (
+    <div className="relative w-full">
+      <div className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm flex items-center justify-between pointer-events-none">
+        <span className={display ? "text-slate-100" : "text-slate-500"}>
+          {display || placeholder}
+        </span>
+        <CalendarDays size={16} className="text-slate-500 shrink-0" />
+      </div>
+      <input
+        type="date"
+        value={value}
+        onChange={onChange}
+        className="absolute inset-0 w-full h-full opacity-0"
+      />
     </div>
   );
 }
@@ -5387,12 +5422,9 @@ function WaitingRoomScreen(props) {
 
       {canManage && (
         <Section icon={CalendarDays} title="Tanggal Bermain" subtitle="opsional">
-          <input
-            type="date"
-            value={playDate}
-            onChange={(e) => setPlayDate(e.target.value)}
-            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-lime-400/50 mb-3"
-          />
+          <div className="mb-3">
+            <DateInputField value={playDate} onChange={(e) => setPlayDate(e.target.value)} />
+          </div>
           <CostSaveButton onSave={onSavePlayDate} />
         </Section>
       )}
