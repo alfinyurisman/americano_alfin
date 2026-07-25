@@ -3,7 +3,7 @@ import {
   Plus, X, Users, Clock, Trophy, Shuffle, ChevronLeft, ChevronRight,
   RotateCcw, Share2, BarChart3, Settings2, Check, Coffee,
   ArrowLeft, Trash2, CalendarDays, ChevronRightCircle, ClipboardList, Link2, Eye, ListOrdered,
-  LogOut, Lock, UserCircle2, Shield, Wallet,
+  LogOut, Lock, UserCircle2, Shield, Wallet, Handshake, TrendingUp, TrendingDown,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -243,6 +243,46 @@ async function deleteSessionData(id) {
     await window.storage.delete(sessionKey(id), true);
   } catch (e) {
     /* no-op */
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PARTNER SYNERGY — per-player match log
+// ---------------------------------------------------------------------------
+// Each logged-in player has one log of their own match history (every match
+// they've ever finished, across every event, tagged with who their partner
+// was). Everything the Partner Synergy feature shows — pair stats, "with vs
+// without" comparisons, top partners, trend — is derived from this log
+// rather than a separate table per pair, since a person's matches are a
+// natural, single source of truth for all of it.
+//
+// IMPORTANT SCOPE NOTE: this only works for players with an accountId
+// (registered/logged-in users). A manually-typed guest name has no stable
+// identity across different events, so there's no reliable way to link
+// "Budi" in event A with "Budi" in event B — guest-only players simply don't
+// get logged here.
+const PLAYER_LOG_MAX = 400; // cap how many recent matches we keep per player
+
+const playerLogKey = (accountId) => `player-match-log:${accountId}`;
+
+async function loadPlayerMatchLog(accountId) {
+  if (!accountId) return [];
+  try {
+    const res = await window.storage.get(playerLogKey(accountId), true);
+    return res ? JSON.parse(res.value) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+async function appendPlayerMatchRecords(accountId, records) {
+  if (!accountId || !records.length) return;
+  try {
+    const existing = await loadPlayerMatchLog(accountId);
+    const merged = [...existing, ...records].slice(-PLAYER_LOG_MAX);
+    await window.storage.set(playerLogKey(accountId), JSON.stringify(merged), true);
+  } catch (e) {
+    console.error("Gagal menyimpan log pertandingan:", e);
   }
 }
 
@@ -1057,6 +1097,59 @@ function matchAB(s) {
   return { a: Number.isFinite(a) ? a : undefined, b: Number.isFinite(b) ? b : undefined };
 }
 
+// Same completeness check used elsewhere (locked-rounds detection, etc.) —
+// centralized here so the Partner Synergy logging trigger and everything
+// else agree on what counts as "this specific match has a real result".
+function isMatchScoreComplete(s) {
+  if (!s) return false;
+  if (s.format === "tennis") return (s.gamesA || 0) > 0 || (s.gamesB || 0) > 0;
+  return s.a !== undefined && s.a !== "" && s.b !== undefined && s.b !== "";
+}
+
+// Builds the per-player log entries (Partner Synergy feature) for one
+// finished match — one entry for each player who has an accountId, from
+// their own point of view (who their partner was, who they beat/lost to,
+// the score). Players without an accountId (guest names) are skipped since
+// there's no stable identity to attach their history to across events.
+// `playersById` maps player id -> {id, name, accountId} for the CURRENT
+// roster (match.team1/team2 store just the ids).
+function buildPartnerLogRecords(match, score, eventId, eventName, ts, playersById) {
+  const ab = matchAB(score);
+  if (!ab || !Number.isFinite(ab.a) || !Number.isFinite(ab.b)) return [];
+  const { a, b } = ab;
+  const teamIds = [
+    { ids: match.team1, points: a, oppPoints: b },
+    { ids: match.team2, points: b, oppPoints: a },
+  ];
+  const records = [];
+  teamIds.forEach(({ ids, points, oppPoints }, tIdx) => {
+    const oppIds = teamIds[1 - tIdx].ids;
+    const team = ids.map((id) => playersById[id]).filter(Boolean);
+    const oppTeam = oppIds.map((id) => playersById[id]).filter(Boolean);
+    team.forEach((player) => {
+      if (!player.accountId) return;
+      const partner = team.find((p) => p.id !== player.id) || null;
+      records.push({
+        accountId: player.accountId,
+        record: {
+          ts,
+          eventId,
+          eventName,
+          partnerAccountId: partner?.accountId || null,
+          partnerName: partner?.name || null,
+          oppNames: oppTeam.map((p) => p.name),
+          oppAccountIds: oppTeam.map((p) => p.accountId).filter(Boolean),
+          won: points > oppPoints,
+          tied: points === oppPoints,
+          pointsFor: points,
+          pointsAgainst: oppPoints,
+        },
+      });
+    });
+  });
+  return records;
+}
+
 // Builds the standings array (points, wins/losses/ties, diff, matches played)
 // from a schedule + score map. Shared between the editable app and the
 // read-only viewer link.
@@ -1098,6 +1191,168 @@ function sliceStagesFrom(courtStages, fromIdx, totalRounds) {
     if (end > start) segments.push({ rounds: end - start, courts: stage.courts });
   }
   return segments.length > 0 ? segments : null;
+}
+
+// ---------------------------------------------------------------------------
+// PARTNER SYNERGY INDEX — analysis functions
+// ---------------------------------------------------------------------------
+// Everything here works off ONE player's match log (array of records built
+// by buildPartnerLogRecords/appendPlayerMatchRecords). Filtering that same
+// log different ways gives every view the feature needs: stats for one
+// specific partner, "with vs without" comparisons, and the top-partners list.
+
+function computeStreaks(recordsChrono) {
+  let longest = 0;
+  let current = 0;
+  let running = 0;
+  recordsChrono.forEach((r) => {
+    if (r.won) {
+      running += 1;
+      longest = Math.max(longest, running);
+    } else {
+      running = 0;
+    }
+  });
+  // current streak = trailing run of wins at the very end of the (chronological) log
+  for (let i = recordsChrono.length - 1; i >= 0; i--) {
+    if (recordsChrono[i].won) current += 1;
+    else break;
+  }
+  return { longest, current };
+}
+
+// Synergy Index: a 0-100 blend of several factors, not just win rate.
+//   Win Rate               35%
+//   Avg Point Difference   20%
+//   Opponent Strength      15%  (simplified proxy — see note below)
+//   Consistency            10%  (lower variance in point-diff = more consistent)
+//   Matches Together       10%  (more shared history = more reliable number)
+//   Recent Trend           10%  (win rate over the last 5 matches together)
+//
+// NOTE on "Opponent Strength": a true version would need an independent
+// player-rating/ELO system to know how strong the opponents actually were.
+// That doesn't exist here, so this uses a proxy instead — how large a share
+// of total points the opponents typically scored against this pair (i.e.
+// how competitive the matches were on average). It's a reasonable stand-in,
+// not a rigorous rating.
+function computeSynergyIndex(records) {
+  const n = records.length;
+  if (n === 0) return null;
+
+  const wins = records.filter((r) => r.won).length;
+  const winRate = (wins / n) * 100;
+
+  const pointDiffs = records.map((r) => r.pointsFor - r.pointsAgainst);
+  const avgPointDiff = pointDiffs.reduce((a, b) => a + b, 0) / n;
+  const avgPointDiffScore = Math.max(0, Math.min(100, ((avgPointDiff + 15) / 30) * 100));
+
+  const oppShare =
+    records.reduce((sum, r) => sum + r.pointsAgainst / Math.max(1, r.pointsFor + r.pointsAgainst), 0) / n;
+  const opponentStrengthScore = Math.max(0, Math.min(100, oppShare * 100));
+
+  const meanDiff = avgPointDiff;
+  const variance = pointDiffs.reduce((s, d) => s + (d - meanDiff) ** 2, 0) / n;
+  const stdDev = Math.sqrt(variance);
+  const consistencyScore = Math.max(0, Math.min(100, 100 - stdDev * 5));
+
+  const matchesScore = Math.max(0, Math.min(100, (n / 20) * 100));
+
+  const last5 = records.slice(-5);
+  const recentTrendScore = (last5.filter((r) => r.won).length / last5.length) * 100;
+
+  const raw =
+    winRate * 0.35 +
+    avgPointDiffScore * 0.2 +
+    opponentStrengthScore * 0.15 +
+    consistencyScore * 0.1 +
+    matchesScore * 0.1 +
+    recentTrendScore * 0.1;
+
+  return Math.round(Math.max(0, Math.min(100, raw)));
+}
+
+function synergyRating(score) {
+  if (score >= 90) return { stars: 5, label: "Elite Duo" };
+  if (score >= 80) return { stars: 4, label: "Great Pair" };
+  if (score >= 70) return { stars: 3, label: "Good Pair" };
+  if (score >= 60) return { stars: 2, label: "Average" };
+  return { stars: 1, label: "Needs Improvement" };
+}
+
+// Full stat card for one specific partner, built from `myLog` (my own match
+// history) filtered down to matches where `partnerAccountId` was my partner.
+function computePartnerStats(myLog, partnerAccountId) {
+  const records = myLog
+    .filter((r) => r.partnerAccountId === partnerAccountId)
+    .sort((a, b) => a.ts - b.ts);
+  if (records.length === 0) return null;
+
+  const wins = records.filter((r) => r.won).length;
+  const losses = records.filter((r) => !r.won && !r.tied).length;
+  const ties = records.filter((r) => r.tied).length;
+  const totalPointsFor = records.reduce((s, r) => s + r.pointsFor, 0);
+  const totalPointsAgainst = records.reduce((s, r) => s + r.pointsAgainst, 0);
+  const { longest, current } = computeStreaks(records);
+  const eventIds = new Set(records.map((r) => r.eventId));
+  const synergy = computeSynergyIndex(records);
+
+  // Trend: synergy index recomputed at up to 5 evenly-spaced checkpoints
+  // through the shared history, so you can see it climb (or slide) over time.
+  const checkpointCount = Math.min(5, records.length);
+  const trend = [];
+  for (let i = 1; i <= checkpointCount; i++) {
+    const uptoIdx = Math.round((records.length * i) / checkpointCount);
+    trend.push(computeSynergyIndex(records.slice(0, uptoIdx)));
+  }
+  const trendDirection =
+    trend.length >= 2 ? (trend[trend.length - 1] >= trend[0] ? "up" : "down") : null;
+
+  return {
+    partnerAccountId,
+    partnerName: records[records.length - 1].partnerName,
+    matches: records.length,
+    wins,
+    losses,
+    ties,
+    winRate: (wins / records.length) * 100,
+    totalPointsFor,
+    totalPointsAgainst,
+    avgPointsPerMatch: totalPointsFor / records.length,
+    avgPointDiff: (totalPointsFor - totalPointsAgainst) / records.length,
+    longestStreak: longest,
+    currentStreak: current,
+    lastPlayedAt: records[records.length - 1].ts,
+    eventsCount: eventIds.size,
+    synergy,
+    rating: synergy !== null ? synergyRating(synergy) : null,
+    trend,
+    trendDirection,
+  };
+}
+
+// Top-N partner list for the Lobby / profile view — every distinct partner
+// in the log, ranked by Synergy Index.
+function computeTopPartners(myLog, limit = 5) {
+  const partnerIds = [...new Set(myLog.map((r) => r.partnerAccountId).filter(Boolean))];
+  return partnerIds
+    .map((id) => computePartnerStats(myLog, id))
+    .filter(Boolean)
+    .sort((a, b) => b.synergy - a.synergy)
+    .slice(0, limit);
+}
+
+// "With X" vs "Without X" comparison — win rate for both players, with and
+// without each other, computed straight from each side's own full log.
+function computeWithWithoutComparison(myLog, partnerAccountId) {
+  const withPartner = myLog.filter((r) => r.partnerAccountId === partnerAccountId);
+  const withoutPartner = myLog.filter((r) => r.partnerAccountId !== partnerAccountId);
+  const rate = (arr) => (arr.length > 0 ? (arr.filter((r) => r.won).length / arr.length) * 100 : null);
+  return {
+    withRate: rate(withPartner),
+    withoutRate: rate(withoutPartner),
+    withMatches: withPartner.length,
+    withoutMatches: withoutPartner.length,
+  };
 }
 
 function buildLeaderboard(engine, playerMap, scores, activeIds) {
@@ -1193,6 +1448,8 @@ function AmericanoPadel() {
   const [paymentPersonId, setPaymentPersonId] = useState(null); // player.id of who collects the split bill
   const [paymentInfo, setPaymentInfo] = useState([]); // [{platform, number}] max 2
   const [paidStatus, setPaidStatus] = useState({}); // { [playerId]: true } — missing/false = belum bayar
+  const [loggedMatchKeys, setLoggedMatchKeys] = useState([]); // "rIdx-cIdx" keys already recorded into Partner Synergy logs, so re-syncs/multiple viewers don't double-count
+  const [selectedPartner, setSelectedPartner] = useState(null); // { accountId, name } — which partner's detail screen is open
   const [courtStages, setCourtStages] = useState([]); // [{id, rounds, courts}] — empty = simple single-court-count mode
   const [hostPlaying, setHostPlaying] = useState(false);
   const [coHostIds, setCoHostIds] = useState([]); // accountIds granted co-host (edit) access
@@ -1628,6 +1885,7 @@ function AmericanoPadel() {
           setBallCost(saved.ballCost ?? "");
           setPaymentPersonId(saved.paymentPersonId ?? null);
           setPaymentInfo(saved.paymentInfo || []);
+          setLoggedMatchKeys(saved.loggedMatchKeys || []);
           setEnded(!!saved.ended);
           if (saved.engine && screen === "waiting") {
             setScreen("session");
@@ -1659,6 +1917,7 @@ function AmericanoPadel() {
         paymentPersonId,
         paymentInfo,
         paidStatus,
+        loggedMatchKeys,
         courtStages,
         maxParticipants,
         pendingRequests,
@@ -1720,8 +1979,56 @@ function AmericanoPadel() {
       }
       return;
     },
-    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, courtStages, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
+    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, loggedMatchKeys, courtStages, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
   );
+
+  // Partner Synergy Index: whenever a specific match's score newly becomes
+  // complete, log it into each participating (accountId-having) player's
+  // personal match history, so pair statistics keep building up match by
+  // match rather than only when the whole event ends. `loggedMatchKeys`
+  // (shared via the session, synced across viewers) makes sure each match
+  // only gets recorded once even if several people have the session open.
+  useEffect(() => {
+    if (!engine || !activeId) return;
+    const playersById = {};
+    players.forEach((p) => (playersById[p.id] = p));
+    const loggedSet = new Set(loggedMatchKeys);
+    const newlyLoggedKeys = [];
+    const byAccount = {};
+
+    engine.roundsData.forEach((rd, rIdx) => {
+      rd.courts.forEach((match, cIdx) => {
+        const key = `${rIdx}-${cIdx}`;
+        if (loggedSet.has(key)) return;
+        const s = scores[key];
+        if (!isMatchScoreComplete(s)) return;
+        const records = buildPartnerLogRecords(
+          match,
+          s,
+          activeId,
+          eventName,
+          Date.now(),
+          playersById
+        );
+        if (records.length === 0) return; // nobody in this match has an account — nothing to log
+        records.forEach(({ accountId, record }) => {
+          if (!byAccount[accountId]) byAccount[accountId] = [];
+          byAccount[accountId].push(record);
+        });
+        newlyLoggedKeys.push(key);
+      });
+    });
+
+    if (newlyLoggedKeys.length === 0) return;
+
+    const nextLoggedKeys = [...loggedMatchKeys, ...newlyLoggedKeys];
+    setLoggedMatchKeys(nextLoggedKeys);
+    persist({ loggedMatchKeys: nextLoggedKeys });
+    Object.entries(byAccount).forEach(([accountId, records]) => {
+      appendPlayerMatchRecords(accountId, records);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scores, engine, activeId]);
 
   const addPlayerFromInput = () => {
     const name = nameInput.trim();
@@ -2409,6 +2716,7 @@ function AmericanoPadel() {
     setPaymentPersonId(null);
     setPaymentInfo([]);
     setPaidStatus({});
+    setLoggedMatchKeys([]);
     setCourtStages([]);
     setOwnerId(null);
     setOwnerUsername("");
@@ -2455,6 +2763,7 @@ function AmericanoPadel() {
     setPaymentPersonId(data.paymentPersonId ?? null);
     setPaymentInfo(data.paymentInfo || []);
     setPaidStatus(data.paidStatus || {});
+    setLoggedMatchKeys(data.loggedMatchKeys || []);
     setCourtStages(data.courtStages || []);
     setOwnerId(data.ownerId || null);
     setOwnerUsername(data.ownerUsername || "");
@@ -2783,6 +3092,7 @@ function AmericanoPadel() {
           friendRequestCount={friendRequests.length}
           onRespondInvitation={handleRespondInvitation}
           onOpenMyPayment={() => setScreen("my-payment")}
+          onOpenPartnerSynergy={() => setScreen("partner-synergy")}
           currentUser={currentUser}
           onLogout={handleLogout}
         />
@@ -2792,6 +3102,26 @@ function AmericanoPadel() {
         <MyPaymentScreen
           currentUser={currentUser}
           onSave={handleSaveMyPaymentInfo}
+          onBackToLobby={handleBackToLobby}
+        />
+      )}
+
+      {screen === "partner-synergy" && (
+        <PartnerSynergyScreen
+          currentUser={currentUser}
+          onOpenPartner={(partner) => {
+            setSelectedPartner(partner);
+            setScreen("partner-detail");
+          }}
+          onBackToLobby={handleBackToLobby}
+        />
+      )}
+
+      {screen === "partner-detail" && selectedPartner && (
+        <PartnerDetailScreen
+          currentUser={currentUser}
+          partner={selectedPartner}
+          onBack={() => setScreen("partner-synergy")}
           onBackToLobby={handleBackToLobby}
         />
       )}
@@ -3046,7 +3376,7 @@ function BottomNav({ active, onNav, showSplitBill }) {
 // LOBBY SCREEN
 // ---------------------------------------------------------------------------
 
-function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover, onRefresh, onChangeAvatar, onChangeDisplayName, onOpenFriends, friendRequestCount, onRespondInvitation, onOpenMyPayment, currentUser, onLogout }) {
+function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover, onRefresh, onChangeAvatar, onChangeDisplayName, onOpenFriends, friendRequestCount, onRespondInvitation, onOpenMyPayment, onOpenPartnerSynergy, currentUser, onLogout }) {
   const [accountCount, setAccountCount] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
@@ -3221,6 +3551,12 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
       <div className="px-6 pt-3">
         <GhostButton onClick={onOpenMyPayment} icon={Wallet} className="w-full">
           Info Pembayaran Saya
+        </GhostButton>
+      </div>
+
+      <div className="px-6 pt-3">
+        <GhostButton onClick={onOpenPartnerSynergy} icon={Handshake} className="w-full">
+          Partner Synergy Index
         </GhostButton>
       </div>
 
@@ -3495,6 +3831,287 @@ function MyPaymentScreen({ currentUser, onSave, onBackToLobby }) {
           {saved ? "Tersimpan ✓" : "Simpan"}
         </PrimaryButton>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PARTNER SYNERGY — Top 5 partners list, accessible from the Lobby
+// ---------------------------------------------------------------------------
+
+function SynergyStars({ stars }) {
+  return (
+    <span className="text-amber-300 tracking-wide">
+      {"★".repeat(stars)}
+      <span className="text-slate-700">{"★".repeat(5 - stars)}</span>
+    </span>
+  );
+}
+
+function PartnerSynergyScreen({ currentUser, onOpenPartner, onBackToLobby }) {
+  const [loading, setLoading] = useState(true);
+  const [topPartners, setTopPartners] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!currentUser?.accountId) {
+        setLoading(false);
+        return;
+      }
+      const log = await loadPlayerMatchLog(currentUser.accountId);
+      if (cancelled) return;
+      setTopPartners(computeTopPartners(log, 5));
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.accountId]);
+
+  const medal = (i) => (i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`);
+
+  return (
+    <div className="pb-10">
+      <div className="px-6 pt-14 pb-6 border-b border-slate-800">
+        <button
+          onClick={onBackToLobby}
+          className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform mb-4"
+        >
+          <ArrowLeft size={16} /> Lobby
+        </button>
+        <div className="flex items-center gap-2 mb-1">
+          <Handshake size={16} className="text-lime-300" />
+          <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
+            Statistik Pasangan
+          </span>
+        </div>
+        <h1 className="font-display text-5xl text-slate-50">PARTNER SYNERGY</h1>
+        <p className="text-slate-500 text-sm mt-2">
+          Seberapa cocok kamu main bareng partner tertentu, dihitung dari semua pertandingan yang
+          pernah kamu mainkan bareng dia — bukan cuma win rate, tapi gabungan beberapa faktor.
+        </p>
+      </div>
+
+      <div className="px-6 pt-6">
+        {loading ? (
+          <p className="text-slate-500 text-sm">Memuat...</p>
+        ) : !currentUser?.accountId ? (
+          <p className="text-slate-500 text-sm">Login dulu buat lihat statistik pasangan kamu.</p>
+        ) : topPartners.length === 0 ? (
+          <p className="text-slate-500 text-sm">
+            Belum ada data. Statistik ini keisi otomatis begitu kamu main bareng partner yang juga
+            punya akun (bukan nama manual), dan skornya sudah selesai diisi.
+          </p>
+        ) : (
+          <>
+            <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-2">
+              Top {topPartners.length} Partner Kamu
+            </div>
+            <div className="space-y-2">
+              {topPartners.map((p, i) => (
+                <button
+                  key={p.partnerAccountId}
+                  onClick={() =>
+                    onOpenPartner({ accountId: p.partnerAccountId, name: p.partnerName })
+                  }
+                  className="w-full flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3 text-left"
+                >
+                  <span className="text-lg w-7 text-center shrink-0">{medal(i)}</span>
+                  <span className="flex-1 min-w-0">
+                    <div className="font-semibold text-slate-100 truncate">{p.partnerName}</div>
+                    <div className="text-[11px] text-slate-500">
+                      {p.matches} match bareng · <SynergyStars stars={p.rating.stars} />
+                    </div>
+                  </span>
+                  <span className="font-display text-3xl text-lime-300 shrink-0">{p.synergy}</span>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PARTNER DETAIL — full breakdown for one specific partner
+// ---------------------------------------------------------------------------
+
+function PartnerDetailScreen({ currentUser, partner, onBack, onBackToLobby }) {
+  const [loading, setLoading] = useState(true);
+  const [stats, setStats] = useState(null);
+  const [comparison, setComparison] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!currentUser?.accountId || !partner?.accountId) {
+        setLoading(false);
+        return;
+      }
+      const [myLog, partnerLog] = await Promise.all([
+        loadPlayerMatchLog(currentUser.accountId),
+        loadPlayerMatchLog(partner.accountId),
+      ]);
+      if (cancelled) return;
+      const myStats = computePartnerStats(myLog, partner.accountId);
+      const withWithout = computeWithWithoutComparison(myLog, partner.accountId);
+      const partnerWithoutMe = computeWithWithoutComparison(partnerLog, currentUser.accountId);
+      setStats(myStats);
+      setComparison({
+        withRate: withWithout.withRate,
+        meWithoutRate: withWithout.withoutRate,
+        partnerWithoutRate: partnerWithoutMe.withoutRate,
+      });
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.accountId, partner?.accountId]);
+
+  return (
+    <div className="pb-10">
+      <div className="px-6 pt-14 pb-6 border-b border-slate-800">
+        <button
+          onClick={onBack}
+          className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform mb-4"
+        >
+          <ArrowLeft size={16} /> Partner Synergy
+        </button>
+        <h1 className="font-display text-4xl text-slate-50 flex items-center gap-2 flex-wrap">
+          {currentUser?.displayName || currentUser?.username} <Handshake size={24} className="text-lime-300" />{" "}
+          {partner?.name}
+        </h1>
+      </div>
+
+      <div className="px-6 pt-6">
+        {loading ? (
+          <p className="text-slate-500 text-sm">Memuat...</p>
+        ) : !stats ? (
+          <p className="text-slate-500 text-sm">Belum ada histori main bareng partner ini.</p>
+        ) : (
+          <>
+            <div className="rounded-2xl border border-lime-400/40 bg-lime-400/5 p-6 text-center mb-4">
+              <div className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">
+                Partner Synergy
+              </div>
+              <div className="font-display text-6xl text-lime-300">{stats.synergy}</div>
+              <div className="text-slate-400 text-xs mb-1">/100</div>
+              <div className="text-sm mt-1">
+                <SynergyStars stars={stats.rating.stars} />{" "}
+                <span className="text-slate-300 font-semibold">{stats.rating.label}</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 mb-4">
+              <StatCard label="Matches Together" value={stats.matches} />
+              <StatCard label="Win Rate" value={`${Math.round(stats.winRate)}%`} />
+              <StatCard label="Wins" value={stats.wins} />
+              <StatCard label="Losses" value={stats.losses} />
+              <StatCard label="Avg Points" value={stats.avgPointsPerMatch.toFixed(1)} />
+              <StatCard
+                label="Avg Point Diff"
+                value={stats.avgPointDiff > 0 ? `+${stats.avgPointDiff.toFixed(1)}` : stats.avgPointDiff.toFixed(1)}
+              />
+              <StatCard label="Longest Streak" value={stats.longestStreak} />
+              <StatCard label="Current Streak" value={stats.currentStreak} />
+              <StatCard
+                label="Last Match Together"
+                value={new Date(stats.lastPlayedAt).toLocaleDateString("id-ID")}
+              />
+              <StatCard label="Events Together" value={stats.eventsCount} />
+            </div>
+
+            {stats.trend.length >= 2 && (
+              <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 mb-4">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-xs font-semibold text-slate-300 uppercase tracking-wide">
+                    Chemistry Trend
+                  </span>
+                  <span
+                    className={`text-xs font-semibold flex items-center gap-1 ${
+                      stats.trendDirection === "up" ? "text-lime-300" : "text-red-400"
+                    }`}
+                  >
+                    {stats.trendDirection === "up" ? (
+                      <>
+                        <TrendingUp size={13} /> Improving
+                      </>
+                    ) : (
+                      <>
+                        <TrendingDown size={13} /> Declining
+                      </>
+                    )}
+                  </span>
+                </div>
+                <div className="flex items-end gap-2 h-20">
+                  {stats.trend.map((v, i) => (
+                    <div key={i} className="flex-1 flex flex-col items-center gap-1">
+                      <div
+                        className="w-full bg-lime-300 rounded-t"
+                        style={{ height: `${Math.max(4, v)}%` }}
+                      />
+                      <span className="text-[10px] text-slate-500 font-mono2">{v}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {comparison && (
+              <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
+                <div className="text-xs font-semibold text-slate-300 uppercase tracking-wide mb-3">
+                  Comparison — Win Rate
+                </div>
+                <div className="space-y-2.5">
+                  <ComparisonRow
+                    label="When Together"
+                    value={comparison.withRate}
+                    highlight
+                  />
+                  <ComparisonRow
+                    label={`${currentUser?.displayName || currentUser?.username} Without ${partner?.name}`}
+                    value={comparison.meWithoutRate}
+                  />
+                  <ComparisonRow
+                    label={`${partner?.name} Without ${currentUser?.displayName || currentUser?.username}`}
+                    value={comparison.partnerWithoutRate}
+                  />
+                </div>
+                <p className="text-[11px] text-slate-500 mt-3">
+                  Kalau win rate "When Together" jauh lebih tinggi dari dua yang lain, itu tanda
+                  chemistry pasangan ini memang kuat — bukan cuma kebetulan salah satu lagi jago.
+                </p>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ label, value }) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-2.5">
+      <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-0.5">{label}</div>
+      <div className="font-mono2 text-lg text-slate-100">{value}</div>
+    </div>
+  );
+}
+
+function ComparisonRow({ label, value, highlight }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className={`text-sm ${highlight ? "text-slate-200 font-semibold" : "text-slate-400"}`}>
+        {label}
+      </span>
+      <span className={`font-mono2 font-bold ${highlight ? "text-lime-300 text-lg" : "text-slate-300"}`}>
+        {value !== null ? `${Math.round(value)}%` : "—"}
+      </span>
     </div>
   );
 }
@@ -5690,7 +6307,7 @@ function TennisScoreTracker({ s, target, onPoint, onReset, onSetGames, readOnly 
 // ---------------------------------------------------------------------------
 
 function LeaderboardScreen({ eventName, leaderboard, ended, hasSplitBill, onNav, onBackToLobby }) {
-  const [sortBy, setSortBy] = useState("wins"); // wins | diff | winPercent | ppm
+  const [sortBy, setSortBy] = useState("winPercent"); // wins | diff | winPercent | ppm
 
   const sorted = React.useMemo(() => {
     const arr = [...leaderboard];
@@ -5742,9 +6359,9 @@ function LeaderboardScreen({ eventName, leaderboard, ended, hasSplitBill, onNav,
 
         <div className="flex flex-wrap gap-2 mt-4">
           {[
+            { key: "winPercent", label: "Win%" },
             { key: "wins", label: "W-L-T" },
             { key: "diff", label: "Selisih Poin" },
-            { key: "winPercent", label: "Win%" },
             { key: "ppm", label: "PPM" },
           ].map((opt) => (
             <button
@@ -6470,7 +7087,7 @@ function ViewOnlyApp({ sessionId }) {
         : [],
     [data]
   );
-  const [lbSortBy, setLbSortBy] = useState("wins"); // wins | diff | winPercent | ppm
+  const [lbSortBy, setLbSortBy] = useState("winPercent"); // wins | diff | winPercent | ppm
   const sortedLeaderboard = React.useMemo(() => {
     const arr = [...leaderboard];
     if (lbSortBy === "wins") {
@@ -6705,9 +7322,9 @@ function ViewOnlyApp({ sessionId }) {
             <p className="text-slate-500 text-xs mb-3">Tap salah satu tombol untuk urutkan.</p>
             <div className="flex flex-wrap gap-2 mb-4">
               {[
+                { key: "winPercent", label: "Win%" },
                 { key: "wins", label: "W-L-T" },
                 { key: "diff", label: "Selisih Poin" },
-                { key: "winPercent", label: "Win%" },
                 { key: "ppm", label: "PPM" },
               ].map((opt) => (
                 <button
