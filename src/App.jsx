@@ -4,6 +4,7 @@ import {
   RotateCcw, Share2, BarChart3, Settings2, Check, Coffee,
   ArrowLeft, Trash2, CalendarDays, ChevronRightCircle, ClipboardList, Link2, Eye, ListOrdered,
   LogOut, Lock, UserCircle2, Shield, Wallet, Handshake, TrendingUp, TrendingDown,
+  Flame, Star, Zap, Target, Camera, MapPin,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -323,6 +324,40 @@ function formatRupiah(amount) {
   return "Rp." + rounded.toLocaleString("id-ID");
 }
 
+// "Sabtu, 25 Juli 2026" — used on lobby event cards so people can tell at a
+// glance which day an event was for, without opening it.
+function formatEventDate(ts) {
+  if (!ts) return null;
+  return new Date(ts).toLocaleDateString("id-ID", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+}
+
+// Prefers the host's manually-entered play date (optional, "YYYY-MM-DD")
+// over the automatic "when this event was created" timestamp.
+function formatEventEntryDate(ev) {
+  if (ev.playDate) {
+    // Parse as local date (not UTC midnight) so it doesn't shift a day
+    // depending on the viewer's timezone.
+    const [y, m, d] = ev.playDate.split("-").map(Number);
+    return formatEventDate(new Date(y, m - 1, d).getTime());
+  }
+  return formatEventDate(ev.createdAt);
+}
+
+// Same "prefer manual play date" logic, but as a sortable number — used to
+// order lobby/public-event lists newest-first.
+function sortDateValue(ev) {
+  if (ev.playDate) {
+    const [y, m, d] = ev.playDate.split("-").map(Number);
+    return new Date(y, m - 1, d).getTime();
+  }
+  return ev.createdAt || ev.updatedAt || 0;
+}
+
 const SECURITY_QUESTIONS = [
   { key: "city", label: "Di kota mana Anda lahir?" },
   { key: "sport", label: "Olahraga favorit Anda?" },
@@ -370,6 +405,18 @@ async function updateDisplayName(usernameLower, newDisplayName) {
   const existing = await getUserAccount(usernameLower);
   if (!existing) return null;
   const updated = { ...existing, displayName: newDisplayName.trim() || existing.username };
+  await window.storage.set(userKey(usernameLower), JSON.stringify(updated), true);
+  return updated;
+}
+
+// Free-text "location" (e.g. "Jakarta Selatan") and an editable caption shown
+// on the Lobby scorecard — both purely cosmetic, no validation needed.
+async function updateProfileExtras(usernameLower, { location, caption }) {
+  const existing = await getUserAccount(usernameLower);
+  if (!existing) return null;
+  const updated = { ...existing };
+  if (location !== undefined) updated.location = location;
+  if (caption !== undefined) updated.caption = caption;
   await window.storage.set(userKey(usernameLower), JSON.stringify(updated), true);
   return updated;
 }
@@ -1355,6 +1402,31 @@ function computeWithWithoutComparison(myLog, partnerAccountId) {
   };
 }
 
+// Overall career stats for the Lobby scorecard — every match this player has
+// ever finished (any partner, any event), regardless of who they played
+// with. Same underlying log as Partner Synergy, just not filtered by partner.
+function computeOverallProfileStats(myLog) {
+  const matches = myLog.length;
+  if (matches === 0) return null;
+  const sorted = [...myLog].sort((a, b) => a.ts - b.ts);
+  const wins = sorted.filter((r) => r.won).length;
+  const losses = sorted.filter((r) => !r.won && !r.tied).length;
+  const totalPointsWon = sorted.reduce((s, r) => s + r.pointsFor, 0);
+  const totalPointsLost = sorted.reduce((s, r) => s + r.pointsAgainst, 0);
+  const { longest: bestStreak } = computeStreaks(sorted);
+  return {
+    matches,
+    wins,
+    losses,
+    winRate: (wins / matches) * 100,
+    totalPointsWon,
+    avgPointsPerMatch: totalPointsWon / matches,
+    bestStreak,
+    pointRatio: totalPointsLost > 0 ? totalPointsWon / totalPointsLost : totalPointsWon > 0 ? Infinity : 0,
+    lastUpdated: sorted[sorted.length - 1].ts,
+  };
+}
+
 function buildLeaderboard(engine, playerMap, scores, activeIds) {
   if (!engine) return [];
   const totals = {};
@@ -1451,6 +1523,7 @@ function AmericanoPadel() {
   const [loggedMatchKeys, setLoggedMatchKeys] = useState([]); // "rIdx-cIdx" keys already recorded into Partner Synergy logs, so re-syncs/multiple viewers don't double-count
   const [selectedPartner, setSelectedPartner] = useState(null); // { accountId, name } — which partner's detail screen is open
   const [courtStages, setCourtStages] = useState([]); // [{id, rounds, courts}] — empty = simple single-court-count mode
+  const [playDate, setPlayDate] = useState(""); // optional "YYYY-MM-DD" — if set, shown in Lobby instead of the auto createdAt date
   const [hostPlaying, setHostPlaying] = useState(false);
   const [coHostIds, setCoHostIds] = useState([]); // accountIds granted co-host (edit) access
   const [ownerId, setOwnerId] = useState(null);
@@ -1515,10 +1588,11 @@ function AmericanoPadel() {
           status: data.status || (data.engine ? "active" : "waiting"),
           ownerUsername: data.ownerUsername || entry.ownerUsername,
           updatedAt: data.updatedAt || entry.updatedAt,
+          playDate: data.playDate || entry.playDate || null,
         };
       })
     );
-    const sorted = refreshed.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    const sorted = refreshed.sort((a, b) => sortDateValue(b) - sortDateValue(a));
     setLobby(sorted);
     saveLobbyIndex(accountId, sorted);
     return sorted;
@@ -1538,6 +1612,9 @@ function AmericanoPadel() {
               displayName: fresh.displayName || fresh.username,
               avatarUrl: fresh.avatarUrl || null,
               paymentInfo: fresh.paymentInfo || [],
+              location: fresh.location || "",
+              caption: fresh.caption || "",
+              createdAt: fresh.createdAt || null,
             }
           : remembered;
         setCurrentUser(me);
@@ -1561,6 +1638,9 @@ function AmericanoPadel() {
       displayName: account.displayName || account.username,
       avatarUrl: account.avatarUrl || null,
       paymentInfo: account.paymentInfo || [],
+      location: account.location || "",
+      caption: account.caption || "",
+      createdAt: account.createdAt || null,
     };
     setCurrentUser(me);
     if (pendingJoinId) {
@@ -1725,11 +1805,11 @@ function AmericanoPadel() {
         e.id === sessionId ? { ...e, role: "participant" } : e
       );
       await saveLobbyIndex(currentUser.accountId, nextList);
-      setLobby(nextList.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+      setLobby(nextList.sort((a, b) => sortDateValue(b) - sortDateValue(a)));
     } else {
       const nextList = myList.filter((e) => e.id !== sessionId);
       await saveLobbyIndex(currentUser.accountId, nextList);
-      setLobby(nextList.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+      setLobby(nextList.sort((a, b) => sortDateValue(b) - sortDateValue(a)));
     }
   };
 
@@ -1790,14 +1870,15 @@ function AmericanoPadel() {
           role: "participant",
           status: current.status || (current.engine ? "active" : "waiting"),
           ownerUsername: current.ownerUsername || "",
+          playDate: current.playDate || null,
         };
         nextList = [entry, ...myList];
         await saveLobbyIndex(account.accountId, nextList);
       }
-      setLobby(nextList.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+      setLobby(nextList.sort((a, b) => sortDateValue(b) - sortDateValue(a)));
     } else {
       const myList = await loadLobbyIndex(account.accountId);
-      setLobby(myList.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+      setLobby(myList.sort((a, b) => sortDateValue(b) - sortDateValue(a)));
     }
 
     setEventName(current.name || "Sesi Padel");
@@ -1851,7 +1932,7 @@ function AmericanoPadel() {
     const interval = setInterval(async () => {
       if (screen === "lobby") {
         const list = await loadLobbyIndex(currentUser.accountId);
-        setLobby(list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+        setLobby(list.sort((a, b) => sortDateValue(b) - sortDateValue(a)));
       } else if (activeId) {
         const saved = await loadSessionData(activeId);
         if (saved && (saved.updatedAt || 0) > lastAppliedRef.current) {
@@ -1919,6 +2000,7 @@ function AmericanoPadel() {
         paidStatus,
         loggedMatchKeys,
         courtStages,
+        playDate,
         maxParticipants,
         pendingRequests,
         hostInvitations,
@@ -1954,6 +2036,7 @@ function AmericanoPadel() {
         currentRound: snapshot.currentRound || 0,
         ended: !!snapshot.ended,
         status: snapshot.status,
+        playDate: snapshot.playDate || null,
         role: "owner",
       };
       if (currentUser.accountId === theOwnerId) {
@@ -1979,7 +2062,7 @@ function AmericanoPadel() {
       }
       return;
     },
-    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, loggedMatchKeys, courtStages, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
+    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, loggedMatchKeys, courtStages, playDate, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
   );
 
   // Partner Synergy Index: whenever a specific match's score newly becomes
@@ -2645,6 +2728,12 @@ function AmericanoPadel() {
     setCurrentUser((u) => (u ? { ...u, paymentInfo: newInfo } : u));
   };
 
+  const handleSaveProfileExtras = async (extras) => {
+    if (!currentUser) return;
+    await updateProfileExtras(currentUser.accountId, extras);
+    setCurrentUser((u) => (u ? { ...u, ...extras } : u));
+  };
+
   // Lets host/co-host edit the split bill cost breakdown anytime — while
   // the match is still going, or even after it's already been ended.
   const handleUpdateCosts = (newCourtCost, newAdminFee, newBallCost) => {
@@ -2717,6 +2806,7 @@ function AmericanoPadel() {
     setPaymentInfo([]);
     setPaidStatus({});
     setLoggedMatchKeys([]);
+    setPlayDate("");
     setCourtStages([]);
     setOwnerId(null);
     setOwnerUsername("");
@@ -2764,6 +2854,7 @@ function AmericanoPadel() {
     setPaymentInfo(data.paymentInfo || []);
     setPaidStatus(data.paidStatus || {});
     setLoggedMatchKeys(data.loggedMatchKeys || []);
+    setPlayDate(data.playDate || "");
     setCourtStages(data.courtStages || []);
     setOwnerId(data.ownerId || null);
     setOwnerUsername(data.ownerUsername || "");
@@ -2792,7 +2883,7 @@ function AmericanoPadel() {
   const handleOpenDiscover = async () => {
     const list = await loadPublicEvents();
     const filtered = list.filter((e) => e.ownerId !== currentUser?.accountId);
-    setPublicEvents(filtered.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+    setPublicEvents(filtered.sort((a, b) => sortDateValue(b) - sortDateValue(a)));
     setScreen("discover");
   };
 
@@ -3088,6 +3179,7 @@ function AmericanoPadel() {
           onRefresh={handleRefreshLobby}
           onChangeAvatar={handleChangeAvatar}
           onChangeDisplayName={handleChangeDisplayName}
+          onSaveProfileExtras={handleSaveProfileExtras}
           onOpenFriends={handleOpenFriends}
           friendRequestCount={friendRequests.length}
           onRespondInvitation={handleRespondInvitation}
@@ -3188,6 +3280,8 @@ function AmericanoPadel() {
           setAdminFee={setAdminFee}
           ballCost={ballCost}
           setBallCost={setBallCost}
+          playDate={playDate}
+          setPlayDate={setPlayDate}
           computedRounds={computedRounds}
           onGenerate={handleCreateConcept}
           onBackToLobby={handleBackToLobby}
@@ -3233,6 +3327,9 @@ function AmericanoPadel() {
           ballCost={ballCost}
           setBallCost={setBallCost}
           onSaveCosts={() => persist({ courtCost, adminFee, ballCost })}
+          playDate={playDate}
+          setPlayDate={setPlayDate}
+          onSavePlayDate={() => persist({ playDate })}
           onFinalize={handleFinalizeAndGenerate}
           onBackToLobby={handleBackToLobby}
           onDelete={() => handleDeleteSession(activeId)}
@@ -3376,26 +3473,55 @@ function BottomNav({ active, onNav, showSplitBill }) {
 // LOBBY SCREEN
 // ---------------------------------------------------------------------------
 
-function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover, onRefresh, onChangeAvatar, onChangeDisplayName, onOpenFriends, friendRequestCount, onRespondInvitation, onOpenMyPayment, onOpenPartnerSynergy, currentUser, onLogout }) {
-  const [accountCount, setAccountCount] = useState(null);
-  const [refreshing, setRefreshing] = useState(false);
+// ---------------------------------------------------------------------------
+// LOBBY SCORECARD — profile + career stats, replaces the old small avatar row
+// ---------------------------------------------------------------------------
+
+function ScoreStat({ icon: Icon, iconColor, bgColor, value, label, progress, progressColor }) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-3">
+      <div
+        className={`w-8 h-8 rounded-full flex items-center justify-center mb-2 ${bgColor}`}
+      >
+        <Icon size={15} className={iconColor} />
+      </div>
+      <div className="font-display text-2xl text-slate-50 leading-none">{value}</div>
+      <div className="text-[10px] text-slate-500 mt-1 leading-tight">{label}</div>
+      {progress !== undefined && (
+        <div className="h-1 rounded-full bg-slate-800 mt-2 overflow-hidden">
+          <div
+            className={`h-full rounded-full ${progressColor}`}
+            style={{ width: `${Math.max(0, Math.min(100, progress))}%` }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LobbyScoreCard({ currentUser, onChangeAvatar, onChangeDisplayName, onSaveProfileExtras }) {
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
+  const [editingLocation, setEditingLocation] = useState(false);
+  const [locationDraft, setLocationDraft] = useState("");
+  const [editingCaption, setEditingCaption] = useState(false);
+  const [captionDraft, setCaptionDraft] = useState("");
+  const [stats, setStats] = useState(null);
   const fileInputRef = useRef(null);
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
-      const n = await countRegisteredAccounts();
-      setAccountCount(n);
+      if (!currentUser?.accountId) return;
+      const log = await loadPlayerMatchLog(currentUser.accountId);
+      if (cancelled) return;
+      setStats(computeOverallProfileStats(log));
     })();
-  }, []);
-
-  const handleRefreshClick = async () => {
-    setRefreshing(true);
-    await onRefresh();
-    setRefreshing(false);
-  };
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.accountId]);
 
   const handleAvatarFile = async (e) => {
     const file = e.target.files?.[0];
@@ -3410,10 +3536,261 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
     setNameDraft(currentUser?.displayName || currentUser?.username || "");
     setEditingName(true);
   };
-
   const saveName = async () => {
     await onChangeDisplayName(nameDraft);
     setEditingName(false);
+  };
+
+  const startEditingLocation = () => {
+    setLocationDraft(currentUser?.location || "");
+    setEditingLocation(true);
+  };
+  const saveLocation = async () => {
+    await onSaveProfileExtras({ location: locationDraft });
+    setEditingLocation(false);
+  };
+
+  const startEditingCaption = () => {
+    setCaptionDraft(currentUser?.caption || "");
+    setEditingCaption(true);
+  };
+  const saveCaption = async () => {
+    await onSaveProfileExtras({ caption: captionDraft });
+    setEditingCaption(false);
+  };
+
+  const winsProgress = stats && stats.matches > 0 ? (stats.wins / stats.matches) * 100 : 0;
+  const lossesProgress = stats && stats.matches > 0 ? (stats.losses / stats.matches) * 100 : 0;
+
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+      {/* Profile row */}
+      <div className="flex items-center gap-3">
+        <button onClick={() => fileInputRef.current?.click()} className="shrink-0">
+          <div className="relative">
+            <Avatar
+              name={currentUser.displayName || currentUser.username}
+              avatarUrl={currentUser.avatarUrl}
+              size={56}
+              className="ring-2 ring-lime-400/40"
+            />
+            <div className="absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-full bg-lime-300 border-2 border-slate-950 flex items-center justify-center">
+              {uploadingAvatar ? (
+                <RotateCcw size={9} className="text-slate-950 animate-spin" />
+              ) : (
+                <Camera size={9} className="text-slate-950" strokeWidth={2.5} />
+              )}
+            </div>
+          </div>
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          onChange={handleAvatarFile}
+          className="hidden"
+        />
+
+        <div className="min-w-0 flex-1">
+          {editingName ? (
+            <div className="flex items-center gap-1.5">
+              <input
+                autoFocus
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && saveName()}
+                placeholder={currentUser.username}
+                className="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+              />
+              <button
+                onClick={saveName}
+                className="w-7 h-7 rounded-lg bg-lime-300 text-slate-950 flex items-center justify-center shrink-0"
+              >
+                <Check size={13} strokeWidth={3} />
+              </button>
+              <button
+                onClick={() => setEditingName(false)}
+                className="w-7 h-7 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 flex items-center justify-center shrink-0"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          ) : (
+            <button onClick={startEditingName} className="flex items-center gap-1.5 min-w-0">
+              <span className="font-display text-2xl text-slate-50 truncate">
+                {currentUser.displayName || currentUser.username}
+              </span>
+              <Settings2 size={12} className="text-slate-500 shrink-0" />
+            </button>
+          )}
+
+          <div className="flex items-center gap-1.5 text-[11px] text-slate-500 mt-0.5">
+            <CalendarDays size={11} className="shrink-0" />
+            <span>
+              Bergabung {currentUser.createdAt ? formatEventDate(currentUser.createdAt) : "—"}
+            </span>
+          </div>
+
+          {editingLocation ? (
+            <div className="flex items-center gap-1.5 mt-1">
+              <input
+                autoFocus
+                value={locationDraft}
+                onChange={(e) => setLocationDraft(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && saveLocation()}
+                placeholder="mis. Jakarta Selatan"
+                className="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+              />
+              <button
+                onClick={saveLocation}
+                className="w-6 h-6 rounded-lg bg-lime-300 text-slate-950 flex items-center justify-center shrink-0"
+              >
+                <Check size={11} strokeWidth={3} />
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={startEditingLocation}
+              className="flex items-center gap-1.5 text-[11px] text-slate-500 mt-0.5 min-w-0"
+            >
+              <MapPin size={11} className="shrink-0" />
+              <span className="truncate">{currentUser.location || "Tambah lokasi"}</span>
+              <Settings2 size={10} className="text-slate-600 shrink-0" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Stats */}
+      <div className="flex items-center justify-between mt-4 mb-2">
+        <span className="text-xs font-semibold tracking-wide text-slate-300 uppercase flex items-center gap-1.5">
+          <BarChart3 size={13} className="text-lime-300" /> Ringkasan Statistik
+        </span>
+        {stats?.lastUpdated && (
+          <span className="text-[10px] text-slate-600">
+            {new Date(stats.lastUpdated).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })}
+          </span>
+        )}
+      </div>
+
+      {!stats ? (
+        <p className="text-slate-500 text-xs py-2">
+          Belum ada data pertandingan. Statistik ini keisi otomatis begitu kamu main dan skornya
+          selesai diisi.
+        </p>
+      ) : (
+        <div className="grid grid-cols-2 gap-2">
+          <ScoreStat
+            icon={Trophy}
+            iconColor="text-lime-300"
+            bgColor="bg-lime-400/10"
+            value={stats.matches}
+            label="Match Dimainkan"
+          />
+          <ScoreStat
+            icon={TrendingUp}
+            iconColor="text-cyan-300"
+            bgColor="bg-cyan-400/10"
+            value={`${Math.round(stats.winRate)}%`}
+            label="Win Rate"
+          />
+          <ScoreStat
+            icon={Flame}
+            iconColor="text-amber-400"
+            bgColor="bg-amber-400/10"
+            value={stats.totalPointsWon}
+            label="Total Poin Menang"
+          />
+          <ScoreStat
+            icon={Star}
+            iconColor="text-purple-300"
+            bgColor="bg-purple-400/10"
+            value={stats.avgPointsPerMatch.toFixed(1)}
+            label="Rata-rata Poin per Match"
+          />
+          <ScoreStat
+            icon={Trophy}
+            iconColor="text-lime-300"
+            bgColor="bg-lime-400/10"
+            value={stats.wins}
+            label="Total Match Menang"
+            progress={winsProgress}
+            progressColor="bg-lime-300"
+          />
+          <ScoreStat
+            icon={X}
+            iconColor="text-red-400"
+            bgColor="bg-red-400/10"
+            value={stats.losses}
+            label="Total Match Kalah"
+            progress={lossesProgress}
+            progressColor="bg-red-400"
+          />
+          <ScoreStat
+            icon={Zap}
+            iconColor="text-amber-300"
+            bgColor="bg-amber-400/10"
+            value={stats.bestStreak}
+            label="Kemenangan Beruntun"
+          />
+          <ScoreStat
+            icon={Target}
+            iconColor="text-teal-300"
+            bgColor="bg-teal-400/10"
+            value={stats.pointRatio === Infinity ? "∞" : stats.pointRatio.toFixed(2)}
+            label="Rasio Poin Menang/Kalah"
+          />
+        </div>
+      )}
+
+      {/* Caption */}
+      <div className="mt-3 pt-3 border-t border-slate-800">
+        {editingCaption ? (
+          <div className="flex items-center gap-1.5">
+            <input
+              autoFocus
+              value={captionDraft}
+              onChange={(e) => setCaptionDraft(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && saveCaption()}
+              placeholder="Terus bermain, terus berkembang."
+              maxLength={80}
+              className="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs italic text-slate-200 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+            />
+            <button
+              onClick={saveCaption}
+              className="w-7 h-7 rounded-lg bg-lime-300 text-slate-950 flex items-center justify-center shrink-0"
+            >
+              <Check size={13} strokeWidth={3} />
+            </button>
+          </div>
+        ) : (
+          <button onClick={startEditingCaption} className="flex items-center gap-1.5 min-w-0 w-full">
+            <span className="text-xs italic text-slate-400 truncate flex-1 text-left">
+              "{currentUser.caption || "Terus bermain, terus berkembang."}"
+            </span>
+            <Settings2 size={11} className="text-slate-600 shrink-0" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover, onRefresh, onChangeAvatar, onChangeDisplayName, onSaveProfileExtras, onOpenFriends, friendRequestCount, onRespondInvitation, onOpenMyPayment, onOpenPartnerSynergy, currentUser, onLogout }) {
+  const [accountCount, setAccountCount] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const n = await countRegisteredAccounts();
+      setAccountCount(n);
+    })();
+  }, []);
+
+  const handleRefreshClick = async () => {
+    setRefreshing(true);
+    await onRefresh();
+    setRefreshing(false);
   };
 
   return (
@@ -3449,71 +3826,19 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
           <br />
           <span className="text-lime-300">SCHEDULER</span>
         </h1>
-        {currentUser && (
-          <div className="flex items-center gap-2.5 mt-3">
-            <button onClick={() => fileInputRef.current?.click()} className="shrink-0">
-              <div className="relative">
-                <Avatar
-                  name={currentUser.displayName || currentUser.username}
-                  avatarUrl={currentUser.avatarUrl}
-                  size={36}
-                />
-                <div className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-lime-300 border-2 border-slate-950 flex items-center justify-center">
-                  {uploadingAvatar ? (
-                    <RotateCcw size={8} className="text-slate-950 animate-spin" />
-                  ) : (
-                    <Plus size={8} className="text-slate-950" strokeWidth={3} />
-                  )}
-                </div>
-              </div>
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              onChange={handleAvatarFile}
-              className="hidden"
-            />
+      </div>
 
-            {editingName ? (
-              <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                <input
-                  autoFocus
-                  value={nameDraft}
-                  onChange={(e) => setNameDraft(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && saveName()}
-                  placeholder={currentUser.username}
-                  className="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
-                />
-                <button
-                  onClick={saveName}
-                  className="w-7 h-7 rounded-lg bg-lime-300 text-slate-950 flex items-center justify-center shrink-0"
-                >
-                  <Check size={13} strokeWidth={3} />
-                </button>
-                <button
-                  onClick={() => setEditingName(false)}
-                  className="w-7 h-7 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 flex items-center justify-center shrink-0"
-                >
-                  <X size={13} />
-                </button>
-              </div>
-            ) : (
-              <button onClick={startEditingName} className="flex items-center gap-1.5 min-w-0">
-                <span className="text-sm text-slate-300 font-semibold truncate">
-                  {currentUser.displayName || currentUser.username}
-                </span>
-                <Settings2 size={12} className="text-slate-500 shrink-0" />
-              </button>
-            )}
-          </div>
+      <div className="px-6 pt-6">
+        {currentUser && (
+          <LobbyScoreCard
+            currentUser={currentUser}
+            onChangeAvatar={onChangeAvatar}
+            onChangeDisplayName={onChangeDisplayName}
+            onSaveProfileExtras={onSaveProfileExtras}
+          />
         )}
-        {currentUser?.displayName && currentUser.displayName !== currentUser.username && (
-          <p className="text-[11px] text-slate-600 mt-1">
-            Username login: <span className="text-slate-500">{currentUser.username}</span>
-          </p>
-        )}
-        <p className="text-slate-400 text-sm mt-2 max-w-xs">
+
+        <p className="text-slate-400 text-sm mt-5 max-w-xs">
           Acara yang kamu buat maupun yang kamu ikuti (lewat undangan) muncul di sini.
         </p>
         {accountCount !== null && (
@@ -3595,6 +3920,11 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
                       {ev.ownerUsername && `host: ${ev.ownerUsername} · `}
                       {ev.playerCount} pemain · {ev.courts} lapangan
                     </div>
+                    {formatEventEntryDate(ev) && (
+                      <div className="text-[11px] text-slate-500 mt-0.5">
+                        {formatEventEntryDate(ev)}
+                      </div>
+                    )}
                     <p className="text-xs text-slate-400 mt-2">
                       Kamu diundang untuk ikut jadi peserta acara ini.
                     </p>
@@ -3630,6 +3960,11 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
                         {ev.playerCount} pemain · {ev.courts} lapangan
                         {!isOwnerEntry && ev.ownerUsername && ` · host: ${ev.ownerUsername}`}
                       </div>
+                      {formatEventEntryDate(ev) && (
+                        <div className="text-[11px] text-slate-500 mt-0.5">
+                          {formatEventEntryDate(ev)}
+                        </div>
+                      )}
                     </div>
                     <ChevronRightCircle size={20} className="text-slate-600 shrink-0 mt-0.5" />
                   </div>
@@ -4047,15 +4382,24 @@ function PartnerDetailScreen({ currentUser, partner, onBack, onBackToLobby }) {
                     )}
                   </span>
                 </div>
-                <div className="flex items-end gap-2 h-20">
+                <div className="flex items-end gap-2" style={{ height: 80 }}>
                   {stats.trend.map((v, i) => (
-                    <div key={i} className="flex-1 flex flex-col items-center gap-1">
+                    <div key={i} className="flex-1 h-full flex flex-col justify-end items-center">
                       <div
                         className="w-full bg-lime-300 rounded-t"
                         style={{ height: `${Math.max(4, v)}%` }}
                       />
-                      <span className="text-[10px] text-slate-500 font-mono2">{v}</span>
                     </div>
+                  ))}
+                </div>
+                <div className="flex gap-2 mt-1.5">
+                  {stats.trend.map((v, i) => (
+                    <span
+                      key={i}
+                      className="flex-1 text-center text-[10px] text-slate-500 font-mono2"
+                    >
+                      {v}
+                    </span>
                   ))}
                 </div>
               </div>
@@ -4299,6 +4643,7 @@ function SetupScreen(props) {
     maxParticipants, setMaxParticipants,
     visibility, setVisibility,
     courtCost, setCourtCost, adminFee, setAdminFee, ballCost, setBallCost,
+    playDate, setPlayDate,
     computedRounds, onGenerate,
     onBackToLobby,
   } = props;
@@ -4343,6 +4688,19 @@ function SetupScreen(props) {
           placeholder="mis. Padel Malam Jumat"
           className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
         />
+      </Section>
+
+      {/* PLAY DATE (optional) */}
+      <Section icon={CalendarDays} title="Tanggal Bermain" subtitle="opsional">
+        <input
+          type="date"
+          value={playDate}
+          onChange={(e) => setPlayDate(e.target.value)}
+          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+        />
+        <p className="text-[11px] text-slate-500 mt-2">
+          Kalau dikosongkan, tanggal yang muncul di Lobby otomatis pakai tanggal acara ini dibuat.
+        </p>
       </Section>
 
 
@@ -4686,6 +5044,7 @@ function WaitingRoomScreen(props) {
     friends, onInviteFriend, onSendFriendRequest,
     hostInvitations, onCancelInvitation,
     courtCost, setCourtCost, adminFee, setAdminFee, ballCost, setBallCost, onSaveCosts,
+    playDate, setPlayDate, onSavePlayDate,
     onFinalize, onBackToLobby, onDelete,
   } = props;
 
@@ -5025,6 +5384,18 @@ function WaitingRoomScreen(props) {
           <p className="text-amber-400 text-xs mt-3">Minimal 4 peserta untuk membentuk 1 lapangan.</p>
         )}
       </Section>
+
+      {canManage && (
+        <Section icon={CalendarDays} title="Tanggal Bermain" subtitle="opsional">
+          <input
+            type="date"
+            value={playDate}
+            onChange={(e) => setPlayDate(e.target.value)}
+            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-lime-400/50 mb-3"
+          />
+          <CostSaveButton onSave={onSavePlayDate} />
+        </Section>
+      )}
 
       {canManage && (
         <Section icon={Wallet} title="Biaya" subtitle="opsional, buat split bill">
