@@ -4,7 +4,7 @@ import {
   RotateCcw, Share2, BarChart3, Settings2, Check, Coffee,
   ArrowLeft, Trash2, CalendarDays, ChevronRightCircle, ClipboardList, Link2, Eye, ListOrdered,
   LogOut, Lock, UserCircle2, Shield, Wallet, Handshake, TrendingUp, TrendingDown,
-  Flame, Star, Zap, Target, Camera, MapPin,
+  Flame, Star, Zap, Target, Camera, MapPin, Swords, Award,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -432,10 +432,12 @@ async function updateUserPaymentInfo(usernameLower, paymentInfo) {
   return updated;
 }
 
-// Resizes/crops any uploaded image client-side into a small square JPEG data
-// URL before it's ever stored, so profile pictures stay tiny (a few KB) no
-// matter what photo someone picks.
-function processImageToAvatar(file, size = 160) {
+// Resizes/crops any uploaded image client-side into a square JPEG data URL
+// before it's ever stored, so profile pictures stay small no matter what
+// photo someone picks. 480px keeps it sharp even when shown large (like the
+// Lobby scorecard's photo panel), while still staying a reasonably small
+// file once JPEG-compressed.
+function processImageToAvatar(file, size = 480) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error("Gagal membaca file"));
@@ -3479,29 +3481,45 @@ function BottomNav({ active, onNav, showSplitBill }) {
 // LOBBY SCORECARD — profile + career stats, replaces the old small avatar row
 // ---------------------------------------------------------------------------
 
-function ScoreStat({ icon: Icon, iconColor, iconBg, value, label, progress, progressColor }) {
+// Row 1 style — icon centered top, number centered, label centered bottom.
+function ScoreStatCentered({ icon: Icon, iconColor, iconBg, value, label }) {
   return (
     <div
-      className="rounded-xl md:rounded-2xl border border-white/[0.06] px-2 py-2 md:px-4 md:py-4 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-black/30"
+      className="rounded-xl md:rounded-2xl border border-white/[0.06] px-1.5 py-2 md:px-4 md:py-4 flex flex-col items-center text-center transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-black/30"
       style={{ backgroundColor: "#131A2B" }}
     >
       <div
-        className="w-5 h-5 md:w-9 md:h-9 rounded-full flex items-center justify-center mb-1.5 md:mb-3"
+        className="w-6 h-6 md:w-9 md:h-9 rounded-full flex items-center justify-center mb-1 md:mb-2"
         style={{ backgroundColor: iconBg }}
       >
-        <Icon size={10} className="md:hidden" style={{ color: iconColor }} />
+        <Icon size={12} className="md:hidden" style={{ color: iconColor }} />
         <Icon size={16} className="hidden md:block" style={{ color: iconColor }} />
       </div>
       <div className="font-sans font-extrabold text-base md:text-[26px] leading-none text-white">{value}</div>
-      <div className="text-[8px] md:text-[11px] text-slate-400 mt-1 md:mt-1.5 leading-tight">{label}</div>
-      {progress !== undefined && (
-        <div className="h-[3px] md:h-1 rounded-full bg-white/[0.06] mt-1.5 md:mt-2.5 overflow-hidden">
-          <div
-            className="h-full rounded-full transition-all duration-300 ease-out"
-            style={{ width: `${Math.max(0, Math.min(100, progress))}%`, backgroundColor: progressColor }}
-          />
+      <div className="text-[7px] md:text-[11px] text-slate-400 mt-1 md:mt-1.5 leading-tight">{label}</div>
+    </div>
+  );
+}
+
+// Row 2 style — icon on the left, number to its right (same row), label
+// underneath spanning both.
+function ScoreStatHorizontal({ icon: Icon, iconColor, iconBg, value, label }) {
+  return (
+    <div
+      className="rounded-xl md:rounded-2xl border border-white/[0.06] px-1.5 py-2 md:px-4 md:py-4 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-black/30"
+      style={{ backgroundColor: "#131A2B" }}
+    >
+      <div className="flex items-center gap-1.5 md:gap-2.5">
+        <div
+          className="w-5 h-5 md:w-8 md:h-8 rounded-full flex items-center justify-center shrink-0"
+          style={{ backgroundColor: iconBg }}
+        >
+          <Icon size={10} className="md:hidden" style={{ color: iconColor }} />
+          <Icon size={15} className="hidden md:block" style={{ color: iconColor }} />
         </div>
-      )}
+        <div className="font-sans font-extrabold text-base md:text-[26px] leading-none text-white">{value}</div>
+      </div>
+      <div className="text-[7px] md:text-[11px] text-slate-400 mt-1 md:mt-1.5 leading-tight">{label}</div>
     </div>
   );
 }
@@ -3567,8 +3585,6 @@ function LobbyScoreCard({ currentUser, onChangeAvatar, onChangeDisplayName, onSa
   };
 
   const ACCENT = "#B8F34A";
-  const winsProgress = stats && stats.matches > 0 ? (stats.wins / stats.matches) * 100 : 0;
-  const lossesProgress = stats && stats.matches > 0 ? (stats.losses / stats.matches) * 100 : 0;
   const name = currentUser.displayName || currentUser.username;
   const initial = name?.[0]?.toUpperCase() || "?";
 
@@ -3582,7 +3598,7 @@ function LobbyScoreCard({ currentUser, onChangeAvatar, onChangeDisplayName, onSa
       <div className="w-[34%] md:w-[35%] p-2.5 md:p-5 flex flex-col shrink-0">
         <div
           className="relative w-full rounded-[20px] overflow-hidden shrink-0"
-          style={{ aspectRatio: "4 / 5", border: `2px solid ${ACCENT}66` }}
+          style={{ aspectRatio: "1 / 1", border: `2px solid ${ACCENT}66` }}
         >
           {currentUser.avatarUrl ? (
             <img
@@ -3725,69 +3741,65 @@ function LobbyScoreCard({ currentUser, onChangeAvatar, onChangeDisplayName, onSa
           </p>
         ) : (
           <>
-            <div className="grid grid-cols-2 gap-2.5 md:gap-3">
-              <ScoreStat
-                icon={Trophy}
+            <div className="grid grid-cols-4 gap-1.5 md:gap-3">
+              <ScoreStatCentered
+                icon={Swords}
                 iconColor="#8CE85C"
                 iconBg="#8CE85C22"
                 value={stats.matches}
                 label="Match Dimainkan"
               />
-              <ScoreStat
+              <ScoreStatCentered
                 icon={TrendingUp}
                 iconColor="#5EA8FF"
                 iconBg="#5EA8FF22"
                 value={`${Math.round(stats.winRate)}%`}
                 label="Win Rate"
               />
-              <ScoreStat
+              <ScoreStatCentered
                 icon={Flame}
                 iconColor="#FFB347"
                 iconBg="#FFB34722"
                 value={stats.totalPointsWon}
                 label="Total Poin Menang"
               />
-              <ScoreStat
-                icon={Star}
-                iconColor="#B794F6"
-                iconBg="#B794F622"
-                value={stats.avgPointsPerMatch.toFixed(1)}
-                label="Rata-rata Poin / Match"
+              <ScoreStatCentered
+                icon={Award}
+                iconColor="#E8C547"
+                iconBg="#E8C54722"
+                value={stats.eventsCount}
+                label="Acara Diikuti"
               />
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 md:gap-3 mt-2.5 md:mt-3">
-              <ScoreStat
+            <div className="grid grid-cols-4 gap-1.5 md:gap-3 mt-1.5 md:mt-3">
+              <ScoreStatHorizontal
                 icon={Trophy}
                 iconColor="#8CE85C"
                 iconBg="#8CE85C22"
                 value={stats.wins}
                 label="Match Menang"
-                progress={winsProgress}
-                progressColor="#8CE85C"
               />
-              <ScoreStat
+              <ScoreStatHorizontal
                 icon={X}
                 iconColor="#FF6B6B"
                 iconBg="#FF6B6B22"
                 value={stats.losses}
                 label="Match Kalah"
-                progress={lossesProgress}
-                progressColor="#FF6B6B"
               />
-              <ScoreStat
+              <ScoreStatHorizontal
                 icon={Zap}
-                iconColor={ACCENT}
-                iconBg={`${ACCENT}22`}
+                iconColor="#8CE85C"
+                iconBg="#8CE85C22"
                 value={stats.bestStreak}
-                label="Streak Terbaik"
+                label="Winstreak"
               />
-              <ScoreStat
-                icon={Target}
-                iconColor="#4DDDD8"
-                iconBg="#4DDDD822"
-                value={stats.pointRatio === Infinity ? "∞" : stats.pointRatio.toFixed(2)}
-                label="Rasio Poin (Menang/Kalah)"
+              <ScoreStatHorizontal
+                icon={Star}
+                iconColor="#B794F6"
+                iconBg="#B794F622"
+                value={stats.avgPointsPerMatch.toFixed(1)}
+                label="Avg Poin"
               />
             </div>
           </>
