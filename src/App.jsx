@@ -3485,7 +3485,7 @@ function BottomNav({ active, onNav, showSplitBill }) {
 function ScoreStatCentered({ icon: Icon, iconColor, iconBg, value, label }) {
   return (
     <div
-      className="rounded-xl md:rounded-2xl border border-white/[0.06] px-1.5 py-2 md:px-4 md:py-4 flex flex-col items-center text-center transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-black/30"
+      className="rounded-xl md:rounded-2xl border border-white/[0.06] px-1 py-2 md:px-4 md:py-4 flex flex-col items-center text-center transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-black/30"
       style={{ backgroundColor: "#131A2B" }}
     >
       <div
@@ -3495,21 +3495,26 @@ function ScoreStatCentered({ icon: Icon, iconColor, iconBg, value, label }) {
         <Icon size={12} className="md:hidden" style={{ color: iconColor }} />
         <Icon size={16} className="hidden md:block" style={{ color: iconColor }} />
       </div>
-      <div className="font-sans font-extrabold text-base md:text-[26px] leading-none text-white">{value}</div>
-      <div className="text-[7px] md:text-[11px] text-slate-400 mt-1 md:mt-1.5 leading-tight">{label}</div>
+      <div className="font-sans font-extrabold text-[13px] md:text-[26px] leading-none text-white truncate max-w-full">
+        {value}
+      </div>
+      <div className="text-[6.5px] md:text-[11px] text-slate-400 mt-1 md:mt-1.5 leading-tight text-center">
+        {label}
+      </div>
     </div>
   );
 }
 
 // Row 2 style — icon on the left, number to its right (same row), label
-// underneath spanning both.
+// centered underneath spanning both. Taller than row 1's cards, filling the
+// space down toward the divider line above the caption.
 function ScoreStatHorizontal({ icon: Icon, iconColor, iconBg, value, label }) {
   return (
     <div
-      className="rounded-xl md:rounded-2xl border border-white/[0.06] px-1.5 py-2 md:px-4 md:py-4 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-black/30"
+      className="rounded-xl md:rounded-2xl border border-white/[0.06] px-1 py-2.5 md:px-4 md:py-5 flex flex-col justify-between h-full min-h-[74px] md:min-h-[104px] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-black/30"
       style={{ backgroundColor: "#131A2B" }}
     >
-      <div className="flex items-center gap-1.5 md:gap-2.5">
+      <div className="flex items-center justify-center gap-1.5 md:gap-2.5">
         <div
           className="w-5 h-5 md:w-8 md:h-8 rounded-full flex items-center justify-center shrink-0"
           style={{ backgroundColor: iconBg }}
@@ -3517,9 +3522,13 @@ function ScoreStatHorizontal({ icon: Icon, iconColor, iconBg, value, label }) {
           <Icon size={10} className="md:hidden" style={{ color: iconColor }} />
           <Icon size={15} className="hidden md:block" style={{ color: iconColor }} />
         </div>
-        <div className="font-sans font-extrabold text-base md:text-[26px] leading-none text-white">{value}</div>
+        <div className="font-sans font-extrabold text-[13px] md:text-[26px] leading-none text-white truncate">
+          {value}
+        </div>
       </div>
-      <div className="text-[7px] md:text-[11px] text-slate-400 mt-1 md:mt-1.5 leading-tight">{label}</div>
+      <div className="text-[6.5px] md:text-[11px] text-slate-400 mt-1 md:mt-1.5 leading-tight text-center">
+        {label}
+      </div>
     </div>
   );
 }
