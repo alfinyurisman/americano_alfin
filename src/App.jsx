@@ -80,9 +80,20 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
 
       const cutoffIsNeverPlayedTier = tier0.some((id) => lastPlayed[id] === -1);
       let flexCandidates = tier0;
-      if (!cutoffIsNeverPlayedTier && cutoffWait - 1 >= 2 && tier0.length < neededFromFlex + 2) {
+      if (!cutoffIsNeverPlayedTier && tier0.length < neededFromFlex + 2) {
         const tier1 = sorted.filter((id) => globalR - lastPlayed[id] === cutoffWait - 1);
-        flexCandidates = [...tier0, ...tier1];
+        // Normally we only reach down a tier when that tier isn't "just
+        // played". The exception is when tier0 offers ZERO choice (its size
+        // exactly equals the slots needed): with player counts that are an
+        // exact multiple of court capacity (8 on 1 court, 16 on 2, ...),
+        // strict wait-order forces a perfect A/B alternation, permanently
+        // locking everyone into two fixed groups who never mix — the
+        // opposite of what an Americano is for. Allowing the swap there
+        // costs at most one extra round of waiting but roughly doubles how
+        // many different partners and opponents each person sees.
+        if (cutoffWait - 1 >= 2 || tier0.length <= neededFromFlex) {
+          flexCandidates = [...tier0, ...tier1];
+        }
       }
 
       if (flexCandidates.length <= neededFromFlex) {
@@ -101,6 +112,13 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
               cost += (partner[p1][p2] || 0) * 10 + (opp[p1][p2] || 0);
             }
           }
+          // Keep total matches played even across everyone: penalise groups
+          // made up of people who are already ahead on match count. Without
+          // this, the mixing swaps above could let the same few people
+          // quietly rack up extra games.
+          const avgPlay =
+            candidateActive.reduce((s, id) => s + playCount[id], 0) / candidateActive.length;
+          cost += avgPlay * 150;
           if (cost < bestActiveCost) {
             bestActiveCost = cost;
             bestActive = candidateActive;
