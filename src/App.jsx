@@ -305,6 +305,44 @@ async function appendPlayerMatchRecords(accountId, records) {
   }
 }
 
+// Events the host has marked as "don't count toward statistics" (trial runs,
+// practice sessions, testing). Kept as one shared list of event ids rather
+// than deleting log entries, so the setting can be flipped back and forth at
+// any time — including long after the event ended — without ever destroying
+// match history. Every stats reader filters through this.
+const EXCLUDED_EVENTS_KEY = "stats-excluded-events";
+
+async function loadExcludedEvents() {
+  try {
+    const res = await window.storage.get(EXCLUDED_EVENTS_KEY, true);
+    return new Set(res ? JSON.parse(res.value) : []);
+  } catch (e) {
+    return new Set();
+  }
+}
+
+async function setEventExcluded(eventId, excluded) {
+  if (!eventId) return;
+  try {
+    const current = await loadExcludedEvents();
+    if (excluded) current.add(eventId);
+    else current.delete(eventId);
+    await window.storage.set(EXCLUDED_EVENTS_KEY, JSON.stringify([...current]), true);
+  } catch (e) {
+    console.error("Gagal menyimpan pengaturan statistik:", e);
+  }
+}
+
+// The one function every stats screen should use: a player's match history
+// with excluded events already filtered out.
+async function loadCountedMatchLog(accountId) {
+  const [log, excluded] = await Promise.all([
+    loadPlayerMatchLog(accountId),
+    loadExcludedEvents(),
+  ]);
+  return log.filter((r) => !excluded.has(r.eventId));
+}
+
 // ---------------------------------------------------------------------------
 // ACCOUNTS (username + password)
 // ---------------------------------------------------------------------------
@@ -1571,6 +1609,7 @@ function AmericanoPadel() {
   const [selectedFriend, setSelectedFriend] = useState(null); // which friend's profile screen is open
   const [courtStages, setCourtStages] = useState([]); // [{id, rounds, courts}] — empty = simple single-court-count mode
   const [playDate, setPlayDate] = useState(""); // optional "YYYY-MM-DD" — if set, shown in Lobby instead of the auto createdAt date
+  const [excludeFromStats, setExcludeFromStats] = useState(false); // trial/practice events can be kept out of everyone's stats
   const [hostPlaying, setHostPlaying] = useState(false);
   const [coHostIds, setCoHostIds] = useState([]); // accountIds granted co-host (edit) access
   const [ownerId, setOwnerId] = useState(null);
@@ -2065,6 +2104,7 @@ function AmericanoPadel() {
         loggedMatchKeys,
         courtStages,
         playDate,
+        excludeFromStats,
         maxParticipants,
         pendingRequests,
         hostInvitations,
@@ -2126,7 +2166,7 @@ function AmericanoPadel() {
       }
       return;
     },
-    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, loggedMatchKeys, courtStages, playDate, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
+    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, loggedMatchKeys, courtStages, playDate, excludeFromStats, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
   );
 
   // Partner Synergy Index: whenever a specific match's score newly becomes
@@ -2792,6 +2832,16 @@ function AmericanoPadel() {
     setCurrentUser((u) => (u ? { ...u, paymentInfo: newInfo } : u));
   };
 
+  // Lets the host mark an event as a trial/practice run so its matches don't
+  // pollute anyone's career or partner-synergy statistics. Can be flipped at
+  // any time (before, during, or long after the event) — nothing is deleted,
+  // the matches are just skipped when stats are calculated.
+  const handleToggleExcludeFromStats = async (nextExcluded) => {
+    setExcludeFromStats(nextExcluded);
+    persist({ excludeFromStats: nextExcluded });
+    if (activeId) await setEventExcluded(activeId, nextExcluded);
+  };
+
   const handleSaveProfileExtras = async (extras) => {
     if (!currentUser) return;
     await updateProfileExtras(currentUser.accountId, extras);
@@ -2877,6 +2927,7 @@ function AmericanoPadel() {
     setPaidStatus({});
     setLoggedMatchKeys([]);
     setPlayDate("");
+    setExcludeFromStats(false);
     setCourtStages([]);
     setOwnerId(null);
     setOwnerUsername("");
@@ -2925,6 +2976,7 @@ function AmericanoPadel() {
     setPaidStatus(data.paidStatus || {});
     setLoggedMatchKeys(data.loggedMatchKeys || []);
     setPlayDate(data.playDate || "");
+    setExcludeFromStats(!!data.excludeFromStats);
     setCourtStages(data.courtStages || []);
     setOwnerId(data.ownerId || null);
     setOwnerUsername(data.ownerUsername || "");
@@ -3412,6 +3464,8 @@ function AmericanoPadel() {
           playDate={playDate}
           setPlayDate={setPlayDate}
           onSavePlayDate={(newDate) => persist({ playDate: newDate })}
+          excludeFromStats={excludeFromStats}
+          onToggleExcludeFromStats={handleToggleExcludeFromStats}
           onFinalize={handleFinalizeAndGenerate}
           onBackToLobby={handleBackToLobby}
           onDelete={() => handleDeleteSession(activeId)}
@@ -3501,6 +3555,9 @@ function AmericanoPadel() {
           scoreFormat={scoreFormat}
           tennisTarget={tennisTarget}
           hasSplitBill={hasSplitBill}
+          canManage={canManage}
+          excludeFromStats={excludeFromStats}
+          onToggleExcludeFromStats={handleToggleExcludeFromStats}
           onNav={setScreen}
           onBackToLobby={handleBackToLobby}
         />
@@ -3600,7 +3657,7 @@ function LobbyScoreCard({ currentUser, onChangeAvatar, onChangeDisplayName, onSa
     let cancelled = false;
     (async () => {
       if (!currentUser?.accountId) return;
-      const log = await loadPlayerMatchLog(currentUser.accountId);
+      const log = await loadCountedMatchLog(currentUser.accountId);
       if (cancelled) return;
       setStats(computeOverallProfileStats(log));
     })();
@@ -4328,7 +4385,7 @@ function PartnerSynergyScreen({ currentUser, onOpenPartner, onBackToLobby }) {
         setLoading(false);
         return;
       }
-      const log = await loadPlayerMatchLog(currentUser.accountId);
+      const log = await loadCountedMatchLog(currentUser.accountId);
       if (cancelled) return;
       setTopPartners(computeTopPartners(log, 5));
       setLoading(false);
@@ -4421,8 +4478,8 @@ function PartnerDetailScreen({ currentUser, partner, onBack, onBackToLobby }) {
         return;
       }
       const [myLog, partnerLog] = await Promise.all([
-        loadPlayerMatchLog(currentUser.accountId),
-        loadPlayerMatchLog(partner.accountId),
+        loadCountedMatchLog(currentUser.accountId),
+        loadCountedMatchLog(partner.accountId),
       ]);
       if (cancelled) return;
       const myStats = computePartnerStats(myLog, partner.accountId);
@@ -4701,8 +4758,8 @@ function FriendProfileScreen({ friend, currentUser, onBack }) {
       }
       const [account, theirLog, myLog] = await Promise.all([
         getUserAccount(friend.accountId),
-        loadPlayerMatchLog(friend.accountId),
-        currentUser?.accountId ? loadPlayerMatchLog(currentUser.accountId) : Promise.resolve([]),
+        loadCountedMatchLog(friend.accountId),
+        currentUser?.accountId ? loadCountedMatchLog(currentUser.accountId) : Promise.resolve([]),
       ]);
       if (cancelled) return;
 
@@ -5273,6 +5330,47 @@ function FieldRow({ label, children }) {
 // wider/rounder than every other text input next to it. This wraps the real
 // (invisible) date input over a normally-styled box we fully control, so it
 // visually matches every other field while still opening the native picker.
+// Toggle for whether an event's matches feed into everyone's career and
+// partner-synergy stats. Useful for trial runs / practice sessions that
+// would otherwise skew real numbers.
+function StatsCountToggle({ excluded, onToggle }) {
+  return (
+    <div>
+      <div className="flex gap-2">
+        <button
+          onClick={() => onToggle(false)}
+          className={`flex-1 py-3 rounded-xl text-sm font-semibold border ${
+            !excluded
+              ? "bg-lime-300 text-slate-950 border-lime-300"
+              : "bg-slate-900 text-slate-300 border-slate-700"
+          }`}
+        >
+          Dihitung
+        </button>
+        <button
+          onClick={() => onToggle(true)}
+          className={`flex-1 py-3 rounded-xl text-sm font-semibold border ${
+            excluded
+              ? "bg-amber-400 text-slate-950 border-amber-400"
+              : "bg-slate-900 text-slate-300 border-slate-700"
+          }`}
+        >
+          Tidak Dihitung
+        </button>
+      </div>
+      <p className="text-[11px] text-slate-500 mt-2.5">
+        {excluded
+          ? "Acara ini TIDAK masuk statistik siapapun — cocok buat uji coba atau latihan. Skor & klasemen di acara ini tetap tersimpan normal, cuma nggak ikut dihitung di Ringkasan Statistik dan Partner Synergy."
+          : "Acara ini dihitung normal ke statistik semua pemain. Ubah ke \"Tidak Dihitung\" kalau ini cuma uji coba, biar tidak merusak data asli."}
+      </p>
+      <p className="text-[11px] text-slate-600 mt-1.5">
+        Bisa diubah kapan saja, termasuk setelah acara selesai — data pertandingan tidak akan
+        terhapus.
+      </p>
+    </div>
+  );
+}
+
 function DateInputField({ value, onChange, placeholder = "Pilih tanggal" }) {
   const display = value
     ? (() => {
@@ -5351,6 +5449,7 @@ function WaitingRoomScreen(props) {
     hostInvitations, onCancelInvitation,
     courtCost, setCourtCost, adminFee, setAdminFee, ballCost, setBallCost, onSaveCosts,
     playDate, setPlayDate, onSavePlayDate,
+    excludeFromStats, onToggleExcludeFromStats,
     onFinalize, onBackToLobby, onDelete,
   } = props;
 
@@ -5709,6 +5808,12 @@ function WaitingRoomScreen(props) {
               onSavePlayDate(e.target.value);
             }}
           />
+        </Section>
+      )}
+
+      {canManage && (
+        <Section icon={BarChart3} title="Hitung ke Statistik?" subtitle="opsional">
+          <StatsCountToggle excluded={excludeFromStats} onToggle={onToggleExcludeFromStats} />
         </Section>
       )}
 
@@ -7480,7 +7585,7 @@ function SplitBillScreen({
 // RECAP SCREEN (all scored matches, for monitoring rotation fairness)
 // ---------------------------------------------------------------------------
 
-function RecapScreen({ eventName, engine, playerMap, scores, scoreFormat, tennisTarget, hasSplitBill, onNav, onBackToLobby }) {
+function RecapScreen({ eventName, engine, playerMap, scores, scoreFormat, tennisTarget, hasSplitBill, canManage, excludeFromStats, onToggleExcludeFromStats, onNav, onBackToLobby }) {
   const [filterId, setFilterId] = useState("all");
 
   const allRows = React.useMemo(() => {
@@ -7582,6 +7687,16 @@ function RecapScreen({ eventName, engine, playerMap, scores, scoreFormat, tennis
       </div>
 
       <div className="px-6 pt-4 space-y-3">
+        {canManage && (
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <BarChart3 size={14} className="text-lime-300" />
+              <span className="text-sm font-semibold text-slate-200">Hitung ke Statistik?</span>
+            </div>
+            <StatsCountToggle excluded={excludeFromStats} onToggle={onToggleExcludeFromStats} />
+          </div>
+        )}
+
         {rows.length === 0 && (
           <div className="rounded-2xl border border-dashed border-slate-700 p-6 text-center">
             <p className="text-slate-500 text-sm">
