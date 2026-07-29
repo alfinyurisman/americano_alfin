@@ -112,13 +112,22 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
               cost += (partner[p1][p2] || 0) * 10 + (opp[p1][p2] || 0);
             }
           }
-          // Keep total matches played even across everyone: penalise groups
-          // made up of people who are already ahead on match count. Without
-          // this, the mixing swaps above could let the same few people
-          // quietly rack up extra games.
-          const avgPlay =
-            candidateActive.reduce((s, id) => s + playCount[id], 0) / candidateActive.length;
-          cost += avgPlay * 150;
+          // Keep things fair among people who've had EQUAL opportunity so
+          // far — e.g. the two-fixed-cohort lock-in case, where the
+          // algorithm's own tier selection is what caused an imbalance.
+          // Measured as a RATIO (matches played / rounds they've been
+          // active for), not a raw count: someone who just arrived late or
+          // came back from an injury has few rounds of history, and their
+          // ratio defaults to neutral (1) rather than looking "underplayed"
+          // — being late is their own tradeoff, not something the algorithm
+          // should compensate for by rushing them into extra matches.
+          const fairShare = (id) => {
+            const roundsEligible = (playCount[id] || 0) + (restCount[id] || 0);
+            return roundsEligible > 0 ? playCount[id] / roundsEligible : 1;
+          };
+          const avgFairShare =
+            candidateActive.reduce((s, id) => s + fairShare(id), 0) / candidateActive.length;
+          cost += avgFairShare * 150;
           if (cost < bestActiveCost) {
             bestActiveCost = cost;
             bestActive = candidateActive;
@@ -2749,25 +2758,60 @@ function AmericanoPadel() {
       });
     });
 
-    // Anyone newly active (joined the roster, OR just marked "sudah
-    // datang" after being away) starts with lastPlayed=-1, which the
-    // algorithm reads as "never played" and gives them top priority to play
-    // immediately — which is fine for a genuinely brand-new person, but for
-    // someone who was only briefly away it's more natural to slot them into
-    // the current waiting rotation at a neutral point (the group's average
-    // "last played" position) rather than jumping the whole queue.
-    const oldActiveIds = new Set(players.filter((p) => p.arrived !== false).map((p) => p.id));
-    const newcomers = activePlayers.filter((p) => !oldActiveIds.has(p.id));
+    // Anyone who has genuinely never played a single (locked/scored) round
+    // yet starts with lastPlayed=-1 and zero partner/opponent history. That's
+    // correct as-is for someone brand new, but "newcomer" here specifically
+    // means "no real match history at all" (seed.playCount === 0) — NOT
+    // simply "their arrived flag just flipped". This distinction matters a
+    // lot for the common case of toggling someone's attendance off and back
+    // on purely to force a reshuffle: if that were treated as "newcomer"
+    // seeding, it would overwrite their REAL accumulated partner/opponent
+    // history with a neutral average every time, causing the algorithm to
+    // "forget" who they've already played with/against — leading to MORE
+    // repeats for that person over repeated toggles, the opposite of what's
+    // wanted. Checking playCount instead means genuine history is always
+    // preserved regardless of how many times attendance gets toggled.
+    const newcomers = activePlayers.filter((p) => !seed.playCount[p.id]);
     if (newcomers.length > 0) {
-      const existingLastPlayed = activePlayers
-        .filter((p) => oldActiveIds.has(p.id))
+      const veterans = activePlayers.filter((p) => seed.playCount[p.id] > 0);
+      const existingLastPlayed = veterans
         .map((p) => seed.lastPlayed[p.id])
         .filter((v) => v > -1);
       const avgLastPlayed = existingLastPlayed.length
         ? Math.round(existingLastPlayed.reduce((a, b) => a + b, 0) / existingLastPlayed.length)
         : splitIdx - 1;
+
+      // A brand-new/returning player has zero recorded matches with
+      // literally everyone, which makes them look like a "free" variety
+      // win to the partner/opponent-repeat optimizer — cheaper to slot in
+      // than anyone with real history, even when their wait-time doesn't
+      // call for it. Seeding their pairwise history at the group's current
+      // average (instead of 0) removes that artificial appeal, so they
+      // only get picked when their wait time actually earns it.
+      const oldActiveList = veterans;
+      let avgPartnerCount = 0;
+      let avgOppCount = 0;
+      let pairCount = 0;
+      for (let i = 0; i < oldActiveList.length; i++) {
+        for (let j = i + 1; j < oldActiveList.length; j++) {
+          const idA = oldActiveList[i].id;
+          const idB = oldActiveList[j].id;
+          avgPartnerCount += seed.partner[idA]?.[idB] || 0;
+          avgOppCount += seed.opp[idA]?.[idB] || 0;
+          pairCount++;
+        }
+      }
+      avgPartnerCount = pairCount > 0 ? avgPartnerCount / pairCount : 0;
+      avgOppCount = pairCount > 0 ? avgOppCount / pairCount : 0;
+
       newcomers.forEach((p) => {
         seed.lastPlayed[p.id] = avgLastPlayed;
+        oldActiveList.forEach((existing) => {
+          if (seed.partner[p.id]) seed.partner[p.id][existing.id] = avgPartnerCount;
+          if (seed.partner[existing.id]) seed.partner[existing.id][p.id] = avgPartnerCount;
+          if (seed.opp[p.id]) seed.opp[p.id][existing.id] = avgOppCount;
+          if (seed.opp[existing.id]) seed.opp[existing.id][p.id] = avgOppCount;
+        });
       });
     }
 
