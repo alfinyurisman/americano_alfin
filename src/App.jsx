@@ -1653,6 +1653,7 @@ function AmericanoPadel() {
   const [courtStages, setCourtStages] = useState([]); // [{id, rounds, courts}] — empty = simple single-court-count mode
   const [playDate, setPlayDate] = useState(""); // optional "YYYY-MM-DD" — if set, shown in Lobby instead of the auto createdAt date
   const [excludeFromStats, setExcludeFromStats] = useState(false); // trial/practice events can be kept out of everyone's stats
+  const [activityLog, setActivityLog] = useState([]); // [{ts, message}] — key actions taken in this session, for export/debugging
   const [hostPlaying, setHostPlaying] = useState(false);
   const [coHostIds, setCoHostIds] = useState([]); // accountIds granted co-host (edit) access
   const [ownerId, setOwnerId] = useState(null);
@@ -2158,6 +2159,7 @@ function AmericanoPadel() {
         courtStages,
         playDate,
         excludeFromStats,
+        activityLog,
         maxParticipants,
         pendingRequests,
         hostInvitations,
@@ -2219,7 +2221,7 @@ function AmericanoPadel() {
       }
       return;
     },
-    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, loggedMatchKeys, courtStages, playDate, excludeFromStats, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
+    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, loggedMatchKeys, courtStages, playDate, excludeFromStats, activityLog, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
   );
 
   // Partner Synergy Index: whenever a specific match's score newly becomes
@@ -2235,6 +2237,7 @@ function AmericanoPadel() {
     const loggedSet = new Set(loggedMatchKeys);
     const newlyLoggedKeys = [];
     const byAccount = {};
+    const matchDescriptions = [];
 
     engine.roundsData.forEach((rd, rIdx) => {
       rd.courts.forEach((match, cIdx) => {
@@ -2251,12 +2254,17 @@ function AmericanoPadel() {
           playersById,
           key
         );
-        if (records.length === 0) return; // nobody in this match has an account — nothing to log
         records.forEach(({ accountId, record }) => {
           if (!byAccount[accountId]) byAccount[accountId] = [];
           byAccount[accountId].push(record);
         });
         newlyLoggedKeys.push(key);
+        const ab = matchAB(s);
+        const n1 = match.team1.map((id) => playersById[id]?.name || id).join("+");
+        const n2 = match.team2.map((id) => playersById[id]?.name || id).join("+");
+        matchDescriptions.push(
+          `Ronde ${rIdx + 1} Lap.${cIdx + 1}: ${n1} vs ${n2} = ${ab.a}-${ab.b}`
+        );
       });
     });
 
@@ -2268,6 +2276,7 @@ function AmericanoPadel() {
     Object.entries(byAccount).forEach(([accountId, records]) => {
       appendPlayerMatchRecords(accountId, records);
     });
+    matchDescriptions.forEach((desc) => logActivity(`Skor lengkap — ${desc}`));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scores, engine, activeId]);
 
@@ -2446,6 +2455,7 @@ function AmericanoPadel() {
       currentRound: 0,
       scores: {},
     });
+    logActivity(`Generate jadwal awal (${ids.length} pemain, ${courts} lapangan, ${computedRounds} ronde)`);
   };
 
   // HOST-ONLY (not co-host): re-runs the same fairness-first generator with
@@ -2469,6 +2479,7 @@ function AmericanoPadel() {
     setCurrentRound(0);
     setScores({});
     persist({ engine: result, playerMap: map, currentRound: 0, scores: {} });
+    logActivity(`Reshuffle jadwal (${ids.length} pemain, ${courts} lapangan, ${engine.roundsData.length} ronde)`);
   };
 
   // HOST or CO-HOST: appends one extra manually-composed match/round once
@@ -2515,6 +2526,7 @@ function AmericanoPadel() {
     setEngine(newEngine);
     setCurrentRound(newRoundIdx);
     persist({ engine: newEngine, currentRound: newRoundIdx });
+    logActivity(`Tambah match manual Ronde ${newRoundIdx + 1}: ${team1Ids.join("+")} vs ${team2Ids.join("+")}`);
   };
 
   // Auto-generates N more fairness-optimized rounds (same algorithm as the
@@ -2553,6 +2565,7 @@ function AmericanoPadel() {
     setEngine(newEngine);
     setCurrentRound(newRoundIdx);
     persist({ engine: newEngine, currentRound: newRoundIdx });
+    logActivity(`Tambah ${n} ronde otomatis (total jadi ${newRoundsData.length} ronde)`);
   };
 
   // Deletes one specific round entirely (host & co-host). Any scores it had
@@ -2631,6 +2644,7 @@ function AmericanoPadel() {
     setScores(newScores);
     setCurrentRound(newCurrentRound);
     persist({ engine: newEngine, scores: newScores, currentRound: newCurrentRound });
+    logActivity(`Hapus Ronde ${roundIdx + 1} (sisa ${newRoundsData.length} ronde)`);
   };
 
   // Adds/removes players mid-match and re-generates the schedule for
@@ -2643,6 +2657,9 @@ function AmericanoPadel() {
     if (!engine) return;
     try {
       handleAdjustScheduleInner(newPlayers, newCourts);
+      logActivity(
+        `Sesuaikan jadwal: ${newPlayers.length} pemain aktif${newCourts ? `, ${newCourts} lapangan` : ""}`
+      );
     } catch (e) {
       console.error("handleAdjustSchedule failed:", e);
       alert(
@@ -2886,6 +2903,22 @@ function AmericanoPadel() {
     setCurrentUser((u) => (u ? { ...u, paymentInfo: newInfo } : u));
   };
 
+  // Records a key action into this session's activity log (capped, newest
+  // last) — purely for exporting later so the host can share a full trace
+  // of what happened (who clicked what, how many reshuffles, final scores)
+  // for debugging/analysis.
+  const logActivity = useCallback(
+    (message) => {
+      const who = currentUser?.displayName || currentUser?.username || "?";
+      setActivityLog((prev) => {
+        const next = [...prev, { ts: Date.now(), who, message }].slice(-300);
+        persist({ activityLog: next });
+        return next;
+      });
+    },
+    [persist, currentUser]
+  );
+
   // Lets the host mark an event as a trial/practice run so its matches don't
   // pollute anyone's career or partner-synergy statistics. Can be flipped at
   // any time (before, during, or long after the event) — nothing is deleted,
@@ -2894,6 +2927,7 @@ function AmericanoPadel() {
     setExcludeFromStats(nextExcluded);
     persist({ excludeFromStats: nextExcluded });
     if (activeId) await setEventExcluded(activeId, nextExcluded);
+    logActivity(`Set "Hitung ke Statistik" jadi ${nextExcluded ? "TIDAK dihitung" : "dihitung"}`);
   };
 
   const handleSaveProfileExtras = async (extras) => {
@@ -2982,6 +3016,7 @@ function AmericanoPadel() {
     setLoggedMatchKeys([]);
     setPlayDate("");
     setExcludeFromStats(false);
+    setActivityLog([]);
     setCourtStages([]);
     setOwnerId(null);
     setOwnerUsername("");
@@ -3031,6 +3066,7 @@ function AmericanoPadel() {
     setLoggedMatchKeys(data.loggedMatchKeys || []);
     setPlayDate(data.playDate || "");
     setExcludeFromStats(!!data.excludeFromStats);
+    setActivityLog(data.activityLog || []);
     setCourtStages(data.courtStages || []);
     setOwnerId(data.ownerId || null);
     setOwnerUsername(data.ownerUsername || "");
@@ -3111,6 +3147,7 @@ function AmericanoPadel() {
       return;
     setEnded(true);
     persist({ ended: true });
+    logActivity("Acara diakhiri (Selesaikan Acara)");
     const totalCost = (Number(courtCost) || 0) + (Number(adminFee) || 0) + (Number(ballCost) || 0);
     setScreen(totalCost > 0 ? "splitbill" : "leaderboard");
   };
@@ -3603,14 +3640,22 @@ function AmericanoPadel() {
       {screen === "recap" && engine && (
         <RecapScreen
           eventName={eventName}
+          activeId={activeId}
+          playDate={playDate}
+          courts={courts}
+          mode={mode}
           engine={engine}
           playerMap={playerMap}
           scores={scores}
           scoreFormat={scoreFormat}
+          pointTarget={pointTarget}
           tennisTarget={tennisTarget}
+          activityLog={activityLog}
+          ended={ended}
           hasSplitBill={hasSplitBill}
           canManage={canManage}
           isOwner={sessionRole === "owner"}
+          currentUser={currentUser}
           excludeFromStats={excludeFromStats}
           onToggleExcludeFromStats={handleToggleExcludeFromStats}
           onNav={setScreen}
@@ -5432,6 +5477,90 @@ function FieldRow({ label, children }) {
 // Toggle for whether an event's matches feed into everyone's career and
 // partner-synergy stats. Useful for trial runs / practice sessions that
 // would otherwise skew real numbers.
+// Bundles everything about this session into one downloadable JSON file —
+// full schedule/engine state, every score, the activity log (who clicked
+// what, how many reshuffles, etc.), and basic settings — so the host can
+// hand off a complete, self-contained snapshot for debugging/analysis.
+function buildSessionExport({
+  eventName, activeId, createdAt, playDate, courts, mode, scoreFormat,
+  pointTarget, tennisTarget, players, playerMap, engine, scores,
+  activityLog, ended, excludeFromStats,
+}) {
+  return {
+    exportedAt: new Date().toISOString(),
+    event: {
+      id: activeId,
+      name: eventName,
+      createdAt: createdAt ? new Date(createdAt).toISOString() : null,
+      playDate: playDate || null,
+      courts,
+      mode,
+      scoreFormat,
+      pointTarget,
+      tennisTarget,
+      ended: !!ended,
+      excludeFromStats: !!excludeFromStats,
+    },
+    players,
+    playerMap,
+    schedule: engine
+      ? {
+          totalRounds: engine.roundsData.length,
+          rounds: engine.roundsData.map((rd, rIdx) => ({
+            round: rIdx + 1,
+            resting: rd.resting.map((id) => playerMap[id] || id),
+            courts: rd.courts.map((c, cIdx) => ({
+              lapangan: cIdx + 1,
+              team1: c.team1.map((id) => playerMap[id] || id),
+              team2: c.team2.map((id) => playerMap[id] || id),
+              score: scores[`${rIdx}-${cIdx}`] || null,
+            })),
+          })),
+        }
+      : null,
+    activityLog: (activityLog || []).map((a) => ({
+      waktu: new Date(a.ts).toISOString(),
+      oleh: a.who,
+      aksi: a.message,
+    })),
+  };
+}
+
+function ExportSessionButton(props) {
+  const [done, setDone] = useState(false);
+  const handleExport = () => {
+    const data = buildSessionExport(props);
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const safeName = (props.eventName || "acara").replace(/[^a-zA-Z0-9-_]/g, "_");
+    a.href = url;
+    a.download = `americano-log-${safeName}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    setDone(true);
+    setTimeout(() => setDone(false), 2500);
+  };
+  return (
+    <div>
+      <button
+        onClick={handleExport}
+        className={`w-full text-xs font-semibold rounded-xl py-2.5 flex items-center justify-center gap-1.5 border ${
+          done ? "bg-lime-300 text-slate-950 border-lime-300" : "text-slate-300 border-slate-700"
+        }`}
+      >
+        {done ? "Terunduh ✓" : "Download Log & Data Lengkap (.json)"}
+      </button>
+      <p className="text-[11px] text-slate-500 mt-2">
+        Berisi seluruh jadwal, skor tiap match, dan catatan aktivitas (reshuffle, tambah/hapus
+        ronde, penyesuaian, dll). Tinggal kirim file-nya buat dianalisa.
+      </p>
+    </div>
+  );
+}
+
 function StatsCountToggle({ excluded, onToggle }) {
   return (
     <div>
@@ -7684,7 +7813,7 @@ function SplitBillScreen({
 // RECAP SCREEN (all scored matches, for monitoring rotation fairness)
 // ---------------------------------------------------------------------------
 
-function RecapScreen({ eventName, engine, playerMap, scores, scoreFormat, tennisTarget, hasSplitBill, canManage, isOwner, excludeFromStats, onToggleExcludeFromStats, onNav, onBackToLobby }) {
+function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, engine, playerMap, scores, scoreFormat, pointTarget, tennisTarget, activityLog, ended, hasSplitBill, canManage, isOwner, currentUser, excludeFromStats, onToggleExcludeFromStats, onNav, onBackToLobby }) {
   const [filterId, setFilterId] = useState("all");
 
   const allRows = React.useMemo(() => {
@@ -7793,6 +7922,33 @@ function RecapScreen({ eventName, engine, playerMap, scores, scoreFormat, tennis
               <span className="text-sm font-semibold text-slate-200">Hitung ke Statistik?</span>
             </div>
             <StatsCountToggle excluded={excludeFromStats} onToggle={onToggleExcludeFromStats} />
+          </div>
+        )}
+
+        {currentUser?.accountId === "alfinyr" && (
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <ClipboardList size={14} className="text-lime-300" />
+              <span className="text-sm font-semibold text-slate-200">Export Data &amp; Log</span>
+            </div>
+            <ExportSessionButton
+              eventName={eventName}
+              activeId={activeId}
+              createdAt={createdAt}
+              playDate={playDate}
+              courts={courts}
+              mode={mode}
+              scoreFormat={scoreFormat}
+              pointTarget={pointTarget}
+              tennisTarget={tennisTarget}
+              players={players}
+              playerMap={playerMap}
+              engine={engine}
+              scores={scores}
+              activityLog={activityLog}
+              ended={ended}
+              excludeFromStats={excludeFromStats}
+            />
           </div>
         )}
 
