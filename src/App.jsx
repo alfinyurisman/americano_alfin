@@ -5604,14 +5604,16 @@ function SetupScreen(props) {
           </FieldRow>
         )}
 
-        <FieldRow label="Jam mulai (opsional)">
-          <input
-            type="time"
-            value={startTime}
-            onChange={(e) => setStartTime(e.target.value)}
-            className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
-          />
-        </FieldRow>
+        <div className="mt-4">
+          <FieldRow label="Jam mulai (opsional)">
+            <input
+              type="time"
+              value={startTime}
+              onChange={(e) => setStartTime(e.target.value)}
+              className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
+            />
+          </FieldRow>
+        </div>
       </Section>
 
       {/* SCORE FORMAT */}
