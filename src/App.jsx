@@ -3631,6 +3631,8 @@ function AmericanoPadel() {
           setStartTime={setStartTime}
           scoreFormat={scoreFormat}
           setScoreFormat={setScoreFormat}
+          sportType={sportType}
+          setSportType={setSportType}
           pointTarget={pointTarget}
           setPointTarget={setPointTarget}
           tennisTarget={tennisTarget}
@@ -4414,7 +4416,7 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
                       ) : (
                         <PadelRacketIcon size={22} className="text-lime-300" />
                       )}
-                      <span className="text-[8.5px] text-slate-500 text-center leading-tight whitespace-nowrap">
+                      <span className="text-[8.5px] text-white text-center leading-tight whitespace-nowrap">
                         {ev.scoreFormat === "tennis"
                           ? `Race to ${ev.tennisTarget || 4}`
                           : "Total Poin"}
@@ -5411,6 +5413,28 @@ function SetupScreen(props) {
         </p>
       </div>
 
+      {/* SPORT TYPE — di paling atas, sebelum nama acara */}
+      <Section icon={Trophy} title="Jenis Olahraga">
+        <div className="flex gap-2">
+          <ModeTab active={sportType === "padel"} onClick={() => setSportType("padel")}>
+            <span className="inline-flex items-center gap-1.5">
+              <PadelRacketIcon size={15} /> Padel
+            </span>
+          </ModeTab>
+          <ModeTab
+            active={sportType === "tenis"}
+            onClick={() => {
+              setSportType("tenis");
+              setScoreFormat("tennis"); // tenis cuma masuk akal pakai format game, bukan total poin
+            }}
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <TennisRacketIcon size={15} /> Tenis
+            </span>
+          </ModeTab>
+        </div>
+      </Section>
+
       {/* EVENT NAME */}
       <Section icon={CalendarDays} title="Nama Acara">
         <input
@@ -5586,31 +5610,6 @@ function SetupScreen(props) {
             className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
           />
         </FieldRow>
-      </Section>
-
-      {/* SPORT TYPE */}
-      <Section icon={Trophy} title="Jenis Olahraga">
-        <div className="flex gap-2">
-          <ModeTab
-            active={sportType === "padel"}
-            onClick={() => setSportType("padel")}
-          >
-            <span className="inline-flex items-center gap-1.5">
-              <PadelRacketIcon size={15} /> Padel
-            </span>
-          </ModeTab>
-          <ModeTab
-            active={sportType === "tenis"}
-            onClick={() => {
-              setSportType("tenis");
-              setScoreFormat("tennis"); // tenis cuma masuk akal pakai format game, bukan total poin
-            }}
-          >
-            <span className="inline-flex items-center gap-1.5">
-              <TennisRacketIcon size={15} /> Tenis
-            </span>
-          </ModeTab>
-        </div>
       </Section>
 
       {/* SCORE FORMAT */}
