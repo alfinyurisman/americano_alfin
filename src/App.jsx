@@ -681,6 +681,9 @@ async function countRegisteredAccounts() {
 // ---------------------------------------------------------------------------
 
 const PUBLIC_EVENTS_KEY = "padel-public-events";
+const ALL_MATCHES_KEY = "padel-all-matches-registry";
+const ALL_MATCHES_MAX = 1000; // cap so the registry doesn't grow unbounded forever
+
 
 async function loadPublicEvents() {
   try {
@@ -735,6 +738,59 @@ async function removePublicEventEntry(id) {
   const list = await loadPublicEvents();
   const next = list.filter((e) => e.id !== id);
   if (next.length !== list.length) await savePublicEvents(next);
+}
+
+// A single shared, admin-only registry of every event ever created by any
+// user, regardless of visibility (private/public) or status — unlike the
+// public-discovery list above, which only ever shows "waiting" public
+// events. Kept up to date on every save, removed only when the event
+// itself is deleted (never just because it ended or someone left).
+async function loadAllMatchesRegistry() {
+  try {
+    const res = await window.storage.get(ALL_MATCHES_KEY, true);
+    return res ? JSON.parse(res.value) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+async function saveAllMatchesRegistry(list) {
+  try {
+    await window.storage.set(ALL_MATCHES_KEY, JSON.stringify(list.slice(0, ALL_MATCHES_MAX)), true);
+  } catch (e) {
+    console.error("Gagal menyimpan registry all-matches:", e);
+  }
+}
+
+async function syncAllMatchesRegistryEntry(snapshot) {
+  try {
+    const list = await loadAllMatchesRegistry();
+    const existingIdx = list.findIndex((e) => e.id === snapshot.id);
+    const entry = {
+      id: snapshot.id,
+      name: snapshot.name || "Sesi Padel",
+      ownerId: snapshot.ownerId,
+      ownerUsername: snapshot.ownerUsername || "",
+      playerCount: (snapshot.players || []).length,
+      courts: snapshot.courts,
+      status: snapshot.status,
+      ended: !!snapshot.ended,
+      createdAt: existingIdx !== -1 ? list[existingIdx].createdAt : snapshot.updatedAt,
+      updatedAt: snapshot.updatedAt,
+      playDate: snapshot.playDate || null,
+    };
+    if (existingIdx !== -1) list[existingIdx] = entry;
+    else list.unshift(entry);
+    await saveAllMatchesRegistry(list);
+  } catch (e) {
+    console.error("Gagal sync registry all-matches:", e);
+  }
+}
+
+async function removeFromAllMatchesRegistry(id) {
+  const list = await loadAllMatchesRegistry();
+  const next = list.filter((e) => e.id !== id);
+  if (next.length !== list.length) await saveAllMatchesRegistry(next);
 }
 
 function rememberLogin(account) {
@@ -2193,6 +2249,7 @@ function AmericanoPadel() {
       };
       saveSessionData(id, snapshot);
       syncPublicEventEntry(snapshot);
+      syncAllMatchesRegistryEntry(snapshot);
       const theOwnerId = snapshot.ownerId;
       const entry = {
         id,
@@ -2205,6 +2262,7 @@ function AmericanoPadel() {
         ended: !!snapshot.ended,
         status: snapshot.status,
         playDate: snapshot.playDate || null,
+        ownerUsername: snapshot.ownerUsername || "",
         role: "owner",
       };
       if (currentUser.accountId === theOwnerId) {
@@ -3172,6 +3230,7 @@ function AmericanoPadel() {
     if (!window.confirm("Hapus acara ini beserta seluruh jadwal & skornya?")) return;
     await deleteSessionData(id);
     await removePublicEventEntry(id);
+    await removeFromAllMatchesRegistry(id);
     setLobby((prev) => {
       const next = prev.filter((e) => e.id !== id);
       if (currentUser) saveLobbyIndex(currentUser.accountId, next);
@@ -3461,6 +3520,7 @@ function AmericanoPadel() {
           onRespondInvitation={handleRespondInvitation}
           onOpenMyPayment={() => setScreen("my-payment")}
           onOpenPartnerSynergy={() => setScreen("partner-synergy")}
+          onOpenAllMatches={() => setScreen("all-matches")}
           currentUser={currentUser}
           onLogout={handleLogout}
         />
@@ -3492,6 +3552,10 @@ function AmericanoPadel() {
           onBack={() => setScreen("partner-synergy")}
           onBackToLobby={handleBackToLobby}
         />
+      )}
+
+      {screen === "all-matches" && currentUser?.accountId === "alfinyr" && (
+        <AllMatchesScreen onBackToLobby={handleBackToLobby} />
       )}
 
       {screen === "friends" && (
@@ -4130,7 +4194,7 @@ function LobbyScoreCard({ currentUser, onChangeAvatar, onChangeDisplayName, onSa
   );
 }
 
-function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover, onRefresh, onChangeAvatar, onChangeDisplayName, onSaveProfileExtras, onOpenFriends, friendRequestCount, onRespondInvitation, onOpenMyPayment, onOpenPartnerSynergy, currentUser, onLogout }) {
+function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover, onRefresh, onChangeAvatar, onChangeDisplayName, onSaveProfileExtras, onOpenFriends, friendRequestCount, onRespondInvitation, onOpenMyPayment, onOpenPartnerSynergy, onOpenAllMatches, currentUser, onLogout }) {
   const [accountCount, setAccountCount] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -4239,6 +4303,14 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
         </GhostButton>
       </div>
 
+      {currentUser?.accountId === "alfinyr" && (
+        <div className="px-6 pt-3">
+          <GhostButton onClick={onOpenAllMatches} icon={ListOrdered} className="w-full">
+            All Match
+          </GhostButton>
+        </div>
+      )}
+
       <div className="px-6 pt-6">
         <h2 className="font-display text-2xl tracking-wide text-slate-100 mb-3 flex items-center gap-2">
           <CalendarDays size={16} className="text-lime-300" /> Acara
@@ -4312,7 +4384,7 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
                       <div className="font-semibold text-slate-100 truncate">{ev.name}</div>
                       <div className="text-[11px] text-slate-300 mt-1">
                         {ev.playerCount} pemain · {ev.courts} lapangan
-                        {!isOwnerEntry && ev.ownerUsername && ` · host: ${ev.ownerUsername}`}
+                        {ev.ownerUsername && ` · host: ${ev.ownerUsername}`}
                       </div>
                       {formatEventEntryDate(ev) && (
                         <div className="text-[11px] text-slate-500 mt-0.5">
@@ -4536,6 +4608,97 @@ function SynergyStars({ stars }) {
     </span>
   );
 }
+
+// ---------------------------------------------------------------------------
+// ALL MATCH — admin-only (alfinyr) list of every event ever created by
+// anyone, using the same shared registry updated on every session save.
+// Tapping an entry opens the existing read-only viewer link (?s=id), so no
+// new permission logic is needed — it's exactly the same "look but don't
+// touch" view anyone with a share link already gets.
+// ---------------------------------------------------------------------------
+
+function AllMatchesScreen({ onBackToLobby }) {
+  const [loading, setLoading] = useState(true);
+  const [matches, setMatches] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const list = await loadAllMatchesRegistry();
+      if (cancelled) return;
+      setMatches(list.sort((a, b) => sortDateValue(b) - sortDateValue(a)));
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const openMatch = (id) => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("s", id);
+    window.open(url.toString(), "_blank");
+  };
+
+  return (
+    <div className="pb-10">
+      <div className="px-6 pt-14 pb-6 border-b border-slate-800">
+        <button
+          onClick={onBackToLobby}
+          className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform mb-4"
+        >
+          <ArrowLeft size={16} /> Lobby
+        </button>
+        <div className="flex items-center gap-2 mb-1">
+          <ListOrdered size={16} className="text-lime-300" />
+          <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
+            Admin
+          </span>
+        </div>
+        <h1 className="font-display text-5xl text-slate-50">ALL MATCH</h1>
+        <p className="text-slate-500 text-sm mt-2">
+          Seluruh acara yang pernah dibuat siapa saja di aplikasi ini (yang belum dihapus),
+          terlepas dari privasinya. Tap buat buka tampilan pemantau (read-only).
+        </p>
+      </div>
+
+      <div className="px-6 pt-6">
+        {loading ? (
+          <p className="text-slate-500 text-sm">Memuat...</p>
+        ) : matches.length === 0 ? (
+          <p className="text-slate-500 text-sm">Belum ada acara tercatat.</p>
+        ) : (
+          <>
+            <p className="text-[11px] text-slate-600 mb-3">{matches.length} acara tercatat</p>
+            <div className="space-y-2">
+              {matches.map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => openMatch(m.id)}
+                  className="w-full text-left rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-slate-100 truncate">{m.name}</span>
+                    <Chip tone={m.ended ? "slate" : "lime"}>
+                      {m.ended ? "Selesai" : m.status === "waiting" ? "Menunggu" : "Berjalan"}
+                    </Chip>
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-1">
+                    host: {m.ownerUsername || "—"} · {m.playerCount} pemain · {m.courts} lapangan
+                  </div>
+                  <div className="text-[11px] text-slate-600 mt-0.5">
+                    {formatEventEntryDate(m)}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 
 function PartnerSynergyScreen({ currentUser, onOpenPartner, onBackToLobby }) {
   const [loading, setLoading] = useState(true);
