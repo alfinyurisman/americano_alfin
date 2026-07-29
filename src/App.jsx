@@ -298,7 +298,13 @@ async function appendPlayerMatchRecords(accountId, records) {
   if (!accountId || !records.length) return;
   try {
     const existing = await loadPlayerMatchLog(accountId);
-    const merged = [...existing, ...records].slice(-PLAYER_LOG_MAX);
+    // Second, independent line of defense against double-logging (beyond
+    // the loggedMatchKeys guard): never add a record whose matchKey is
+    // already present, no matter how it got here.
+    const existingKeys = new Set(existing.map((r) => r.matchKey).filter(Boolean));
+    const fresh = records.filter((r) => !r.matchKey || !existingKeys.has(r.matchKey));
+    if (fresh.length === 0) return;
+    const merged = [...existing, ...fresh].slice(-PLAYER_LOG_MAX);
     await window.storage.set(playerLogKey(accountId), JSON.stringify(merged), true);
   } catch (e) {
     console.error("Gagal menyimpan log pertandingan:", e);
@@ -341,6 +347,42 @@ async function loadCountedMatchLog(accountId) {
     loadExcludedEvents(),
   ]);
   return log.filter((r) => !excluded.has(r.eventId));
+}
+
+// One-time repair for logs written before matchKey-based dedup existed:
+// collapses near-duplicate entries that are almost certainly the same match
+// double-logged by the old poll race condition — identical partner/opponents
+// /score within the same event, recorded within seconds of each other. Real
+// distinct matches essentially never share every one of those exactly AND
+// land within a few seconds of each other, so this is a safe, conservative
+// cleanup rather than a guess.
+function dedupeMatchLog(log) {
+  const sorted = [...log].sort((a, b) => a.ts - b.ts);
+  const kept = [];
+  sorted.forEach((r) => {
+    const isDup = kept.some(
+      (k) =>
+        k.eventId === r.eventId &&
+        k.partnerAccountId === r.partnerAccountId &&
+        k.pointsFor === r.pointsFor &&
+        k.pointsAgainst === r.pointsAgainst &&
+        JSON.stringify([...(k.oppAccountIds || [])].sort()) ===
+          JSON.stringify([...(r.oppAccountIds || [])].sort()) &&
+        Math.abs((r.ts || 0) - (k.ts || 0)) < 30000
+    );
+    if (!isDup) kept.push(r);
+  });
+  return { cleaned: kept, removedCount: sorted.length - kept.length };
+}
+
+async function repairPlayerMatchLog(accountId) {
+  if (!accountId) return 0;
+  const log = await loadPlayerMatchLog(accountId);
+  const { cleaned, removedCount } = dedupeMatchLog(log);
+  if (removedCount > 0) {
+    await window.storage.set(playerLogKey(accountId), JSON.stringify(cleaned), true);
+  }
+  return removedCount;
 }
 
 // ---------------------------------------------------------------------------
@@ -1218,7 +1260,7 @@ function isMatchScoreComplete(s) {
 // there's no stable identity to attach their history to across events.
 // `playersById` maps player id -> {id, name, accountId} for the CURRENT
 // roster (match.team1/team2 store just the ids).
-function buildPartnerLogRecords(match, score, eventId, eventName, ts, playersById) {
+function buildPartnerLogRecords(match, score, eventId, eventName, ts, playersById, matchKey) {
   const ab = matchAB(score);
   if (!ab || !Number.isFinite(ab.a) || !Number.isFinite(ab.b)) return [];
   const { a, b } = ab;
@@ -1240,6 +1282,7 @@ function buildPartnerLogRecords(match, score, eventId, eventName, ts, playersByI
           ts,
           eventId,
           eventName,
+          matchKey: `${eventId}:${matchKey}`,
           partnerAccountId: partner?.accountId || null,
           partnerName: partner?.name || null,
           oppNames: oppTeam.map((p) => p.name),
@@ -2069,7 +2112,17 @@ function AmericanoPadel() {
           setBallCost(saved.ballCost ?? "");
           setPaymentPersonId(saved.paymentPersonId ?? null);
           setPaymentInfo(saved.paymentInfo || []);
-          setLoggedMatchKeys(saved.loggedMatchKeys || []);
+          // loggedMatchKeys is an append-only guard against re-logging a
+          // match into Partner Synergy stats. If a sync happens to read a
+          // slightly older copy of the session than what was just written
+          // locally (a normal race with the ~4s poll interval), blindly
+          // overwriting it here could un-mark an already-logged match,
+          // letting the next tick log it again — which is how the same
+          // match ends up double (or more) counted. Merging instead of
+          // replacing means the guard only ever grows, never shrinks.
+          setLoggedMatchKeys((prev) =>
+            Array.from(new Set([...(prev || []), ...(saved.loggedMatchKeys || [])]))
+          );
           setEnded(!!saved.ended);
           if (saved.engine && screen === "waiting") {
             setScreen("session");
@@ -2195,7 +2248,8 @@ function AmericanoPadel() {
           activeId,
           eventName,
           Date.now(),
-          playersById
+          playersById,
+          key
         );
         if (records.length === 0) return; // nobody in this match has an account — nothing to log
         records.forEach(({ accountId, record }) => {
@@ -3556,6 +3610,7 @@ function AmericanoPadel() {
           tennisTarget={tennisTarget}
           hasSplitBill={hasSplitBill}
           canManage={canManage}
+          isOwner={sessionRole === "owner"}
           excludeFromStats={excludeFromStats}
           onToggleExcludeFromStats={handleToggleExcludeFromStats}
           onNav={setScreen}
@@ -4377,6 +4432,18 @@ function SynergyStars({ stars }) {
 function PartnerSynergyScreen({ currentUser, onOpenPartner, onBackToLobby }) {
   const [loading, setLoading] = useState(true);
   const [topPartners, setTopPartners] = useState([]);
+  const [repairing, setRepairing] = useState(false);
+  const [repairResult, setRepairResult] = useState(null); // number removed, or null
+
+  const refresh = async () => {
+    if (!currentUser?.accountId) {
+      setLoading(false);
+      return;
+    }
+    const log = await loadCountedMatchLog(currentUser.accountId);
+    setTopPartners(computeTopPartners(log, 5));
+    setLoading(false);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -4394,6 +4461,15 @@ function PartnerSynergyScreen({ currentUser, onOpenPartner, onBackToLobby }) {
       cancelled = true;
     };
   }, [currentUser?.accountId]);
+
+  const handleRepair = async () => {
+    if (!currentUser?.accountId) return;
+    setRepairing(true);
+    const removed = await repairPlayerMatchLog(currentUser.accountId);
+    setRepairResult(removed);
+    await refresh();
+    setRepairing(false);
+  };
 
   const medal = (i) => (i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`);
 
@@ -4417,6 +4493,29 @@ function PartnerSynergyScreen({ currentUser, onOpenPartner, onBackToLobby }) {
           Seberapa cocok kamu main bareng partner tertentu, dihitung dari semua pertandingan yang
           pernah kamu mainkan bareng dia — bukan cuma win rate, tapi gabungan beberapa faktor.
         </p>
+      </div>
+
+      <div className="px-6 pt-4">
+        <button
+          onClick={handleRepair}
+          disabled={repairing}
+          className="w-full text-xs font-semibold text-slate-400 border border-slate-800 rounded-xl py-2.5 flex items-center justify-center gap-1.5"
+        >
+          {repairing ? (
+            <>
+              <RotateCcw size={12} className="animate-spin" /> Memeriksa...
+            </>
+          ) : (
+            "Bersihkan data ganda (kalau angka statistik terasa kebesaran)"
+          )}
+        </button>
+        {repairResult !== null && !repairing && (
+          <p className="text-[11px] text-center mt-1.5 text-slate-500">
+            {repairResult > 0
+              ? `${repairResult} entri ganda ditemukan & dibersihkan.`
+              : "Nggak ada data ganda ditemukan — datanya sudah bersih."}
+          </p>
+        )}
       </div>
 
       <div className="px-6 pt-6">
@@ -5811,7 +5910,7 @@ function WaitingRoomScreen(props) {
         </Section>
       )}
 
-      {canManage && (
+      {isOwner && (
         <Section icon={BarChart3} title="Hitung ke Statistik?" subtitle="opsional">
           <StatsCountToggle excluded={excludeFromStats} onToggle={onToggleExcludeFromStats} />
         </Section>
@@ -7585,7 +7684,7 @@ function SplitBillScreen({
 // RECAP SCREEN (all scored matches, for monitoring rotation fairness)
 // ---------------------------------------------------------------------------
 
-function RecapScreen({ eventName, engine, playerMap, scores, scoreFormat, tennisTarget, hasSplitBill, canManage, excludeFromStats, onToggleExcludeFromStats, onNav, onBackToLobby }) {
+function RecapScreen({ eventName, engine, playerMap, scores, scoreFormat, tennisTarget, hasSplitBill, canManage, isOwner, excludeFromStats, onToggleExcludeFromStats, onNav, onBackToLobby }) {
   const [filterId, setFilterId] = useState("all");
 
   const allRows = React.useMemo(() => {
@@ -7687,7 +7786,7 @@ function RecapScreen({ eventName, engine, playerMap, scores, scoreFormat, tennis
       </div>
 
       <div className="px-6 pt-4 space-y-3">
-        {canManage && (
+        {isOwner && (
           <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
             <div className="flex items-center gap-2 mb-3">
               <BarChart3 size={14} className="text-lime-300" />
