@@ -2471,24 +2471,40 @@ function AmericanoPadel() {
   // the same players/courts/round-count to produce a fresh randomized
   // pairing. Wipes existing scores since old ones no longer correspond to
   // the new pairing.
+  // HOST-ONLY (not co-host): re-runs the fairness-first generator to get a
+  // fresh randomized pairing for whatever hasn't been played yet. Any round
+  // that's ALREADY fully scored is left completely untouched — only the
+  // rounds still missing a score get thrown out and rebuilt, continuing the
+  // same partner/opponent/rest history (so it's not treated as starting
+  // over). This mirrors exactly how attendance-toggling/"Kelola
+  // Pertandingan" already behaves, so reshuffling and toggling someone's
+  // attendance can be mixed freely as two ways to reach the same result.
   const handleReshuffleMatches = () => {
     if (!engine) return;
+    const allScored = engine.roundsData.every((rd, rIdx) =>
+      rd.courts.every((_, cIdx) => isMatchScoreComplete(scores[`${rIdx}-${cIdx}`]))
+    );
+    if (allScored) {
+      alert("Semua ronde sudah lengkap diisi skor — tidak ada lagi yang bisa di-reshuffle.");
+      return;
+    }
     if (
       !window.confirm(
-        "Acak ulang jadwal? Semua skor yang sudah diisi akan terhapus. Jumlah ronde, lapangan, dan pemain tetap sama — cuma urutan pasangannya yang diacak ulang."
+        "Acak ulang sisa jadwal? Ronde yang SUDAH lengkap diisi skor tetap disimpan apa adanya — cuma ronde yang BELUM diisi skornya yang bakal diacak ulang."
       )
     )
       return;
-    const ids = players.map((p) => p.id);
-    const map = {};
-    players.forEach((p) => (map[p.id] = p.name));
-    const result = generateSchedule(ids, courts, engine.roundsData.length);
-    setEngine(result);
-    setPlayerMap(map);
-    setCurrentRound(0);
-    setScores({});
-    persist({ engine: result, playerMap: map, currentRound: 0, scores: {} });
-    logActivity(`Reshuffle jadwal (${ids.length} pemain, ${courts} lapangan, ${engine.roundsData.length} ronde)`);
+    try {
+      handleAdjustScheduleInner(players);
+      logActivity("Reshuffle sisa jadwal (ronde yang sudah lengkap skornya tetap disimpan)");
+    } catch (e) {
+      console.error("handleReshuffleMatches failed:", e);
+      alert(
+        "Gagal reshuffle: " +
+          (e?.message || "terjadi kesalahan tak terduga") +
+          "\n\nJadwal belum diubah, coba lagi atau kirim screenshot pesan ini."
+      );
+    }
   };
 
   // HOST or CO-HOST: appends one extra manually-composed match/round once
