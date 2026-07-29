@@ -4328,6 +4328,9 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
           {lobby.map((ev) => {
             const started = ev.roundsTotal > 0;
             const isOwnerEntry = (ev.role || "owner") === "owner";
+            const hostLabel =
+              ev.ownerUsername ||
+              (isOwnerEntry ? currentUser?.displayName || currentUser?.username : "");
             const isInvited = ev.role === "invited";
             const waiting = ev.status === "waiting";
 
@@ -4384,7 +4387,7 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
                       <div className="font-semibold text-slate-100 truncate">{ev.name}</div>
                       <div className="text-[11px] text-slate-300 mt-1">
                         {ev.playerCount} pemain · {ev.courts} lapangan
-                        {ev.ownerUsername && ` · host: ${ev.ownerUsername}`}
+                        {hostLabel && ` · host: ${hostLabel}`}
                       </div>
                       {formatEventEntryDate(ev) && (
                         <div className="text-[11px] text-slate-500 mt-0.5">
