@@ -8,6 +8,8 @@ import {
 } from "lucide-react";
 import tennisIconWhite from "./assets/tennis-icon-white.png";
 import padelIconWhite from "./assets/padel-icon-white.png";
+import tennisIconBlack from "./assets/tennis-icon-black.png";
+import padelIconBlack from "./assets/padel-icon-black.png";
 
 // ---------------------------------------------------------------------------
 // SCHEDULING ENGINE
@@ -4410,11 +4412,11 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
                         </div>
                       )}
                     </div>
-                    <div className="flex flex-col items-center gap-1 shrink-0 pt-0.5">
+                    <div className="flex flex-col items-center gap-1.5 shrink-0 pt-0.5">
                       {ev.sportType === "tenis" ? (
-                        <TennisRacketIcon size={22} className="text-lime-300" />
+                        <TennisRacketIcon size={34} className="text-lime-300" />
                       ) : (
-                        <PadelRacketIcon size={22} className="text-lime-300" />
+                        <PadelRacketIcon size={34} className="text-lime-300" />
                       )}
                       <span className="text-[8.5px] text-white text-center leading-tight whitespace-nowrap">
                         {ev.scoreFormat === "tennis"
@@ -5417,8 +5419,8 @@ function SetupScreen(props) {
       <Section icon={Trophy} title="Jenis Olahraga">
         <div className="flex gap-2">
           <ModeTab active={sportType === "padel"} onClick={() => setSportType("padel")}>
-            <span className="inline-flex items-center gap-1.5">
-              <PadelRacketIcon size={15} /> Padel
+            <span className="inline-flex items-center gap-2">
+              <PadelRacketIcon size={26} dark={sportType === "padel"} /> Padel
             </span>
           </ModeTab>
           <ModeTab
@@ -5428,8 +5430,8 @@ function SetupScreen(props) {
               setScoreFormat("tennis"); // tenis cuma masuk akal pakai format game, bukan total poin
             }}
           >
-            <span className="inline-flex items-center gap-1.5">
-              <TennisRacketIcon size={15} /> Tenis
+            <span className="inline-flex items-center gap-2">
+              <TennisRacketIcon size={26} dark={sportType === "tenis"} /> Tenis
             </span>
           </ModeTab>
         </div>
@@ -5734,12 +5736,13 @@ function Section({ icon: Icon, title, subtitle, children }) {
 }
 
 // The user's own reference icons (uploaded images), used exactly as
-// provided — white version so it stays visible against this app's dark
-// theme (the original navy line-art disappears on a dark background).
-function TennisRacketIcon({ size = 16, className = "" }) {
+// provided. White version for dark backgrounds (default), black version for
+// when the icon sits on a bright lime background (e.g. the active state of
+// the sport-type toggle) where white would wash out and become invisible.
+function TennisRacketIcon({ size = 16, className = "", dark = false }) {
   return (
     <img
-      src={tennisIconWhite}
+      src={dark ? tennisIconBlack : tennisIconWhite}
       alt="Tenis"
       style={{ width: size, height: size, objectFit: "contain" }}
       className={className}
@@ -5747,10 +5750,10 @@ function TennisRacketIcon({ size = 16, className = "" }) {
   );
 }
 
-function PadelRacketIcon({ size = 16, className = "" }) {
+function PadelRacketIcon({ size = 16, className = "", dark = false }) {
   return (
     <img
-      src={padelIconWhite}
+      src={dark ? padelIconBlack : padelIconWhite}
       alt="Padel"
       style={{ width: size, height: size, objectFit: "contain" }}
       className={className}
