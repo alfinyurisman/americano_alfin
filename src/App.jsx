@@ -1739,6 +1739,7 @@ function AmericanoPadel() {
   const [manualRounds, setManualRounds] = useState(8);
   const [startTime, setStartTime] = useState("19:00");
   const [scoreFormat, setScoreFormat] = useState("points"); // points | tennis
+  const [sportType, setSportType] = useState("padel"); // padel | tenis — purely informational, doesn't change scoring logic
   const [pointTarget, setPointTarget] = useState(21);
   const [tennisTarget, setTennisTarget] = useState(4); // race to N games
   const [ended, setEnded] = useState(false);
@@ -1784,6 +1785,9 @@ function AmericanoPadel() {
           ownerUsername: data.ownerUsername || entry.ownerUsername,
           updatedAt: data.updatedAt || entry.updatedAt,
           playDate: data.playDate || entry.playDate || null,
+          sportType: data.sportType || entry.sportType || "padel",
+          scoreFormat: data.scoreFormat || entry.scoreFormat || "points",
+          tennisTarget: data.tennisTarget || entry.tennisTarget || 4,
         };
       })
     );
@@ -2083,6 +2087,9 @@ function AmericanoPadel() {
           status: current.status || (current.engine ? "active" : "waiting"),
           ownerUsername: current.ownerUsername || "",
           playDate: current.playDate || null,
+          sportType: current.sportType || "padel",
+          scoreFormat: current.scoreFormat || "points",
+          tennisTarget: current.tennisTarget || 4,
         };
         nextList = [entry, ...myList];
         await saveLobbyIndex(account.accountId, nextList);
@@ -2103,6 +2110,7 @@ function AmericanoPadel() {
     setManualRounds(current.manualRounds ?? 8);
     setStartTime(current.startTime || "19:00");
     setScoreFormat(current.scoreFormat || "points");
+    setSportType(current.sportType || "padel");
     setPointTarget(current.pointTarget ?? 21);
     setTennisTarget(current.tennisTarget ?? 4);
     setMaxParticipants(current.maxParticipants ?? 8);
@@ -2171,6 +2179,7 @@ function AmericanoPadel() {
           });
           setScores(saved.scores || {});
           setScoreFormat(saved.scoreFormat || "points");
+          setSportType(saved.sportType || "padel");
           setPointTarget(saved.pointTarget ?? 21);
           setTennisTarget(saved.tennisTarget ?? 4);
           setCourtCost(saved.courtCost ?? "");
@@ -2237,6 +2246,7 @@ function AmericanoPadel() {
         manualRounds,
         startTime,
         scoreFormat,
+        sportType,
         pointTarget,
         tennisTarget,
         ended,
@@ -2263,6 +2273,9 @@ function AmericanoPadel() {
         status: snapshot.status,
         playDate: snapshot.playDate || null,
         ownerUsername: snapshot.ownerUsername || "",
+        sportType: snapshot.sportType || "padel",
+        scoreFormat: snapshot.scoreFormat || "points",
+        tennisTarget: snapshot.tennisTarget || 4,
         role: "owner",
       };
       if (currentUser.accountId === theOwnerId) {
@@ -2288,7 +2301,7 @@ function AmericanoPadel() {
       }
       return;
     },
-    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, loggedMatchKeys, courtStages, playDate, excludeFromStats, activityLog, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
+    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, loggedMatchKeys, courtStages, playDate, excludeFromStats, activityLog, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, sportType, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
   );
 
   // Partner Synergy Index: whenever a specific match's score newly becomes
@@ -2862,14 +2875,13 @@ function AmericanoPadel() {
       // call for it. Seeding their pairwise history at the group's current
       // average (instead of 0) removes that artificial appeal, so they
       // only get picked when their wait time actually earns it.
-      const oldActiveList = veterans;
       let avgPartnerCount = 0;
       let avgOppCount = 0;
       let pairCount = 0;
-      for (let i = 0; i < oldActiveList.length; i++) {
-        for (let j = i + 1; j < oldActiveList.length; j++) {
-          const idA = oldActiveList[i].id;
-          const idB = oldActiveList[j].id;
+      for (let i = 0; i < veterans.length; i++) {
+        for (let j = i + 1; j < veterans.length; j++) {
+          const idA = veterans[i].id;
+          const idB = veterans[j].id;
           avgPartnerCount += seed.partner[idA]?.[idB] || 0;
           avgOppCount += seed.opp[idA]?.[idB] || 0;
           pairCount++;
@@ -2880,7 +2892,7 @@ function AmericanoPadel() {
 
       newcomers.forEach((p) => {
         seed.lastPlayed[p.id] = avgLastPlayed;
-        oldActiveList.forEach((existing) => {
+        veterans.forEach((existing) => {
           if (seed.partner[p.id]) seed.partner[p.id][existing.id] = avgPartnerCount;
           if (seed.partner[existing.id]) seed.partner[existing.id][p.id] = avgPartnerCount;
           if (seed.opp[p.id]) seed.opp[p.id][existing.id] = avgOppCount;
@@ -2982,9 +2994,6 @@ function AmericanoPadel() {
     if (!target) return;
     const nowArrived = target.arrived === false; // toggling from not-arrived -> arrived
     const newPlayers = players.map((p) => (p.id === playerId ? { ...p, arrived: nowArrived } : p));
-    logActivity(
-      `Toggle kehadiran: ${target.name} jadi ${nowArrived ? "HADIR" : "TIDAK HADIR"} (dipakai buat re-shuffle jadwal ke depan)`
-    );
     handleAdjustSchedule(newPlayers);
   };
 
@@ -3120,6 +3129,7 @@ function AmericanoPadel() {
     setManualRounds(8);
     setStartTime("19:00");
     setScoreFormat("points");
+    setSportType("padel");
     setPointTarget(21);
     setTennisTarget(4);
     setMaxParticipants(8);
@@ -3170,6 +3180,7 @@ function AmericanoPadel() {
     setManualRounds(data.manualRounds ?? 8);
     setStartTime(data.startTime || "19:00");
     setScoreFormat(data.scoreFormat || "points");
+    setSportType(data.sportType || "padel");
     setPointTarget(data.pointTarget ?? 21);
     setTennisTarget(data.tennisTarget ?? 4);
     setMaxParticipants(data.maxParticipants ?? 8);
@@ -4395,7 +4406,18 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
                         </div>
                       )}
                     </div>
-                    <ChevronRightCircle size={20} className="text-slate-600 shrink-0 mt-0.5" />
+                    <div className="flex flex-col items-center gap-1 shrink-0 pt-0.5">
+                      {ev.sportType === "tenis" ? (
+                        <TennisRacketIcon size={22} className="text-lime-300" />
+                      ) : (
+                        <PadelRacketIcon size={22} className="text-lime-300" />
+                      )}
+                      <span className="text-[8.5px] text-slate-500 text-center leading-tight whitespace-nowrap">
+                        {ev.scoreFormat === "tennis"
+                          ? `Race to ${ev.tennisTarget || 4}`
+                          : "Total Poin"}
+                      </span>
+                    </div>
                   </div>
                   <div className="mt-3 flex flex-wrap gap-1.5">
                     <Chip tone={isOwnerEntry ? "cyan" : "slate"}>
@@ -4701,7 +4723,6 @@ function AllMatchesScreen({ onBackToLobby }) {
     </div>
   );
 }
-
 
 function PartnerSynergyScreen({ currentUser, onOpenPartner, onBackToLobby }) {
   const [loading, setLoading] = useState(true);
@@ -5346,6 +5367,7 @@ function SetupScreen(props) {
     breakMinutes, setBreakMinutes, manualRounds, setManualRounds,
     startTime, setStartTime,
     scoreFormat, setScoreFormat, pointTarget, setPointTarget,
+    sportType, setSportType,
     tennisTarget, setTennisTarget,
     maxParticipants, setMaxParticipants,
     visibility, setVisibility,
@@ -5564,16 +5586,52 @@ function SetupScreen(props) {
         </FieldRow>
       </Section>
 
-      {/* SCORE FORMAT */}
-      <Section icon={Trophy} title="Format Skor" subtitle="opsional">
-        <div className="flex gap-2 mb-4">
-          <ModeTab active={scoreFormat === "points"} onClick={() => setScoreFormat("points")}>
-            Poin (Americano)
+      {/* SPORT TYPE */}
+      <Section icon={Trophy} title="Jenis Olahraga">
+        <div className="flex gap-2">
+          <ModeTab
+            active={sportType === "padel"}
+            onClick={() => setSportType("padel")}
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <PadelRacketIcon size={15} /> Padel
+            </span>
           </ModeTab>
-          <ModeTab active={scoreFormat === "tennis"} onClick={() => setScoreFormat("tennis")}>
-            Tenis (Game)
+          <ModeTab
+            active={sportType === "tenis"}
+            onClick={() => {
+              setSportType("tenis");
+              setScoreFormat("tennis"); // tenis cuma masuk akal pakai format game, bukan total poin
+            }}
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <TennisRacketIcon size={15} /> Tenis
+            </span>
           </ModeTab>
         </div>
+      </Section>
+
+      {/* SCORE FORMAT */}
+      <Section icon={Trophy} title="Format Skor" subtitle="opsional">
+        {sportType === "tenis" ? (
+          <div className="mb-4">
+            <div className="w-full py-2.5 rounded-xl text-sm font-semibold text-center bg-lime-300 text-slate-950">
+              Race to {tennisTarget} Game
+            </div>
+            <p className="text-[11px] text-slate-500 mt-2">
+              Karena jenis olahraganya Tenis, format skor otomatis pakai Race to X Game.
+            </p>
+          </div>
+        ) : (
+          <div className="flex gap-2 mb-4">
+            <ModeTab active={scoreFormat === "points"} onClick={() => setScoreFormat("points")}>
+              Total Poin
+            </ModeTab>
+            <ModeTab active={scoreFormat === "tennis"} onClick={() => setScoreFormat("tennis")}>
+              Race to {tennisTarget} Game
+            </ModeTab>
+          </div>
+        )}
 
         {scoreFormat === "points" ? (
           <div className="space-y-3">
@@ -5671,6 +5729,88 @@ function Section({ icon: Icon, title, subtitle, children }) {
       </div>
       {children}
     </div>
+  );
+}
+
+// Modeled on the reference racket+ball icons the user shared: a tilted
+// racket head (crosshatch strings for tennis, dot-holes for padel) with a
+// small triangular throat marker, textured grip, and a tennis ball
+// overlapping the upper-right corner. Uses currentColor (not the reference's
+// navy) so it adapts to this app's dark theme exactly like every Lucide icon.
+function TennisRacketIcon({ size = 16, className = "" }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <defs>
+        <clipPath id="tennisHead">
+          <ellipse cx="10" cy="7.2" rx="5.1" ry="6.2" />
+        </clipPath>
+      </defs>
+      <ellipse cx="10" cy="7.2" rx="5.1" ry="6.2" />
+      <g clipPath="url(#tennisHead)" strokeWidth="0.55">
+        <path d="M5 2 L15 12.4 M6.3 1.2 L16.3 11.6 M7.6 0.6 L17.6 11 M3.8 3 L13.8 13.4 M2.8 4.4 L12.8 14.8" />
+        <path d="M15 2 L5 12.4 M13.7 1.2 L3.7 11.6 M12.4 0.6 L2.4 11 M16.2 3 L6.2 13.4 M17.2 4.4 L7.2 14.8" />
+      </g>
+      <path d="M8.7 13 L11.3 13 L10 15.5 Z" fill="currentColor" stroke="none" />
+      <path d="M8.3 13.2 L6 17.5" />
+      <path d="M11.7 13.2 L14 17.5" />
+      <rect x="4.6" y="17" width="3.6" height="5.6" rx="1.3" transform="rotate(-24 6.4 19.8)" />
+      <path d="M5.2 18.2 L7.6 17.3 M5.7 19.6 L8.1 18.7 M6.2 21 L8.6 20.1" strokeWidth="0.5" />
+      <circle cx="18.3" cy="5.3" r="3.6" />
+      <path d="M15.7 3.1 Q17.6 5.3 15.7 7.5 M20.9 3.1 Q19 5.3 20.9 7.5" strokeWidth="0.6" />
+    </svg>
+  );
+}
+
+function PadelRacketIcon({ size = 16, className = "" }) {
+  const dots = [];
+  for (let row = 0; row < 5; row++) {
+    for (let col = 0; col < 4; col++) {
+      const x = 6.6 + col * 1.85 + (row % 2 === 1 ? 0.9 : 0);
+      const y = 3 + row * 1.85;
+      dots.push([x, y]);
+    }
+  }
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <defs>
+        <clipPath id="padelHead">
+          <ellipse cx="10" cy="7.2" rx="5.1" ry="6.2" />
+        </clipPath>
+      </defs>
+      <ellipse cx="10" cy="7.2" rx="5.1" ry="6.2" />
+      <g clipPath="url(#padelHead)">
+        {dots.map(([x, y], i) => (
+          <circle key={i} cx={x} cy={y} r="0.5" fill="currentColor" stroke="none" />
+        ))}
+      </g>
+      <path d="M8.7 13 L11.3 13 L10 15.5 Z" fill="currentColor" stroke="none" />
+      <path d="M8.3 13.2 L6 17.5" />
+      <path d="M11.7 13.2 L14 17.5" />
+      <rect x="4.6" y="17" width="3.6" height="5.6" rx="1.3" transform="rotate(-24 6.4 19.8)" />
+      <path d="M5.2 18.2 L7.6 17.3 M5.7 19.6 L8.1 18.7 M6.2 21 L8.6 20.1" strokeWidth="0.5" />
+      <circle cx="18.3" cy="5.3" r="3.6" />
+      <path d="M15.7 3.1 Q17.6 5.3 15.7 7.5 M20.9 3.1 Q19 5.3 20.9 7.5" strokeWidth="0.6" />
+    </svg>
   );
 }
 
