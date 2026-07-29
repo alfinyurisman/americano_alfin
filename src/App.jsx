@@ -6,6 +6,8 @@ import {
   LogOut, Lock, UserCircle2, Shield, Wallet, Handshake, TrendingUp, TrendingDown,
   Flame, Star, Zap, Target, Camera, MapPin, Swords, Award,
 } from "lucide-react";
+import tennisIconWhite from "./assets/tennis-icon-white.png";
+import padelIconWhite from "./assets/padel-icon-white.png";
 
 // ---------------------------------------------------------------------------
 // SCHEDULING ENGINE
@@ -5732,85 +5734,28 @@ function Section({ icon: Icon, title, subtitle, children }) {
   );
 }
 
-// Modeled on the reference racket+ball icons the user shared: a tilted
-// racket head (crosshatch strings for tennis, dot-holes for padel) with a
-// small triangular throat marker, textured grip, and a tennis ball
-// overlapping the upper-right corner. Uses currentColor (not the reference's
-// navy) so it adapts to this app's dark theme exactly like every Lucide icon.
+// The user's own reference icons (uploaded images), used exactly as
+// provided — white version so it stays visible against this app's dark
+// theme (the original navy line-art disappears on a dark background).
 function TennisRacketIcon({ size = 16, className = "" }) {
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.3"
-      strokeLinecap="round"
-      strokeLinejoin="round"
+    <img
+      src={tennisIconWhite}
+      alt="Tenis"
+      style={{ width: size, height: size, objectFit: "contain" }}
       className={className}
-    >
-      <defs>
-        <clipPath id="tennisHead">
-          <ellipse cx="10" cy="7.2" rx="5.1" ry="6.2" />
-        </clipPath>
-      </defs>
-      <ellipse cx="10" cy="7.2" rx="5.1" ry="6.2" />
-      <g clipPath="url(#tennisHead)" strokeWidth="0.55">
-        <path d="M5 2 L15 12.4 M6.3 1.2 L16.3 11.6 M7.6 0.6 L17.6 11 M3.8 3 L13.8 13.4 M2.8 4.4 L12.8 14.8" />
-        <path d="M15 2 L5 12.4 M13.7 1.2 L3.7 11.6 M12.4 0.6 L2.4 11 M16.2 3 L6.2 13.4 M17.2 4.4 L7.2 14.8" />
-      </g>
-      <path d="M8.7 13 L11.3 13 L10 15.5 Z" fill="currentColor" stroke="none" />
-      <path d="M8.3 13.2 L6 17.5" />
-      <path d="M11.7 13.2 L14 17.5" />
-      <rect x="4.6" y="17" width="3.6" height="5.6" rx="1.3" transform="rotate(-24 6.4 19.8)" />
-      <path d="M5.2 18.2 L7.6 17.3 M5.7 19.6 L8.1 18.7 M6.2 21 L8.6 20.1" strokeWidth="0.5" />
-      <circle cx="18.3" cy="5.3" r="3.6" />
-      <path d="M15.7 3.1 Q17.6 5.3 15.7 7.5 M20.9 3.1 Q19 5.3 20.9 7.5" strokeWidth="0.6" />
-    </svg>
+    />
   );
 }
 
 function PadelRacketIcon({ size = 16, className = "" }) {
-  const dots = [];
-  for (let row = 0; row < 5; row++) {
-    for (let col = 0; col < 4; col++) {
-      const x = 6.6 + col * 1.85 + (row % 2 === 1 ? 0.9 : 0);
-      const y = 3 + row * 1.85;
-      dots.push([x, y]);
-    }
-  }
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.3"
-      strokeLinecap="round"
-      strokeLinejoin="round"
+    <img
+      src={padelIconWhite}
+      alt="Padel"
+      style={{ width: size, height: size, objectFit: "contain" }}
       className={className}
-    >
-      <defs>
-        <clipPath id="padelHead">
-          <ellipse cx="10" cy="7.2" rx="5.1" ry="6.2" />
-        </clipPath>
-      </defs>
-      <ellipse cx="10" cy="7.2" rx="5.1" ry="6.2" />
-      <g clipPath="url(#padelHead)">
-        {dots.map(([x, y], i) => (
-          <circle key={i} cx={x} cy={y} r="0.5" fill="currentColor" stroke="none" />
-        ))}
-      </g>
-      <path d="M8.7 13 L11.3 13 L10 15.5 Z" fill="currentColor" stroke="none" />
-      <path d="M8.3 13.2 L6 17.5" />
-      <path d="M11.7 13.2 L14 17.5" />
-      <rect x="4.6" y="17" width="3.6" height="5.6" rx="1.3" transform="rotate(-24 6.4 19.8)" />
-      <path d="M5.2 18.2 L7.6 17.3 M5.7 19.6 L8.1 18.7 M6.2 21 L8.6 20.1" strokeWidth="0.5" />
-      <circle cx="18.3" cy="5.3" r="3.6" />
-      <path d="M15.7 3.1 Q17.6 5.3 15.7 7.5 M20.9 3.1 Q19 5.3 20.9 7.5" strokeWidth="0.6" />
-    </svg>
+    />
   );
 }
 
