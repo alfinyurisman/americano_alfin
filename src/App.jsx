@@ -2864,6 +2864,9 @@ function AmericanoPadel() {
     if (!target) return;
     const nowArrived = target.arrived === false; // toggling from not-arrived -> arrived
     const newPlayers = players.map((p) => (p.id === playerId ? { ...p, arrived: nowArrived } : p));
+    logActivity(
+      `Toggle kehadiran: ${target.name} jadi ${nowArrived ? "HADIR" : "TIDAK HADIR"} (dipakai buat re-shuffle jadwal ke depan)`
+    );
     handleAdjustSchedule(newPlayers);
   };
 
