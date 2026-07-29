@@ -4414,9 +4414,9 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
                     </div>
                     <div className="flex flex-col items-center gap-1.5 shrink-0 pt-0.5">
                       {ev.sportType === "tenis" ? (
-                        <TennisRacketIcon size={34} className="text-lime-300" />
+                        <TennisRacketIcon size={44} className="text-lime-300" />
                       ) : (
-                        <PadelRacketIcon size={34} className="text-lime-300" />
+                        <PadelRacketIcon size={44} className="text-lime-300" />
                       )}
                       <span className="text-[8.5px] text-white text-center leading-tight whitespace-nowrap">
                         {ev.scoreFormat === "tennis"
@@ -5420,7 +5420,7 @@ function SetupScreen(props) {
         <div className="flex gap-2">
           <ModeTab active={sportType === "padel"} onClick={() => setSportType("padel")}>
             <span className="inline-flex items-center gap-2">
-              <PadelRacketIcon size={26} dark={sportType === "padel"} /> Padel
+              <PadelRacketIcon size={34} dark={sportType === "padel"} /> Padel
             </span>
           </ModeTab>
           <ModeTab
@@ -5431,7 +5431,7 @@ function SetupScreen(props) {
             }}
           >
             <span className="inline-flex items-center gap-2">
-              <TennisRacketIcon size={26} dark={sportType === "tenis"} /> Tenis
+              <TennisRacketIcon size={34} dark={sportType === "tenis"} /> Tenis
             </span>
           </ModeTab>
         </div>
