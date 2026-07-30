@@ -1,6 +1,6 @@
 {
-  "name": "Americano Padel Scheduler",
-  "short_name": "Americano",
+  "name": "APlay",
+  "short_name": "APlay",
   "description": "Rotasi pasangan otomatis, jadwal & klasemen padel Americano.",
   "start_url": "/",
   "scope": "/",
