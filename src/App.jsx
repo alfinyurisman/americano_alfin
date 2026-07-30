@@ -8615,11 +8615,30 @@ function ViewOnlyApp({ sessionId }) {
     [data]
   );
 
+  const closeOrBack = () => {
+    // Opened as its own tab (from the admin "All Match" list, or a shared
+    // link) — there's no in-app "previous screen" to return to, so the
+    // sensible action is closing this tab. window.close() only works on
+    // tabs opened via script (which this one is, from window.open), but
+    // just in case a browser blocks it, history.back() is a reasonable
+    // fallback rather than leaving the user with no way out at all.
+    window.close();
+    setTimeout(() => {
+      if (!window.closed) window.history.back();
+    }, 100);
+  };
+
   if (!data && notFound) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center px-6 text-center">
         <style>{FONT_STYLE}</style>
         <div className="max-w-xs">
+          <button
+            onClick={closeOrBack}
+            className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform mb-6"
+          >
+            <ArrowLeft size={16} /> Tutup
+          </button>
           <p className="text-slate-200 text-sm font-semibold mb-2">Sesi tidak ditemukan</p>
           <p className="text-slate-500 text-xs leading-relaxed">
             Link ini kemungkinan dibuka di device/browser yang berbeda dari yang dipakai untuk
@@ -8642,10 +8661,76 @@ function ViewOnlyApp({ sessionId }) {
   }
 
   if (!data.engine) {
+    // Event hasn't generated a schedule yet — still in the waiting room.
+    // Show who's already joined (read-only) instead of a dead end.
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center px-6 text-center">
+      <div className="min-h-screen bg-slate-950">
         <style>{FONT_STYLE}</style>
-        <p className="text-slate-400 text-sm">Acara ini belum punya jadwal.</p>
+        <div className="px-6 pt-14 pb-8">
+          <button
+            onClick={closeOrBack}
+            className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform mb-6"
+          >
+            <ArrowLeft size={16} /> Tutup
+          </button>
+          {data.name && (
+            <div className="text-sm font-semibold text-slate-200 mb-1">{data.name}</div>
+          )}
+          <div className="flex items-center gap-2 mb-1">
+            <Clock size={16} className="text-lime-300" />
+            <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
+              Masih Menunggu
+            </span>
+          </div>
+          <h1 className="font-display text-4xl text-slate-50">RUANG TUNGGU</h1>
+          <p className="text-slate-500 text-sm mt-2">
+            Acara ini belum digenerate jadwalnya oleh host. Ini daftar peserta yang sudah
+            gabung sejauh ini (read-only).
+          </p>
+
+          <div className="mt-6">
+            <div className="text-[11px] text-slate-500 uppercase tracking-wide mb-2">
+              {(data.players || []).length} Peserta Sudah Gabung
+            </div>
+            {(data.players || []).length === 0 ? (
+              <p className="text-slate-600 text-sm">Belum ada yang gabung.</p>
+            ) : (
+              <div className="space-y-2">
+                {(data.players || []).map((p) => (
+                  <div
+                    key={p.id}
+                    className="flex items-center gap-2.5 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3"
+                  >
+                    <Avatar name={p.name} avatarUrl={null} size={28} />
+                    <span className="font-semibold text-slate-100 truncate">{p.name}</span>
+                    {p.arrived === false && (
+                      <Chip tone="slate">belum hadir</Chip>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {(data.pendingRequests || []).length > 0 && (
+            <div className="mt-6">
+              <div className="text-[11px] text-slate-500 uppercase tracking-wide mb-2">
+                {data.pendingRequests.length} Menunggu Persetujuan Host
+              </div>
+              <div className="space-y-2">
+                {data.pendingRequests.map((r) => (
+                  <div
+                    key={r.id}
+                    className="flex items-center gap-2.5 rounded-xl border border-dashed border-slate-700 px-4 py-3"
+                  >
+                    <Avatar name={r.name} avatarUrl={null} size={28} />
+                    <span className="text-slate-300 truncate">{r.name}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     );
   }
