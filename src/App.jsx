@@ -15,6 +15,21 @@ import padelIconBlack from "./assets/padel-icon-black.png";
 // SCHEDULING ENGINE
 // ---------------------------------------------------------------------------
 
+// A `.sort(() => Math.random() - 0.5)` comparator is a well-known JS
+// anti-pattern: sort algorithms can call the comparator on the same pair
+// more than once, and an inconsistent comparator (a fresh random value each
+// call) doesn't guarantee anything close to a uniform shuffle — it can
+// systematically favor certain pairings staying together or apart. This is
+// the correct way to randomize order.
+function shuffleArray(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
 function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset = 0) {
   const n = playerIds.length;
   const usableCourts = Math.max(0, Math.min(courtsInput, Math.floor(n / 4)));
@@ -57,11 +72,17 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
     let active = [...playerIds];
 
     if (numResting > 0) {
-      const sorted = [...playerIds].sort((a, b) => {
+      // Pre-shuffle once, then sort by wait using a STABLE sort (guaranteed
+      // by the JS spec since ES2019) — this preserves the shuffle's random
+      // order for anyone tied on wait, instead of re-randomizing on every
+      // comparison the way `sort(() => Math.random()-0.5)` would (which
+      // can't reliably split up two candidates who are tied with each other
+      // on every factor, like two players who joined at the same time).
+      const shuffledIds = shuffleArray(playerIds);
+      const sorted = [...shuffledIds].sort((a, b) => {
         const waitA = globalR - lastPlayed[a];
         const waitB = globalR - lastPlayed[b];
-        if (waitA !== waitB) return waitB - waitA; // longest wait plays next
-        return Math.random() - 0.5;
+        return waitB - waitA; // longest wait plays next
       });
 
       // Anyone waiting strictly LONGER than the cutoff is locked in — their
@@ -106,7 +127,7 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
         let bestActive = null;
         let bestActiveCost = Infinity;
         for (let st = 0; st < 60; st++) {
-          const shuffledFlex = [...flexCandidates].sort(() => Math.random() - 0.5);
+          const shuffledFlex = shuffleArray(flexCandidates);
           const candidateActive = [...guaranteed, ...shuffledFlex.slice(0, neededFromFlex)];
           let cost = 0;
           for (let i = 0; i < candidateActive.length; i++) {
@@ -155,7 +176,7 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
     const trials = active.length <= 8 ? 60 : active.length <= 16 ? 250 : 400;
 
     for (let t = 0; t < trials; t++) {
-      const shuffled = [...active].sort(() => Math.random() - 0.5);
+      const shuffled = shuffleArray(active);
       const groups = [];
       for (let g = 0; g < usableCourts; g++) {
         groups.push(shuffled.slice(g * 4, g * 4 + 4));
@@ -1086,11 +1107,9 @@ function AuthScreen({ onAuthenticated }) {
       <style>{FONT_STYLE}</style>
       <div className="max-w-md mx-auto flex flex-col justify-center min-h-screen px-6 py-10">
       <div className="mb-8">
-        <div className="flex items-center gap-2 mb-2">
-          <div className="w-2 h-2 rounded-full bg-lime-300" />
-          <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
-            Court Rotation Engine
-          </span>
+        <div className="flex items-center gap-2 mb-4">
+          <img src="/icon-192.png" alt="APlay" className="w-8 h-8 rounded-lg shrink-0" />
+          <span className="font-display text-2xl text-slate-50 tracking-wide">APlay</span>
         </div>
         <h1 className="font-display text-6xl leading-[0.85] text-slate-50 tracking-wide">
           AMERICANO
@@ -1702,6 +1721,14 @@ function AmericanoPadel() {
   const [friends, setFriends] = useState([]); // [{accountId, username, avatarUrl}]
   const [friendRequests, setFriendRequests] = useState([]); // [{accountId, username}] incoming
   const [screen, setScreen] = useState("lobby"); // lobby | setup | waiting | session | leaderboard | recap | stats
+
+  // Every screen switch should start scrolled to the top — otherwise, e.g.,
+  // tapping "Buat Acara Baru" while scrolled down in the Lobby would open
+  // Setup at that same leftover scroll position instead of from the top.
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [screen]);
+
   const [lobby, setLobby] = useState([]); // [{id, name, updatedAt, playerCount, courts, roundsTotal, currentRound, role, status}]
   const [activeId, setActiveId] = useState(null);
   const [eventName, setEventName] = useState("");
@@ -2356,11 +2383,25 @@ function AmericanoPadel() {
 
     const nextLoggedKeys = [...loggedMatchKeys, ...newlyLoggedKeys];
     setLoggedMatchKeys(nextLoggedKeys);
-    persist({ loggedMatchKeys: nextLoggedKeys });
+    // Re-check against the freshest copy in storage right before writing —
+    // this session may have been sitting open a while, or open in another
+    // tab/device too, so the locally-held loggedMatchKeys could already be
+    // stale. Merging here (rather than trusting the local snapshot alone)
+    // closes most of the window where a match could get logged twice.
+    (async () => {
+      const latest = await loadSessionData(activeId);
+      const mergedKeys = Array.from(
+        new Set([...(latest?.loggedMatchKeys || []), ...nextLoggedKeys])
+      );
+      setLoggedMatchKeys(mergedKeys);
+      persist({ loggedMatchKeys: mergedKeys });
+    })();
     Object.entries(byAccount).forEach(([accountId, records]) => {
       appendPlayerMatchRecords(accountId, records);
     });
-    matchDescriptions.forEach((desc) => logActivity(`Skor lengkap — ${desc}`));
+    matchDescriptions.forEach((desc) =>
+      logActivity(`Skor lengkap — ${desc}`, { dedupe: true })
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scores, engine, activeId]);
 
@@ -2757,8 +2798,11 @@ function AmericanoPadel() {
     if (!engine) return;
     try {
       handleAdjustScheduleInner(newPlayers, newCourts);
+      const activeCount = newPlayers.filter((p) => p.arrived !== false).length;
       logActivity(
-        `Sesuaikan jadwal: ${newPlayers.length} pemain aktif${newCourts ? `, ${newCourts} lapangan` : ""}`
+        `Sesuaikan jadwal: ${activeCount} pemain aktif dari ${newPlayers.length} total${
+          newCourts ? `, ${newCourts} lapangan` : ""
+        }`
       );
     } catch (e) {
       console.error("handleAdjustSchedule failed:", e);
@@ -2865,12 +2909,6 @@ function AmericanoPadel() {
     const newcomers = activePlayers.filter((p) => !seed.playCount[p.id]);
     if (newcomers.length > 0) {
       const veterans = activePlayers.filter((p) => seed.playCount[p.id] > 0);
-      const existingLastPlayed = veterans
-        .map((p) => seed.lastPlayed[p.id])
-        .filter((v) => v > -1);
-      const avgLastPlayed = existingLastPlayed.length
-        ? Math.round(existingLastPlayed.reduce((a, b) => a + b, 0) / existingLastPlayed.length)
-        : splitIdx - 1;
 
       // A brand-new/returning player has zero recorded matches with
       // literally everyone, which makes them look like a "free" variety
@@ -2895,7 +2933,17 @@ function AmericanoPadel() {
       avgOppCount = pairCount > 0 ? avgOppCount / pairCount : 0;
 
       newcomers.forEach((p) => {
-        seed.lastPlayed[p.id] = avgLastPlayed;
+        // DISCUSSED CHANGE: someone who has genuinely never played a single
+        // round yet (this is exactly what `newcomers` means here — anyone
+        // who already has real match history is a "veteran" and never
+        // reaches this branch) gets prioritized to play as soon as they're
+        // marked arrived, instead of being slotted into the middle of the
+        // rotation. Leaving lastPlayed at its sentinel (-1) does this: it
+        // reads as "waited longer than anyone" in the wait-time sort. This
+        // is scoped strictly to true first-timers — someone toggled off and
+        // back on after already having played keeps their real lastPlayed
+        // and joins the normal queue like everyone else, unaffected by this.
+        seed.lastPlayed[p.id] = -1;
         veterans.forEach((existing) => {
           if (seed.partner[p.id]) seed.partner[p.id][existing.id] = avgPartnerCount;
           if (seed.partner[existing.id]) seed.partner[existing.id][p.id] = avgPartnerCount;
@@ -2903,6 +2951,26 @@ function AmericanoPadel() {
           if (seed.opp[existing.id]) seed.opp[existing.id][p.id] = avgOppCount;
         });
       });
+
+      // Two+ newcomers joining together have never played each other, so
+      // their mutual partner/opponent count is genuinely 0 — but leaving it
+      // at 0 makes pairing THEM together look artificially cheaper than
+      // pairing either one with a veteran (who has some real, nonzero
+      // history to account for). That's exactly what was driving the
+      // lock-in: the variety-cost search kept finding "both newcomers
+      // together" as the cheapest combination and repeatedly choosing it,
+      // round after round. Seeding their mutual relationship at the same
+      // neutral average removes that false discount.
+      for (let i = 0; i < newcomers.length; i++) {
+        for (let j = i + 1; j < newcomers.length; j++) {
+          const idA = newcomers[i].id;
+          const idB = newcomers[j].id;
+          if (seed.partner[idA]) seed.partner[idA][idB] = avgPartnerCount;
+          if (seed.partner[idB]) seed.partner[idB][idA] = avgPartnerCount;
+          if (seed.opp[idA]) seed.opp[idA][idB] = avgOppCount;
+          if (seed.opp[idB]) seed.opp[idB][idA] = avgOppCount;
+        }
+      }
     }
 
     const ids = activePlayers.map((p) => p.id);
@@ -3040,11 +3108,21 @@ function AmericanoPadel() {
   // Records a key action into this session's activity log (capped, newest
   // last) — purely for exporting later so the host can share a full trace
   // of what happened (who clicked what, how many reshuffles, final scores)
-  // for debugging/analysis.
+  // for debugging/analysis. `dedupe: true` skips adding the entry if the
+  // exact same message is already in the log — used for match-completion
+  // entries specifically, since those are tied to one real match and should
+  // never legitimately appear twice, unlike e.g. "Reshuffle" which a host
+  // might trigger many times in a row on purpose with an identical message.
+  // This exists as a second line of defense: the primary guard
+  // (loggedMatchKeys) lives inside the full session snapshot, which can
+  // still end up reverted by a last-write-wins collision if the session is
+  // open in more than one tab/device around the same time — this check
+  // catches that case directly against the log's own content.
   const logActivity = useCallback(
-    (message) => {
+    (message, options) => {
       const who = currentUser?.displayName || currentUser?.username || "?";
       setActivityLog((prev) => {
+        if (options?.dedupe && prev.some((a) => a.message === message)) return prev;
         const next = [...prev, { ts: Date.now(), who, message }].slice(-300);
         persist({ activityLog: next });
         return next;
@@ -4232,15 +4310,11 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
     <div className="pb-10">
       <div className="px-6 pt-14 pb-8 border-b border-slate-800 relative overflow-hidden">
         <div className="absolute -right-10 -top-10 w-40 h-40 rounded-full bg-lime-400/10 blur-2xl pointer-events-none" />
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-lime-300" />
-            <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
-              Court Rotation Engine
-            </span>
-          </div>
+        <div className="flex items-center gap-2 mb-4">
+          <img src="/icon-192.png" alt="APlay" className="w-8 h-8 rounded-lg shrink-0" />
+          <span className="font-display text-2xl text-slate-50 tracking-wide">APlay</span>
         </div>
-        <div className="flex items-center gap-2 mb-2">
+        <div className="flex items-center gap-2 mb-4">
           <button
             onClick={handleRefreshClick}
             disabled={refreshing}
@@ -4256,10 +4330,13 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
             <LogOut size={15} /> keluar
           </button>
         </div>
-        <h1 className="font-display text-6xl leading-[0.85] text-slate-50 tracking-wide">
-          AMERICANO
-          <br />
-          <span className="text-lime-300">SCHEDULER</span>
+        <h1 className="font-display leading-[0.95] text-slate-50 tracking-wide">
+          <span style={{ fontSize: "48px" }} className="block">
+            COURT LOBBY
+          </span>
+          <span style={{ fontSize: "26px" }} className="block text-lime-300">
+            READY FOR THE MATCH
+          </span>
         </h1>
       </div>
 
@@ -5394,11 +5471,9 @@ function SetupScreen(props) {
         >
           <ArrowLeft size={16} /> Lobby
         </button>
-        <div className="flex items-center gap-2 mb-2">
-          <div className="w-2 h-2 rounded-full bg-lime-300" />
-          <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
-            Court Rotation Engine
-          </span>
+        <div className="flex items-center gap-2 mb-4">
+          <img src="/icon-192.png" alt="APlay" className="w-8 h-8 rounded-lg shrink-0" />
+          <span className="font-display text-2xl text-slate-50 tracking-wide">APlay</span>
         </div>
         <h1 className="font-display text-6xl leading-[0.85] text-slate-50 tracking-wide">
           AMERICANO
@@ -8417,6 +8492,10 @@ function ViewOnlyApp({ sessionId }) {
   const [recapFilter, setRecapFilter] = useState("all");
   const initializedRound = useRef(false);
   const lastAppliedRef = useRef(0);
+
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [tab]);
 
   useEffect(() => {
     let mounted = true;
