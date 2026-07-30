@@ -8758,6 +8758,12 @@ function ViewOnlyApp({ sessionId }) {
 
       <div className="max-w-md mx-auto relative">
       <div className="px-6 pt-12 pb-4 border-b border-slate-800">
+        <button
+          onClick={closeOrBack}
+          className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform mb-4"
+        >
+          <ArrowLeft size={16} /> Tutup
+        </button>
         <Chip tone="cyan">
           <Eye size={11} /> View only — pemantau
         </Chip>
