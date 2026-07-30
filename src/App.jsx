@@ -8490,12 +8490,36 @@ function ViewOnlyApp({ sessionId }) {
   const [tab, setTab] = useState("session");
   const [currentRound, setCurrentRound] = useState(0);
   const [recapFilter, setRecapFilter] = useState("all");
+  const [avatarCache, setAvatarCache] = useState({}); // accountId -> avatarUrl | null (for the waiting-room player list)
   const initializedRound = useRef(false);
   const lastAppliedRef = useRef(0);
 
   useEffect(() => {
     window.scrollTo(0, 0);
   }, [tab]);
+
+  // Only relevant while the event is still in its waiting room (no engine
+  // yet) — fetches profile photos for anyone in the roster who has an
+  // account, same as the host's own Waiting Room screen does.
+  useEffect(() => {
+    if (data?.engine) return;
+    const ids = new Set(
+      [...(data?.players || []), ...(data?.pendingRequests || [])]
+        .map((p) => p.accountId)
+        .filter((id) => id && !(id in avatarCache))
+    );
+    if (ids.size === 0) return;
+    (async () => {
+      const entries = await Promise.all(
+        [...ids].map(async (id) => {
+          const acc = await getUserAccount(id);
+          return [id, acc?.avatarUrl || null];
+        })
+      );
+      setAvatarCache((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.players, data?.pendingRequests, data?.engine]);
 
   useEffect(() => {
     let mounted = true;
@@ -8662,75 +8686,93 @@ function ViewOnlyApp({ sessionId }) {
 
   if (!data.engine) {
     // Event hasn't generated a schedule yet — still in the waiting room.
-    // Show who's already joined (read-only) instead of a dead end.
+    // Show who's already joined (read-only) instead of a dead end, laid
+    // out like the host's own Waiting Room screen.
+    const usableCourtsPreview = Math.min(data.courts || 1, Math.floor((data.players || []).length / 4));
+    const estRounds =
+      (data.players || []).length >= 4 && usableCourtsPreview >= 1
+        ? Math.max(1, Math.round(((Number(data.totalMinutes) || 90) / (Number(data.minutesPerRound) || 8))))
+        : 0;
     return (
-      <div className="min-h-screen bg-slate-950">
+      <div className="min-h-screen bg-slate-950 pb-10">
         <style>{FONT_STYLE}</style>
-        <div className="px-6 pt-14 pb-8">
-          <button
-            onClick={closeOrBack}
-            className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform mb-6"
-          >
-            <ArrowLeft size={16} /> Tutup
-          </button>
-          {data.name && (
-            <div className="text-sm font-semibold text-slate-200 mb-1">{data.name}</div>
-          )}
-          <div className="flex items-center gap-2 mb-1">
-            <Clock size={16} className="text-lime-300" />
-            <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
-              Masih Menunggu
-            </span>
+        <div className="px-6 pt-14 pb-6 border-b border-slate-800 relative overflow-hidden">
+          <div className="absolute -right-10 -top-10 w-40 h-40 rounded-full bg-lime-400/10 blur-2xl pointer-events-none" />
+          <div className="flex items-center justify-between mb-4">
+            <button
+              onClick={closeOrBack}
+              className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform"
+            >
+              <ArrowLeft size={16} /> Tutup
+            </button>
+            <Chip tone="cyan">
+              <Eye size={11} /> view only
+            </Chip>
           </div>
-          <h1 className="font-display text-4xl text-slate-50">RUANG TUNGGU</h1>
-          <p className="text-slate-500 text-sm mt-2">
-            Acara ini belum digenerate jadwalnya oleh host. Ini daftar peserta yang sudah
-            gabung sejauh ini (read-only).
+          {data.name && <h1 className="font-display text-4xl text-slate-50 mb-1">{data.name}</h1>}
+          <Chip tone="amber">
+            <Clock size={11} /> Menunggu peserta
+          </Chip>
+          <p className="text-slate-400 text-sm mt-3">
+            {(data.players || []).length}/{data.maxParticipants || "-"} peserta target ·{" "}
+            {data.courts || 1} lapangan
+            {estRounds > 0 && ` · estimasi ${estRounds} ronde`}
           </p>
+          {data.ownerUsername && (
+            <p className="text-slate-500 text-xs mt-1">host: {data.ownerUsername}</p>
+          )}
+        </div>
 
-          <div className="mt-6">
-            <div className="text-[11px] text-slate-500 uppercase tracking-wide mb-2">
-              {(data.players || []).length} Peserta Sudah Gabung
-            </div>
-            {(data.players || []).length === 0 ? (
-              <p className="text-slate-600 text-sm">Belum ada yang gabung.</p>
-            ) : (
-              <div className="space-y-2">
-                {(data.players || []).map((p) => (
-                  <div
-                    key={p.id}
-                    className="flex items-center gap-2.5 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3"
-                  >
-                    <Avatar name={p.name} avatarUrl={null} size={28} />
-                    <span className="font-semibold text-slate-100 truncate">{p.name}</span>
-                    {p.arrived === false && (
-                      <Chip tone="slate">belum hadir</Chip>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
+        <div className="px-6 pt-6">
+          <div className="text-[11px] text-slate-500 uppercase tracking-wide mb-2">
+            {(data.players || []).length} Peserta Sudah Gabung
           </div>
-
-          {(data.pendingRequests || []).length > 0 && (
-            <div className="mt-6">
-              <div className="text-[11px] text-slate-500 uppercase tracking-wide mb-2">
-                {data.pendingRequests.length} Menunggu Persetujuan Host
-              </div>
-              <div className="space-y-2">
-                {data.pendingRequests.map((r) => (
-                  <div
-                    key={r.id}
-                    className="flex items-center gap-2.5 rounded-xl border border-dashed border-slate-700 px-4 py-3"
-                  >
-                    <Avatar name={r.name} avatarUrl={null} size={28} />
-                    <span className="text-slate-300 truncate">{r.name}</span>
-                  </div>
-                ))}
-              </div>
+          {(data.players || []).length === 0 ? (
+            <p className="text-slate-600 text-sm">Belum ada yang gabung.</p>
+          ) : (
+            <div className="space-y-2">
+              {(data.players || []).map((p) => (
+                <div
+                  key={p.id}
+                  className="flex items-center gap-2.5 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3"
+                >
+                  <Avatar
+                    name={p.name}
+                    avatarUrl={p.accountId ? avatarCache[p.accountId] : null}
+                    size={36}
+                  />
+                  <span className="font-semibold text-slate-100 truncate flex-1">{p.name}</span>
+                  {p.accountId === data.ownerId && <Chip tone="cyan">host</Chip>}
+                  {data.coHostIds?.includes(p.accountId) && <Chip tone="cyan">co-host</Chip>}
+                  {p.arrived === false && <Chip tone="slate">belum hadir</Chip>}
+                </div>
+              ))}
             </div>
           )}
         </div>
+
+        {(data.pendingRequests || []).length > 0 && (
+          <div className="px-6 pt-6">
+            <div className="text-[11px] text-slate-500 uppercase tracking-wide mb-2">
+              {data.pendingRequests.length} Menunggu Persetujuan Host
+            </div>
+            <div className="space-y-2">
+              {data.pendingRequests.map((r) => (
+                <div
+                  key={r.id}
+                  className="flex items-center gap-2.5 rounded-xl border border-dashed border-slate-700 px-4 py-3"
+                >
+                  <Avatar
+                    name={r.name}
+                    avatarUrl={r.accountId ? avatarCache[r.accountId] : null}
+                    size={36}
+                  />
+                  <span className="text-slate-300 truncate">{r.name}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
