@@ -19,6 +19,16 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="APlay" />
+    <style>
+      /* Prevents a white flash before the JS bundle loads and applies the
+         app's real (Tailwind) dark theme — without this, the browser shows
+         its default white background for a moment on every fresh page load,
+         which is especially noticeable opening a match from "All Match" in
+         a new tab. */
+      html, body, #root {
+        background-color: #020617;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
