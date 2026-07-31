@@ -4728,6 +4728,7 @@ function SynergyStars({ stars }) {
 function AllMatchesScreen({ onBackToLobby }) {
   const [loading, setLoading] = useState(true);
   const [matches, setMatches] = useState([]);
+  const [downloadingId, setDownloadingId] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -4748,6 +4749,55 @@ function AllMatchesScreen({ onBackToLobby }) {
     window.open(url.toString(), "_blank");
   };
 
+  // Pulls the FULL session record (not just the summary fields kept in the
+  // registry) for a given match, then triggers the same complete JSON
+  // download (schedule, every score, activity log) that a host gets from
+  // their own Recap screen — except here it works for ANY match in the
+  // app, letting the admin evaluate matches they weren't even part of.
+  const handleDownload = async (m) => {
+    setDownloadingId(m.id);
+    try {
+      const full = await loadSessionData(m.id);
+      if (!full) {
+        alert("Gagal mengambil data acara ini — mungkin sudah dihapus.");
+        return;
+      }
+      const data = buildSessionExport({
+        eventName: full.name,
+        activeId: full.id,
+        createdAt: m.createdAt,
+        playDate: full.playDate,
+        courts: full.courts,
+        mode: full.mode,
+        scoreFormat: full.scoreFormat,
+        pointTarget: full.pointTarget,
+        tennisTarget: full.tennisTarget,
+        players: full.players,
+        playerMap: full.playerMap,
+        engine: full.engine,
+        scores: full.scores,
+        activityLog: full.activityLog,
+        ended: full.ended,
+        excludeFromStats: full.excludeFromStats,
+      });
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const safeName = (full.name || "acara").replace(/[^a-zA-Z0-9-_]/g, "_");
+      a.href = url;
+      a.download = `americano-log-${safeName}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("Gagal download log acara:", e);
+      alert("Gagal download log acara ini.");
+    } finally {
+      setDownloadingId(null);
+    }
+  };
+
   return (
     <div className="pb-10">
       <div className="px-6 pt-14 pb-6 border-b border-slate-800">
@@ -4766,7 +4816,8 @@ function AllMatchesScreen({ onBackToLobby }) {
         <h1 className="font-display text-5xl text-slate-50">ALL MATCH</h1>
         <p className="text-slate-500 text-sm mt-2">
           Seluruh acara yang pernah dibuat siapa saja di aplikasi ini (yang belum dihapus),
-          terlepas dari privasinya. Tap buat buka tampilan pemantau (read-only).
+          terlepas dari privasinya. Tap kartu buat buka tampilan pemantau (read-only), atau tap
+          ikon download buat ambil log & data lengkapnya buat evaluasi.
         </p>
       </div>
 
@@ -4780,24 +4831,46 @@ function AllMatchesScreen({ onBackToLobby }) {
             <p className="text-[11px] text-slate-600 mb-3">{matches.length} acara tercatat</p>
             <div className="space-y-2">
               {matches.map((m) => (
-                <button
+                <div
                   key={m.id}
-                  onClick={() => openMatch(m.id)}
-                  className="w-full text-left rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3"
+                  className="w-full rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3"
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-semibold text-slate-100 truncate">{m.name}</span>
-                    <Chip tone={m.ended ? "slate" : "lime"}>
-                      {m.ended ? "Selesai" : m.status === "waiting" ? "Menunggu" : "Berjalan"}
-                    </Chip>
+                  <div className="flex items-start gap-2">
+                    <button
+                      onClick={() => openMatch(m.id)}
+                      className="flex-1 min-w-0 text-left"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold text-slate-100 truncate">{m.name}</span>
+                        <Chip tone={m.ended ? "slate" : "lime"}>
+                          {m.ended ? "Selesai" : m.status === "waiting" ? "Menunggu" : "Berjalan"}
+                        </Chip>
+                      </div>
+                      <div className="text-[11px] text-slate-500 mt-1">
+                        host: {m.ownerUsername || "—"} · {m.playerCount} pemain · {m.courts}{" "}
+                        lapangan
+                      </div>
+                      <div className="text-[11px] text-slate-600 mt-0.5">
+                        {formatEventEntryDate(m)}
+                      </div>
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDownload(m);
+                      }}
+                      disabled={downloadingId === m.id}
+                      title="Download log & data lengkap"
+                      className="shrink-0 w-9 h-9 rounded-lg border border-slate-700 flex items-center justify-center text-slate-300 active:scale-95 transition-transform"
+                    >
+                      {downloadingId === m.id ? (
+                        <RotateCcw size={15} className="animate-spin" />
+                      ) : (
+                        <ClipboardList size={15} />
+                      )}
+                    </button>
                   </div>
-                  <div className="text-[11px] text-slate-500 mt-1">
-                    host: {m.ownerUsername || "—"} · {m.playerCount} pemain · {m.courts} lapangan
-                  </div>
-                  <div className="text-[11px] text-slate-600 mt-0.5">
-                    {formatEventEntryDate(m)}
-                  </div>
-                </button>
+                </div>
               ))}
             </div>
           </>
@@ -6720,7 +6793,7 @@ function SessionScreen(props) {
           <div className="text-sm font-semibold text-slate-200 mb-1 truncate">{eventName}</div>
         )}
         <div className="flex items-center justify-between mb-1">
-          <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
+          <span className="text-lg font-bold tracking-[0.1em] text-lime-300 uppercase">
             Ronde {currentRound + 1} / {totalRounds}
           </span>
         </div>
@@ -8820,7 +8893,7 @@ function ViewOnlyApp({ sessionId }) {
       <div className="pb-24">
         {tab === "session" && (
           <div className="px-6 pt-6">
-            <div className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase mb-4">
+            <div className="text-lg font-bold tracking-[0.1em] text-lime-300 uppercase mb-4">
               Ronde {safeRound + 1} / {totalRounds}
             </div>
             <div className="space-y-5">
