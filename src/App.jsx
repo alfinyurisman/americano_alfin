@@ -299,6 +299,15 @@ async function deleteSessionData(id) {
   }
 }
 
+// "Soft delete" — the session data itself is tagged deleted (rather than
+// erased) so a share link can be checked against this flag directly. The
+// real data stays in place until the 7-day auto-purge sweep removes it.
+async function markSessionDataDeleted(id) {
+  const data = await loadSessionData(id);
+  if (!data) return;
+  await saveSessionData(id, { ...data, deleted: true, deletedAt: Date.now() });
+}
+
 // ---------------------------------------------------------------------------
 // PARTNER SYNERGY — per-player match log
 // ---------------------------------------------------------------------------
@@ -818,6 +827,38 @@ async function removeFromAllMatchesRegistry(id) {
   if (next.length !== list.length) await saveAllMatchesRegistry(next);
 }
 
+// Deleting an event normally removes it everywhere. For the admin registry
+// specifically, mark it "deleted" instead of purging the entry — the
+// underlying session data (schedule, scores, activity log) is deliberately
+// left in storage untouched too, so the owner can still open/download it
+// for auditing even after a host deletes their event.
+async function markDeletedInAllMatchesRegistry(id) {
+  const list = await loadAllMatchesRegistry();
+  const idx = list.findIndex((e) => e.id === id);
+  if (idx === -1) return;
+  list[idx] = { ...list[idx], deleted: true, deletedAt: Date.now() };
+  await saveAllMatchesRegistry(list);
+}
+
+const DELETED_MATCH_RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // 7 hari
+
+// Runs whenever alfinyr opens "All Match" — anything soft-deleted more
+// than 7 days ago gets permanently erased (both the real session data and
+// its registry entry), so storage doesn't grow forever just from routine
+// deletions. Non-deleted entries are untouched regardless of age.
+async function purgeOldDeletedMatches() {
+  const list = await loadAllMatchesRegistry();
+  const now = Date.now();
+  const toPurge = list.filter(
+    (e) => e.deleted && e.deletedAt && now - e.deletedAt > DELETED_MATCH_RETENTION_MS
+  );
+  if (toPurge.length === 0) return list;
+  await Promise.all(toPurge.map((e) => deleteSessionData(e.id)));
+  const remaining = list.filter((e) => !toPurge.some((p) => p.id === e.id));
+  await saveAllMatchesRegistry(remaining);
+  return remaining;
+}
+
 function rememberLogin(account) {
   try {
     localStorage.setItem(
@@ -867,6 +908,7 @@ function Chip({ children, tone = "slate" }) {
     lime: "bg-lime-400/10 text-lime-300 border-lime-400/40",
     cyan: "bg-cyan-400/10 text-cyan-300 border-cyan-400/40",
     amber: "bg-amber-400/10 text-amber-300 border-amber-400/40",
+    red: "bg-red-400/10 text-red-300 border-red-400/40",
   };
   return (
     <span
@@ -3320,10 +3362,14 @@ function AmericanoPadel() {
   };
 
   const handleDeleteSession = async (id) => {
-    if (!window.confirm("Hapus acara ini beserta seluruh jadwal & skornya?")) return;
-    await deleteSessionData(id);
+    if (!window.confirm("Hapus acara ini dari daftar kamu? (Log & data tetap tersimpan untuk keperluan audit admin)")) return;
+    // Session data (schedule/scores/activity log) is intentionally NOT
+    // erased here — only removed from the deleter's own lobby and from
+    // public discovery, so alfinyr can still open/download it via "All
+    // Match" for evaluation even after a host deletes their event.
     await removePublicEventEntry(id);
-    await removeFromAllMatchesRegistry(id);
+    await markSessionDataDeleted(id);
+    await markDeletedInAllMatchesRegistry(id);
     setLobby((prev) => {
       const next = prev.filter((e) => e.id !== id);
       if (currentUser) saveLobbyIndex(currentUser.accountId, next);
@@ -4733,7 +4779,7 @@ function AllMatchesScreen({ onBackToLobby }) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const list = await loadAllMatchesRegistry();
+      const list = await purgeOldDeletedMatches();
       if (cancelled) return;
       setMatches(list.sort((a, b) => sortDateValue(b) - sortDateValue(a)));
       setLoading(false);
@@ -4842,9 +4888,12 @@ function AllMatchesScreen({ onBackToLobby }) {
                     >
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-semibold text-slate-100 truncate">{m.name}</span>
-                        <Chip tone={m.ended ? "slate" : "lime"}>
-                          {m.ended ? "Selesai" : m.status === "waiting" ? "Menunggu" : "Berjalan"}
-                        </Chip>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {m.deleted && <Chip tone="red">Dihapus</Chip>}
+                          <Chip tone={m.ended ? "slate" : "lime"}>
+                            {m.ended ? "Selesai" : m.status === "waiting" ? "Menunggu" : "Berjalan"}
+                          </Chip>
+                        </div>
                       </div>
                       <div className="text-[11px] text-slate-500 mt-1">
                         host: {m.ownerUsername || "—"} · {m.playerCount} pemain · {m.courts}{" "}
@@ -4853,6 +4902,18 @@ function AllMatchesScreen({ onBackToLobby }) {
                       <div className="text-[11px] text-slate-600 mt-0.5">
                         {formatEventEntryDate(m)}
                       </div>
+                      {m.deleted && m.deletedAt && (
+                        <div className="text-[11px] text-red-400/80 mt-0.5">
+                          {Math.max(
+                            0,
+                            Math.ceil(
+                              (m.deletedAt + DELETED_MATCH_RETENTION_MS - Date.now()) /
+                                (24 * 60 * 60 * 1000)
+                            )
+                          )}{" "}
+                          hari lagi sebelum dihapus permanen
+                        </div>
+                      )}
                     </button>
                     <button
                       onClick={(e) => {
@@ -8603,6 +8664,15 @@ function ViewOnlyApp({ sessionId }) {
       const d = await loadSessionData(sessionId);
       if (!mounted) return;
       if (d) {
+        // A deleted event's data is deliberately kept around for admin
+        // audit (see markSessionDataDeleted), but a share link to it
+        // should stop working for everyone except alfinyr — otherwise
+        // "deleted" wouldn't actually mean anything to a normal user who
+        // still has the link.
+        if (d.deleted && loadRememberedLogin()?.accountId !== "alfinyr") {
+          setNotFound(true);
+          return;
+        }
         setData(d);
         setNotFound(false);
         lastAppliedRef.current = d.updatedAt || Date.now();
@@ -8623,6 +8693,11 @@ function ViewOnlyApp({ sessionId }) {
 
     const interval = setInterval(async () => {
       const d = await loadSessionData(sessionId);
+      if (d?.deleted && loadRememberedLogin()?.accountId !== "alfinyr") {
+        setNotFound(true);
+        setData(null);
+        return;
+      }
       if (d && (d.updatedAt || 0) > lastAppliedRef.current) {
         lastAppliedRef.current = d.updatedAt || Date.now();
         setData(d);
