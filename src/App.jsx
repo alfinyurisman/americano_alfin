@@ -3727,6 +3727,14 @@ function AmericanoPadel() {
           currentUser={currentUser}
           onSendRequest={handleSendFriendRequest}
           onBack={() => setScreen("friends")}
+          onOpenProfile={
+            currentUser?.accountId === "alfinyr"
+              ? (acc) => {
+                  setSelectedFriend(acc);
+                  setScreen("friend-profile");
+                }
+              : undefined
+          }
         />
       )}
 
@@ -5521,7 +5529,7 @@ function FriendProfileScreen({ friend, currentUser, onBack }) {
 // BROWSE FRIENDS SCREEN — search all registered accounts, send requests
 // ---------------------------------------------------------------------------
 
-function BrowseFriendsScreen({ currentUser, onSendRequest, onBack }) {
+function BrowseFriendsScreen({ currentUser, onSendRequest, onBack, onOpenProfile }) {
   const [accounts, setAccounts] = useState(null); // null = loading
   const [query, setQuery] = useState("");
   const [sentTo, setSentTo] = useState({}); // accountId -> true (local optimistic state)
@@ -5567,15 +5575,29 @@ function BrowseFriendsScreen({ currentUser, onSendRequest, onBack }) {
         )}
         {filtered.map((acc) => {
           const requested = sentTo[acc.accountId] || acc.requestSentByMe;
+          const rowContent = (
+            <>
+              <Avatar name={acc.username} avatarUrl={acc.avatarUrl} size={40} />
+              <span className="font-semibold text-slate-100 flex-1 min-w-0 truncate text-left">
+                {acc.username}
+              </span>
+            </>
+          );
           return (
             <div
               key={acc.accountId}
               className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3"
             >
-              <Avatar name={acc.username} avatarUrl={acc.avatarUrl} size={40} />
-              <span className="font-semibold text-slate-100 flex-1 min-w-0 truncate">
-                {acc.username}
-              </span>
+              {onOpenProfile ? (
+                <button
+                  onClick={() => onOpenProfile(acc)}
+                  className="flex items-center gap-3 flex-1 min-w-0"
+                >
+                  {rowContent}
+                </button>
+              ) : (
+                <div className="flex items-center gap-3 flex-1 min-w-0">{rowContent}</div>
+              )}
               {acc.isFriend ? (
                 <Chip tone="lime">
                   <Check size={11} /> teman
