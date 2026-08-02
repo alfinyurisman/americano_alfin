@@ -4,6 +4,7 @@ import {
   RotateCcw, Share2, BarChart3, Settings2, Check, Coffee,
   ArrowLeft, Trash2, CalendarDays, ChevronRightCircle, ClipboardList, Link2, Eye, ListOrdered,
   LogOut, Lock, UserCircle2, Shield, Wallet, Handshake, TrendingUp, TrendingDown,
+  Pencil,
   Flame, Star, Zap, Target, Camera, MapPin, Swords, Award,
 } from "lucide-react";
 import tennisIconWhite from "./assets/tennis-icon-white.png";
@@ -4019,6 +4020,7 @@ function LobbyScoreCard({ currentUser, onChangeAvatar, onChangeDisplayName, onSa
   const [editingCaption, setEditingCaption] = useState(false);
   const [captionDraft, setCaptionDraft] = useState("");
   const [stats, setStats] = useState(null);
+  const [showZoomedPhoto, setShowZoomedPhoto] = useState(false);
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -4090,7 +4092,8 @@ function LobbyScoreCard({ currentUser, onChangeAvatar, onChangeDisplayName, onSa
             <img
               src={currentUser.avatarUrl}
               alt={name}
-              className="absolute inset-0 w-full h-full object-cover"
+              onClick={() => setShowZoomedPhoto(true)}
+              className="absolute inset-0 w-full h-full object-cover cursor-zoom-in"
             />
           ) : (
             <div
@@ -4152,7 +4155,8 @@ function LobbyScoreCard({ currentUser, onChangeAvatar, onChangeDisplayName, onSa
               <span className="font-sans font-bold text-[13px] md:text-[36px] leading-[1.15] text-white truncate">
                 {name}
               </span>
-              {!readOnly && <Settings2 size={10} className="text-slate-500 shrink-0 hidden md:block" />}
+              {!readOnly && <Pencil size={8} className="text-slate-500 shrink-0 md:hidden" />}
+              {!readOnly && <Pencil size={13} className="text-slate-500 shrink-0 hidden md:block" />}
             </button>
           )}
 
@@ -4195,6 +4199,8 @@ function LobbyScoreCard({ currentUser, onChangeAvatar, onChangeDisplayName, onSa
               <MapPin size={9} className="shrink-0 md:hidden" style={{ color: ACCENT }} />
               <MapPin size={13} className="shrink-0 hidden md:block" style={{ color: ACCENT }} />
               <span className="truncate">{currentUser.location || "+ lokasi"}</span>
+              {!readOnly && <Pencil size={8} className="text-slate-500 shrink-0 md:hidden" />}
+              {!readOnly && <Pencil size={12} className="text-slate-500 shrink-0 hidden md:block" />}
             </button>
           )}
         </div>
@@ -4326,11 +4332,31 @@ function LobbyScoreCard({ currentUser, onChangeAvatar, onChangeDisplayName, onSa
               <span className="text-xs italic text-slate-400 truncate flex-1 text-left">
                 "{currentUser.caption || "Terus bermain, terus berkembang."}"
               </span>
-              {!readOnly && <Settings2 size={11} className="text-slate-600 shrink-0" />}
+              {!readOnly && <Pencil size={10} className="text-slate-500 shrink-0" />}
             </button>
           )}
         </div>
       </div>
+
+      {showZoomedPhoto && currentUser.avatarUrl && (
+        <div
+          onClick={() => setShowZoomedPhoto(false)}
+          className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-6"
+        >
+          <button
+            onClick={() => setShowZoomedPhoto(false)}
+            className="absolute top-6 right-6 w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-white"
+          >
+            <X size={18} />
+          </button>
+          <img
+            src={currentUser.avatarUrl}
+            alt={name}
+            className="max-w-full max-h-full rounded-2xl object-contain"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
     </div>
   );
 }
