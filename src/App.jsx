@@ -5785,15 +5785,6 @@ function SetupScreen(props) {
         )}
       </Section>
 
-      {/* PLAY DATE (optional) */}
-      <Section icon={CalendarDays} title="Tanggal Bermain" subtitle="opsional">
-        <DateInputField value={playDate} onChange={(e) => setPlayDate(e.target.value)} />
-        <p className="text-[11px] text-slate-500 mt-2">
-          Kalau dikosongkan, tanggal yang muncul di Lobby otomatis pakai tanggal acara ini dibuat.
-        </p>
-      </Section>
-
-
       {/* MAX PARTICIPANTS */}
       <Section icon={Users} title="Maks Peserta" subtitle="bisa disesuaikan nanti">
         <div className="flex items-center gap-4">
@@ -5813,60 +5804,6 @@ function SetupScreen(props) {
           <div className="text-xs text-slate-400 ml-2 leading-tight">
             Cuma target — di halaman berikutnya jumlah peserta tetap bisa kurang/lebih dari ini.
           </div>
-        </div>
-      </Section>
-
-      {/* VISIBILITY */}
-      <Section icon={Eye} title="Privasi Acara">
-        <div className="flex gap-2 mb-2">
-          <ModeTab active={visibility === "private"} onClick={() => setVisibility("private")}>
-            Private
-          </ModeTab>
-          <ModeTab active={visibility === "public"} onClick={() => setVisibility("public")}>
-            Public
-          </ModeTab>
-        </div>
-        <p className="text-xs text-slate-500">
-          {visibility === "private"
-            ? "Cuma orang yang kamu kirimi link undangan yang bisa lihat & minta gabung acara ini."
-            : "Muncul di halaman \"Jelajahi Acara Publik\" — siapa saja bisa lihat & minta gabung, tetap butuh persetujuanmu."}
-        </p>
-      </Section>
-
-      {/* SPLIT BILL COSTS (optional) */}
-      <Section icon={Wallet} title="Biaya" subtitle="opsional, buat split bill">
-        <p className="text-xs text-slate-500 mb-3">
-          Kalau diisi, begitu acara di-"selesaikan" nanti otomatis muncul rincian split bill per
-          pemain. Boleh dikosongkan.
-        </p>
-        <div className="space-y-3">
-          <FieldRow label="Harga lapangan (Rp)">
-            <input
-              type="number"
-              value={courtCost}
-              onChange={(e) => setCourtCost(e.target.value)}
-              placeholder="0"
-              className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
-            />
-          </FieldRow>
-          <FieldRow label="Biaya admin (Rp)">
-            <input
-              type="number"
-              value={adminFee}
-              onChange={(e) => setAdminFee(e.target.value)}
-              placeholder="0"
-              className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
-            />
-          </FieldRow>
-          <FieldRow label="Biaya bola (Rp)">
-            <input
-              type="number"
-              value={ballCost}
-              onChange={(e) => setBallCost(e.target.value)}
-              placeholder="0"
-              className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
-            />
-          </FieldRow>
         </div>
       </Section>
 
@@ -5948,6 +5885,68 @@ function SetupScreen(props) {
               type="time"
               value={startTime}
               onChange={(e) => setStartTime(e.target.value)}
+              className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
+            />
+          </FieldRow>
+        </div>
+      </Section>
+
+      {/* PLAY DATE (optional) */}
+      <Section icon={CalendarDays} title="Tanggal Bermain" subtitle="opsional">
+        <DateInputField value={playDate} onChange={(e) => setPlayDate(e.target.value)} />
+        <p className="text-[11px] text-slate-500 mt-2">
+          Kalau dikosongkan, tanggal yang muncul di Lobby otomatis pakai tanggal acara ini dibuat.
+        </p>
+      </Section>
+
+      {/* VISIBILITY */}
+      <Section icon={Eye} title="Privasi Acara">
+        <div className="flex gap-2 mb-2">
+          <ModeTab active={visibility === "private"} onClick={() => setVisibility("private")}>
+            Private
+          </ModeTab>
+          <ModeTab active={visibility === "public"} onClick={() => setVisibility("public")}>
+            Public
+          </ModeTab>
+        </div>
+        <p className="text-xs text-slate-500">
+          {visibility === "private"
+            ? "Cuma orang yang kamu kirimi link undangan yang bisa lihat & minta gabung acara ini."
+            : "Muncul di halaman \"Jelajahi Acara Publik\" — siapa saja bisa lihat & minta gabung, tetap butuh persetujuanmu."}
+        </p>
+      </Section>
+
+      {/* SPLIT BILL COSTS (optional) */}
+      <Section icon={Wallet} title="Biaya" subtitle="opsional, buat split bill">
+        <p className="text-xs text-slate-500 mb-3">
+          Kalau diisi, begitu acara di-"selesaikan" nanti otomatis muncul rincian split bill per
+          pemain. Boleh dikosongkan.
+        </p>
+        <div className="space-y-3">
+          <FieldRow label="Harga lapangan (Rp)">
+            <input
+              type="number"
+              value={courtCost}
+              onChange={(e) => setCourtCost(e.target.value)}
+              placeholder="0"
+              className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
+            />
+          </FieldRow>
+          <FieldRow label="Biaya admin (Rp)">
+            <input
+              type="number"
+              value={adminFee}
+              onChange={(e) => setAdminFee(e.target.value)}
+              placeholder="0"
+              className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
+            />
+          </FieldRow>
+          <FieldRow label="Biaya bola (Rp)">
+            <input
+              type="number"
+              value={ballCost}
+              onChange={(e) => setBallCost(e.target.value)}
+              placeholder="0"
               className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
             />
           </FieldRow>
