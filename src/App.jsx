@@ -5672,7 +5672,17 @@ function SetupScreen(props) {
         </p>
       </div>
 
-      {/* SPORT TYPE — di paling atas, sebelum nama acara */}
+      {/* EVENT NAME */}
+      <Section icon={CalendarDays} title="Nama Acara">
+        <input
+          value={eventName}
+          onChange={(e) => setEventName(e.target.value)}
+          placeholder="mis. Padel Malam Jumat"
+          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+        />
+      </Section>
+
+      {/* SPORT TYPE */}
       <Section icon={Trophy} title="Jenis Olahraga">
         <div className="flex gap-2">
           <ModeTab active={sportType === "padel"} onClick={() => setSportType("padel")}>
@@ -5694,14 +5704,85 @@ function SetupScreen(props) {
         </div>
       </Section>
 
-      {/* EVENT NAME */}
-      <Section icon={CalendarDays} title="Nama Acara">
-        <input
-          value={eventName}
-          onChange={(e) => setEventName(e.target.value)}
-          placeholder="mis. Padel Malam Jumat"
-          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
-        />
+      {/* SCORE FORMAT */}
+      <Section icon={Trophy} title="Format Skor" subtitle="opsional">
+        {sportType === "tenis" ? (
+          <div className="mb-4">
+            <div className="w-full py-2.5 rounded-xl text-sm font-semibold text-center bg-lime-300 text-slate-950">
+              Race to {tennisTarget} Game
+            </div>
+            <p className="text-[11px] text-slate-500 mt-2">
+              Karena jenis olahraganya Tenis, format skor otomatis pakai Race to X Game.
+            </p>
+          </div>
+        ) : (
+          <div className="flex gap-2 mb-4">
+            <ModeTab active={scoreFormat === "points"} onClick={() => setScoreFormat("points")}>
+              Total Poin
+            </ModeTab>
+            <ModeTab active={scoreFormat === "tennis"} onClick={() => setScoreFormat("tennis")}>
+              Race to {tennisTarget} Game
+            </ModeTab>
+          </div>
+        )}
+
+        {scoreFormat === "points" ? (
+          <div className="space-y-3">
+            <p className="text-xs text-slate-500">
+              Tiap match dimainkan sampai salah satu tim mencapai target poin ini. Kamu tetap input
+              skor akhir secara manual di layar sesi.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {[16, 21, 24, 32].map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setPointTarget(v)}
+                  className={`px-4 py-2 rounded-xl text-sm font-semibold border ${
+                    pointTarget === v
+                      ? "bg-lime-300 text-slate-950 border-lime-300"
+                      : "bg-slate-900 text-slate-300 border-slate-700"
+                  }`}
+                >
+                  {v} poin
+                </button>
+              ))}
+              <input
+                type="number"
+                value={pointTarget}
+                onChange={(e) => setPointTarget(Number(e.target.value))}
+                className="w-20 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-center font-mono2"
+              />
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-xs text-slate-500">
+              Skor dicatat seperti tenis (0 – 15 – 30 – 40 – Deuce) lalu terakumulasi jadi game.
+              Match selesai setelah salah satu tim mencapai jumlah game ini.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {[4, 6].map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setTennisTarget(v)}
+                  className={`px-4 py-2 rounded-xl text-sm font-semibold border ${
+                    tennisTarget === v
+                      ? "bg-lime-300 text-slate-950 border-lime-300"
+                      : "bg-slate-900 text-slate-300 border-slate-700"
+                  }`}
+                >
+                  Race to {v} game
+                </button>
+              ))}
+              <input
+                type="number"
+                value={tennisTarget}
+                onChange={(e) => setTennisTarget(Number(e.target.value))}
+                className="w-20 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-center font-mono2"
+              />
+            </div>
+          </div>
+        )}
       </Section>
 
       {/* PLAY DATE (optional) */}
