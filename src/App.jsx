@@ -3111,6 +3111,126 @@ function AmericanoPadel() {
     });
   };
 
+  // Rebuilds the fairness-tracking seed (partner/opp/playCount/restCount/
+  // lastPlayed) purely by replaying a given list of rounds — shared by the
+  // manual-edit paths below so "what the numbers should be" always comes
+  // from the actual round data, never from incrementally patching state.
+  const replayRoundsIntoSeed = (roundsToReplay, activeIds) => {
+    const seed = { partner: {}, opp: {}, playCount: {}, restCount: {}, lastPlayed: {} };
+    activeIds.forEach((id) => {
+      seed.playCount[id] = 0;
+      seed.restCount[id] = 0;
+      seed.lastPlayed[id] = -1;
+      seed.partner[id] = {};
+      seed.opp[id] = {};
+    });
+    roundsToReplay.forEach((rd, rIdx) => {
+      rd.resting.forEach((id) => {
+        if (seed.restCount[id] !== undefined) seed.restCount[id]++;
+      });
+      rd.courts.forEach(({ team1, team2 }) => {
+        const [a, b] = team1;
+        const [c, d] = team2;
+        [a, b, c, d].forEach((id) => {
+          if (seed.playCount[id] !== undefined) seed.playCount[id]++;
+          if (seed.lastPlayed[id] !== undefined) seed.lastPlayed[id] = rIdx;
+        });
+        if (seed.partner[a] && seed.partner[a][b] !== undefined) {
+          seed.partner[a][b]++;
+          seed.partner[b][a]++;
+        }
+        if (seed.partner[c] && seed.partner[c][d] !== undefined) {
+          seed.partner[c][d]++;
+          seed.partner[d][c]++;
+        }
+        [a, b].forEach((x) =>
+          [c, d].forEach((y) => {
+            if (seed.opp[x] && seed.opp[x][y] !== undefined) {
+              seed.opp[x][y]++;
+              seed.opp[y][x]++;
+            }
+          })
+        );
+      });
+    });
+    return seed;
+  };
+
+  // HOST/CO-HOST: manually swap who's playing a specific not-yet-scored
+  // match — e.g. "put X in instead of Y this round". `swaps` is a list of
+  // {outId, inId} pairs, where inId must currently be resting in that same
+  // round. After applying the swap, `regenerateRest` decides what happens
+  // to every round AFTER this one:
+  //   - true:  re-generate them fresh, using fairness history that now
+  //            correctly includes this edit (keeps future rounds fair/
+  //            varied relative to the new reality)
+  //   - false: leave every other round exactly as it already was — only
+  //            this one match changes
+  const handleEditMatchPlayers = (roundIdx, courtIdx, swaps, regenerateRest) => {
+    if (!engine || !swaps.length) return;
+    const rd = engine.roundsData[roundIdx];
+    const court = rd.courts[courtIdx];
+    const newTeam1 = [...court.team1];
+    const newTeam2 = [...court.team2];
+    let newResting = [...rd.resting];
+    swaps.forEach(({ outId, inId }) => {
+      const i1 = newTeam1.indexOf(outId);
+      if (i1 !== -1) newTeam1[i1] = inId;
+      const i2 = newTeam2.indexOf(outId);
+      if (i2 !== -1) newTeam2[i2] = inId;
+      newResting = newResting.filter((id) => id !== inId);
+      newResting.push(outId);
+    });
+    const editedRound = {
+      ...rd,
+      resting: newResting,
+      courts: rd.courts.map((c, i) => (i === courtIdx ? { team1: newTeam1, team2: newTeam2 } : c)),
+    };
+    const swapDesc = swaps
+      .map(({ outId, inId }) => `${playerMap[inId]} gantiin ${playerMap[outId]}`)
+      .join(", ");
+
+    if (!regenerateRest) {
+      const newRoundsData = engine.roundsData.map((r, i) => (i === roundIdx ? editedRound : r));
+      const activeIds = players.filter((p) => p.arrived !== false).map((p) => p.id);
+      const rebuilt = replayRoundsIntoSeed(newRoundsData, activeIds);
+      const newEngine = { ...engine, roundsData: newRoundsData, ...rebuilt };
+      setEngine(newEngine);
+      persist({ engine: newEngine });
+      logActivity(
+        `Edit pemain Ronde ${roundIdx + 1} Lap.${courtIdx + 1}: ${swapDesc} (ronde lain tidak diubah)`
+      );
+    } else {
+      const lockedRounds = [...engine.roundsData.slice(0, roundIdx), editedRound];
+      const activePlayers = players.filter((p) => p.arrived !== false);
+      const activeIds = activePlayers.map((p) => p.id);
+      const seed = replayRoundsIntoSeed(lockedRounds, activeIds);
+      const remainingCount = engine.roundsData.length - (roundIdx + 1);
+      const freshPart = generateSchedule(activeIds, courts, remainingCount, seed, roundIdx + 1);
+      const newRoundsData = [...lockedRounds, ...freshPart.roundsData];
+      const newEngine = {
+        roundsData: newRoundsData,
+        playCount: freshPart.playCount,
+        restCount: freshPart.restCount,
+        partner: freshPart.partner,
+        opp: freshPart.opp,
+        usableCourts: freshPart.usableCourts,
+        lastPlayed: freshPart.lastPlayed,
+      };
+      const newScores = {};
+      Object.keys(scores).forEach((key) => {
+        const rIdx = parseInt(key.split("-")[0], 10);
+        if (rIdx <= roundIdx) newScores[key] = scores[key];
+      });
+      setEngine(newEngine);
+      setScores(newScores);
+      persist({ engine: newEngine, scores: newScores });
+      logActivity(
+        `Edit pemain Ronde ${roundIdx + 1} Lap.${courtIdx + 1}: ${swapDesc} + sesuaikan ronde sisanya`
+      );
+    }
+  };
+
   // Marks a player as arrived / not-yet-arrived. This does NOT remove them
   // from the roster — they stay listed and can be toggled back — it just
   // reuses the same "adjust schedule" mechanism to keep them out of (or put
@@ -3538,7 +3658,7 @@ function AmericanoPadel() {
         engine,
         playerMap,
         scores,
-        players.filter((p) => p.arrived !== false).map((p) => p.id)
+        players.map((p) => p.id) // genuinely-removed only, NOT filtered by arrived — an attendance toggle shouldn't relabel someone as "Pemain Dihapus"
       ),
     [engine, playerMap, scores, players]
   );
@@ -3557,7 +3677,7 @@ function AmericanoPadel() {
         if (playingIds.has(id)) playedSoFar[id] = (playedSoFar[id] || 0) + 1;
       });
     });
-    const ids = players.filter((p) => p.arrived !== false).map((p) => p.id);
+    const ids = players.map((p) => p.id); // same fix as leaderboard — attendance toggle shouldn't hide someone from stats
     return ids
       .map((id) => {
         const partners = Object.values(engine.partner[id] || {}).filter((v) => v > 0).length;
@@ -3886,6 +4006,7 @@ function AmericanoPadel() {
           onDeleteRound={handleDeleteRound}
           friends={friends}
           onAdjustSchedule={handleAdjustSchedule}
+          onEditMatchPlayers={handleEditMatchPlayers}
           onToggleArrival={handleToggleArrival}
           courts={courts}
           onNav={setScreen}
@@ -6847,7 +6968,7 @@ function SessionScreen(props) {
     scores, setScore, setPointsPair, resetPointsScore, scoreFormat, pointTarget, tennisTarget,
     incrementTennisPoint, resetTennisMatch, setTennisGamesDirect,
     ended, hasSplitBill, onEndEvent, onReshuffle, allMatchesScored, players, onAddManualMatch, onAddAutoRound, onDeleteRound,
-    friends, onAdjustSchedule, courts, onToggleArrival,
+    friends, onAdjustSchedule, courts, onToggleArrival, onEditMatchPlayers,
     onNav, onShare, onCopyViewLink, onBackToLobby, onDelete,
   } = props;
 
@@ -6857,6 +6978,7 @@ function SessionScreen(props) {
   const [showManagePlayers, setShowManagePlayers] = useState(false);
   const [showAttendance, setShowAttendance] = useState(false);
   const [showAddAutoRound, setShowAddAutoRound] = useState(false);
+  const [editingCourtIdx, setEditingCourtIdx] = useState(null); // court index being manually edited, or null
 
   useEffect(() => {
     setScoreModal(null);
@@ -7056,6 +7178,15 @@ function SessionScreen(props) {
                   onSetGames={(side, value) => setTennisGamesDirect(cIdx, side, value)}
                 />
               )}
+
+              {canManage && !isMatchScoreComplete(s) && (
+                <button
+                  onClick={() => setEditingCourtIdx(cIdx)}
+                  className="w-full flex items-center justify-center gap-1.5 py-2 text-xs font-semibold text-slate-400 border-t border-slate-800"
+                >
+                  <Pencil size={11} /> Edit Pemain
+                </button>
+              )}
             </div>
           );
         })}
@@ -7110,6 +7241,21 @@ function SessionScreen(props) {
             setShowManagePlayers(false);
           }}
           onClose={() => setShowManagePlayers(false)}
+        />
+      )}
+
+      {editingCourtIdx !== null && (
+        <EditMatchPlayersModal
+          match={round.courts[editingCourtIdx]}
+          resting={round.resting}
+          playerMap={playerMap}
+          roundNumber={currentRound + 1}
+          courtNumber={editingCourtIdx + 1}
+          onConfirm={(swaps, regenerateRest) => {
+            onEditMatchPlayers(currentRound, editingCourtIdx, swaps, regenerateRest);
+            setEditingCourtIdx(null);
+          }}
+          onClose={() => setEditingCourtIdx(null)}
         />
       )}
 
@@ -7686,6 +7832,181 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, onConfir
 // "belum datang" immediately reshuffles the not-yet-scored rounds to only
 // include arrived players; toggling them back to "sudah datang" slots them
 // back into the rotation fairly. Nobody is removed from the list.
+// HOST/CO-HOST: lets the host manually swap someone out of an upcoming
+// (not-yet-scored) match for someone currently resting that same round.
+// Two-step flow: (1) pick which slot(s) to swap and with whom, (2) decide
+// whether every round AFTER this one should be regenerated to reflect the
+// change, or left exactly as-is.
+function EditMatchPlayersModal({ match, resting, playerMap, roundNumber, courtNumber, onConfirm, onClose }) {
+  const slots = [...match.team1, ...match.team2]; // 4 original player ids, fixed order
+  const [swaps, setSwaps] = useState({}); // outId -> inId
+  const [pickerFor, setPickerFor] = useState(null); // outId currently choosing a replacement, or null
+  const [step, setStep] = useState("pick"); // pick | confirm
+
+  const usedInIds = new Set(Object.values(swaps));
+  const availableToPick = resting.filter((id) => !usedInIds.has(id));
+  const hasSwaps = Object.keys(swaps).length > 0;
+
+  const handlePick = (outId, inId) => {
+    setSwaps((s) => ({ ...s, [outId]: inId }));
+    setPickerFor(null);
+  };
+  const handleUndo = (outId) => {
+    setSwaps((s) => {
+      const next = { ...s };
+      delete next[outId];
+      return next;
+    });
+  };
+  const handleFinalConfirm = (regenerateRest) => {
+    const swapList = Object.entries(swaps).map(([outId, inId]) => ({ outId, inId }));
+    onConfirm(swapList, regenerateRest);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center" onClick={onClose}>
+      <div
+        className="bg-slate-950 border border-slate-800 rounded-t-3xl sm:rounded-3xl w-full sm:max-w-sm max-h-[85vh] overflow-y-auto p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="text-xs font-semibold tracking-[0.15em] text-amber-300 uppercase mb-1">
+          Edit Pemain — Ronde {roundNumber}, Lap.{courtNumber}
+        </div>
+
+        {step === "pick" && (
+          <>
+            <p className="text-xs text-slate-500 mb-4">
+              Tap salah satu pemain buat ganti dengan yang lagi istirahat ronde ini.
+            </p>
+            <div className="space-y-2 mb-4">
+              {slots.map((outId) => {
+                const inId = swaps[outId];
+                return (
+                  <div key={outId}>
+                    <div className="flex items-center justify-between gap-2 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3">
+                      <div className="min-w-0">
+                        {inId ? (
+                          <>
+                            <span className="text-[11px] text-slate-500 line-through block">
+                              {playerMap[outId]}
+                            </span>
+                            <span className="font-semibold text-lime-300 truncate block">
+                              {playerMap[inId]}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="font-semibold text-slate-100 truncate block">
+                            {playerMap[outId]}
+                          </span>
+                        )}
+                      </div>
+                      {inId ? (
+                        <button
+                          onClick={() => handleUndo(outId)}
+                          className="px-3 py-1.5 rounded-full text-xs font-semibold shrink-0 bg-slate-800 border border-slate-700 text-slate-300"
+                        >
+                          Batal
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => setPickerFor(outId)}
+                          disabled={availableToPick.length === 0}
+                          className="px-3 py-1.5 rounded-full text-xs font-semibold shrink-0 bg-lime-300 text-slate-950 disabled:opacity-40"
+                        >
+                          Ganti
+                        </button>
+                      )}
+                    </div>
+                    {pickerFor === outId && (
+                      <div className="mt-1.5 ml-2 space-y-1.5 border-l-2 border-slate-800 pl-3">
+                        {availableToPick.length === 0 ? (
+                          <p className="text-[11px] text-slate-600 py-1">
+                            Nggak ada yang istirahat buat ganti.
+                          </p>
+                        ) : (
+                          availableToPick.map((inId) => (
+                            <button
+                              key={inId}
+                              onClick={() => handlePick(outId, inId)}
+                              className="block w-full text-left text-sm text-slate-200 py-1.5"
+                            >
+                              → {playerMap[inId]}
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {resting.length === 0 && (
+              <p className="text-[11px] text-amber-300/80 mb-3">
+                Nggak ada yang istirahat di ronde ini buat ditukar masuk.
+              </p>
+            )}
+            <div className="flex gap-2">
+              <button
+                onClick={onClose}
+                className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-slate-900 border border-slate-700 text-slate-300"
+              >
+                Batal
+              </button>
+              <button
+                onClick={() => setStep("confirm")}
+                disabled={!hasSwaps}
+                className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-lime-300 text-slate-950 disabled:opacity-40"
+              >
+                Lanjut
+              </button>
+            </div>
+          </>
+        )}
+
+        {step === "confirm" && (
+          <>
+            <p className="text-xs text-slate-500 mb-4">
+              Ronde-ronde SETELAH ronde {roundNumber} ini mau disesuaikan juga biar tetap adil dan
+              variatif berdasarkan perubahan ini, atau dibiarkan seperti semula?
+            </p>
+            <div className="space-y-2">
+              <button
+                onClick={() => handleFinalConfirm(true)}
+                className="w-full text-left rounded-xl border border-lime-400/40 bg-lime-400/5 px-4 py-3"
+              >
+                <div className="font-semibold text-lime-300 text-sm">Ya, sesuaikan ronde sisanya</div>
+                <div className="text-[11px] text-slate-500 mt-0.5">
+                  Ronde setelah ini digenerate ulang, mempertimbangkan histori baru dari perubahan
+                  tadi.
+                </div>
+              </button>
+              <button
+                onClick={() => handleFinalConfirm(false)}
+                className="w-full text-left rounded-xl border border-slate-700 bg-slate-900/50 px-4 py-3"
+              >
+                <div className="font-semibold text-slate-200 text-sm">
+                  Tidak, jangan ubah ronde lainnya
+                </div>
+                <div className="text-[11px] text-slate-500 mt-0.5">
+                  Cuma match ronde {roundNumber} ini yang berubah, ronde-ronde lain tetap seperti
+                  semula.
+                </div>
+              </button>
+            </div>
+            <button
+              onClick={() => setStep("pick")}
+              className="w-full mt-3 py-2 text-xs font-semibold text-slate-500"
+            >
+              ← Kembali
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
 function AttendanceModal({ players, onToggle, onClose }) {
   const arrivedCount = players.filter((p) => p.arrived !== false).length;
   return (
