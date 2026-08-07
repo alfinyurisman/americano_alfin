@@ -1846,7 +1846,6 @@ function AmericanoPadel() {
     const list = await loadLobbyIndex(accountId);
     const refreshed = await Promise.all(
       list.map(async (entry) => {
-        if ((entry.role || "owner") === "owner") return entry;
         const data = await loadSessionData(entry.id);
         if (!data) return entry;
         return {
@@ -3197,17 +3196,19 @@ function AmericanoPadel() {
   // retrying once before giving up and telling the host clearly instead of
   // pretending it worked.
   const persistAndVerify = async (partial, checkFn) => {
-    const ok1 = await persist(partial);
-    if (ok1) {
-      const readBack = await loadSessionData(activeId);
-      if (readBack && checkFn(readBack)) return true;
-    }
-    // First attempt failed or didn't verify — wait a beat and retry once.
-    await new Promise((r) => setTimeout(r, 400));
-    const ok2 = await persist(partial);
-    if (ok2) {
-      const readBack2 = await loadSessionData(activeId);
-      if (readBack2 && checkFn(readBack2)) return true;
+    const delays = [300, 700, 1200]; // progressively longer, in case of real backend lag
+    for (let attempt = 0; attempt < delays.length; attempt++) {
+      const ok = await persist(partial);
+      if (ok) {
+        // Give the backend a moment to actually settle before reading back
+        // — reading back immediately after the write acknowledges can still
+        // race a real backend under load or on a slow connection.
+        await new Promise((r) => setTimeout(r, delays[attempt]));
+        const readBack = await loadSessionData(activeId);
+        if (readBack && checkFn(readBack)) return true;
+      } else {
+        await new Promise((r) => setTimeout(r, delays[attempt]));
+      }
     }
     return false;
   };
