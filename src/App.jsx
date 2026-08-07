@@ -287,8 +287,10 @@ async function loadSessionData(id) {
 async function saveSessionData(id, data) {
   try {
     await window.storage.set(sessionKey(id), JSON.stringify(data), true);
+    return true;
   } catch (e) {
     console.error("Gagal menyimpan sesi:", e);
+    return false;
   }
 }
 
@@ -2837,8 +2839,8 @@ function AmericanoPadel() {
   // remaining (not-yet-complete) rounds get thrown out and rebuilt for the
   // new roster, continuing the same partner/opponent/rest fairness tracking
   // accumulated so far (not starting over from zero).
-  const handleAdjustSchedule = (newPlayers, newCourts) => {
-    if (!engine) return;
+  const handleAdjustSchedule = async (newPlayers, newCourts) => {
+    if (!engine) return false;
     try {
       // Name exactly who was added/removed (by id, not just a count) — this
       // is the detail that was hardest to reconstruct after the fact when
@@ -2852,13 +2854,14 @@ function AmericanoPadel() {
         .filter((p) => !oldIds.has(p.id))
         .map((p) => `${p.name}${p.accountId ? "" : " [guest]"}`);
       const removed = players.filter((p) => !newIds.has(p.id)).map((p) => p.name);
-      handleAdjustScheduleInner(newPlayers, newCourts);
+      const saved = await handleAdjustScheduleInner(newPlayers, newCourts);
       const activeCount = newPlayers.filter((p) => p.arrived !== false).length;
       const parts = [`${activeCount} pemain aktif dari ${newPlayers.length} total`];
       if (newCourts) parts.push(`${newCourts} lapangan`);
       if (added.length) parts.push(`+ tambah: ${added.join(", ")}`);
       if (removed.length) parts.push(`- hapus: ${removed.join(", ")}`);
       logActivity(`Sesuaikan jadwal: ${parts.join(", ")}`);
+      return saved;
     } catch (e) {
       console.error("handleAdjustSchedule failed:", e);
       alert(
@@ -2866,10 +2869,11 @@ function AmericanoPadel() {
           (e?.message || "terjadi kesalahan tak terduga") +
           "\n\nJadwal belum diubah, coba lagi atau kirim screenshot pesan ini."
       );
+      return false;
     }
   };
 
-  const handleAdjustScheduleInner = (newPlayers, newCourtsInput) => {
+  const handleAdjustScheduleInner = async (newPlayers, newCourtsInput) => {
     const newCourts = newCourtsInput || courts;
 
     let splitIdx = engine.roundsData.length;
@@ -3100,15 +3104,35 @@ function AmericanoPadel() {
     setCurrentRound(newCurrentRound);
     setCourts(newCourts);
     if (newCourtsInput) setCourtStages([]);
-    persist({
-      players: newPlayers,
-      playerMap: map,
-      engine: newEngine,
-      scores: newScores,
-      currentRound: newCurrentRound,
-      courts: newCourts,
-      courtStages: newCourtStages,
-    });
+    // Verified save, same reasoning as the manual match-edit fix: this is
+    // exactly the kind of change (remove/add a player, toggle attendance)
+    // where a silently-failed or raced write is easy to miss until the
+    // event is reopened later and the "removed" person is mysteriously
+    // back — confirm it actually landed instead of assuming it did.
+    const intendedIds = new Set(newPlayers.map((p) => p.id));
+    const saved = await persistAndVerify(
+      {
+        players: newPlayers,
+        playerMap: map,
+        engine: newEngine,
+        scores: newScores,
+        currentRound: newCurrentRound,
+        courts: newCourts,
+        courtStages: newCourtStages,
+      },
+      (readBack) => {
+        const savedIds = new Set((readBack.players || []).map((p) => p.id));
+        return (
+          savedIds.size === intendedIds.size && [...intendedIds].every((id) => savedIds.has(id))
+        );
+      }
+    );
+    if (!saved) {
+      alert(
+        "Perubahan pemain/jadwal kelihatannya BELUM tersimpan ke server (koneksi mungkin bermasalah). Coba lakukan lagi, dan pastikan koneksi internet stabil sebelum pindah layar."
+      );
+    }
+    return saved;
   };
 
   // Rebuilds the fairness-tracking seed (partner/opp/playCount/restCount/
@@ -3166,6 +3190,28 @@ function AmericanoPadel() {
   //            varied relative to the new reality)
   //   - false: leave every other round exactly as it already was — only
   //            this one match changes
+  // persist() writes fire against Firebase, which can occasionally fail
+  // silently or lose a race with another write. For an action like manually
+  // editing a match — easy to miss if it silently doesn't stick — this
+  // wraps persist() with an actual read-back to CONFIRM the write landed,
+  // retrying once before giving up and telling the host clearly instead of
+  // pretending it worked.
+  const persistAndVerify = async (partial, checkFn) => {
+    const ok1 = await persist(partial);
+    if (ok1) {
+      const readBack = await loadSessionData(activeId);
+      if (readBack && checkFn(readBack)) return true;
+    }
+    // First attempt failed or didn't verify — wait a beat and retry once.
+    await new Promise((r) => setTimeout(r, 400));
+    const ok2 = await persist(partial);
+    if (ok2) {
+      const readBack2 = await loadSessionData(activeId);
+      if (readBack2 && checkFn(readBack2)) return true;
+    }
+    return false;
+  };
+
   const handleEditMatchPlayers = async (roundIdx, courtIdx, swaps, regenerateRest) => {
     if (!engine || !swaps.length) return;
     const rd = engine.roundsData[roundIdx];
@@ -3189,6 +3235,14 @@ function AmericanoPadel() {
     const swapDesc = swaps
       .map(({ outId, inId }) => `${playerMap[inId]} gantiin ${playerMap[outId]}`)
       .join(", ");
+    // What we'll check for in the read-back: this exact round's court now
+    // contains the swapped-in player(s), confirming the write we intended
+    // to make is genuinely the one sitting in storage.
+    const verifyEdit = (saved) => {
+      const savedCourt = saved?.engine?.roundsData?.[roundIdx]?.courts?.[courtIdx];
+      if (!savedCourt) return false;
+      return swaps.every(({ inId }) => savedCourt.team1.includes(inId) || savedCourt.team2.includes(inId));
+    };
 
     if (!regenerateRest) {
       const newRoundsData = engine.roundsData.map((r, i) => (i === roundIdx ? editedRound : r));
@@ -3196,13 +3250,18 @@ function AmericanoPadel() {
       const rebuilt = replayRoundsIntoSeed(newRoundsData, activeIds);
       const newEngine = { ...engine, roundsData: newRoundsData, ...rebuilt };
       setEngine(newEngine);
-      // Awaited on purpose: without this, closing the edit modal and
-      // navigating straight back to the Lobby (a very natural next action)
-      // could race the in-flight save — reopening the event moments later
-      // might read storage before this write actually lands, silently
-      // reverting the edit. Awaiting here means the promise this function
-      // returns only resolves once the change is genuinely persisted.
-      await persist({ engine: newEngine });
+      // Awaited AND verified on purpose: without this, closing the edit
+      // modal and navigating straight back to the Lobby (a very natural
+      // next action) could race the in-flight save, or the save could fail
+      // silently — reopening the event moments later would then read the
+      // old, un-edited data with no indication anything went wrong.
+      const saved = await persistAndVerify({ engine: newEngine }, verifyEdit);
+      if (!saved) {
+        alert(
+          "Perubahan pemain kelihatannya BELUM tersimpan ke server (koneksi mungkin bermasalah). Coba lakukan lagi, dan pastikan koneksi internet stabil sebelum pindah layar."
+        );
+        return;
+      }
       logActivity(
         `Edit pemain Ronde ${roundIdx + 1} Lap.${courtIdx + 1}: ${swapDesc} (ronde lain tidak diubah)`
       );
@@ -3230,7 +3289,13 @@ function AmericanoPadel() {
       });
       setEngine(newEngine);
       setScores(newScores);
-      await persist({ engine: newEngine, scores: newScores });
+      const saved = await persistAndVerify({ engine: newEngine, scores: newScores }, verifyEdit);
+      if (!saved) {
+        alert(
+          "Perubahan pemain kelihatannya BELUM tersimpan ke server (koneksi mungkin bermasalah). Coba lakukan lagi, dan pastikan koneksi internet stabil sebelum pindah layar."
+        );
+        return;
+      }
       logActivity(
         `Edit pemain Ronde ${roundIdx + 1} Lap.${courtIdx + 1}: ${swapDesc} + sesuaikan ronde sisanya`
       );
@@ -3242,7 +3307,7 @@ function AmericanoPadel() {
   // reuses the same "adjust schedule" mechanism to keep them out of (or put
   // them back into) upcoming rounds, preserving already-scored history and
   // fairness tracking either way.
-  const handleToggleArrival = (playerId) => {
+  const handleToggleArrival = async (playerId) => {
     const target = players.find((p) => p.id === playerId);
     if (!target) return;
     const nowArrived = target.arrived === false; // toggling from not-arrived -> arrived
@@ -3250,7 +3315,7 @@ function AmericanoPadel() {
     logActivity(
       `Toggle kehadiran: ${target.name} jadi ${nowArrived ? "HADIR" : "TIDAK HADIR"} (id tetap sama, histori tidak direset)`
     );
-    handleAdjustSchedule(newPlayers);
+    await handleAdjustSchedule(newPlayers);
   };
 
   // Host-only: designates who collects the split bill payment (can be the
@@ -4027,6 +4092,7 @@ function AmericanoPadel() {
         <LeaderboardScreen
           eventName={eventName}
           leaderboard={leaderboard}
+          players={players}
           ended={ended}
           hasSplitBill={hasSplitBill}
           onNav={setScreen}
@@ -7242,8 +7308,8 @@ function SessionScreen(props) {
           engine={engine}
           scores={scores}
           courts={courts}
-          onConfirm={(newPlayers, newCourts) => {
-            onAdjustSchedule(newPlayers, newCourts);
+          onConfirm={async (newPlayers, newCourts) => {
+            await onAdjustSchedule(newPlayers, newCourts);
             setShowManagePlayers(false);
           }}
           onClose={() => setShowManagePlayers(false)}
@@ -7672,6 +7738,7 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, onConfir
   const [roster, setRoster] = useState(players);
   const [nameInput, setNameInput] = useState("");
   const [courtsValue, setCourtsValue] = useState(courts);
+  const [saving, setSaving] = useState(false);
 
   const lockedCount = React.useMemo(() => {
     if (!engine) return 0;
@@ -7714,7 +7781,7 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, onConfir
   const maxUsableCourts = Math.max(1, Math.floor(roster.length / 4)) || 1;
 
   return (
-    <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center" onClick={saving ? undefined : onClose}>
       <div
         className="bg-slate-950 border border-slate-800 rounded-t-3xl sm:rounded-3xl w-full sm:max-w-sm max-h-[85vh] overflow-y-auto p-5"
         onClick={(e) => e.stopPropagation()}
@@ -7818,15 +7885,22 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, onConfir
         )}
 
         <div className="flex items-center gap-3">
-          <GhostButton onClick={onClose} className="flex-1">
+          <GhostButton onClick={onClose} disabled={saving} className="flex-1">
             Batal
           </GhostButton>
           <PrimaryButton
-            onClick={() => onConfirm(roster, courtsChanged ? courtsValue : undefined)}
-            disabled={roster.length < 4 || !changed}
+            onClick={async () => {
+              setSaving(true);
+              try {
+                await onConfirm(roster, courtsChanged ? courtsValue : undefined);
+              } finally {
+                setSaving(false);
+              }
+            }}
+            disabled={roster.length < 4 || !changed || saving}
             className="flex-1"
           >
-            Sesuaikan Jadwal
+            {saving ? "Menyimpan…" : "Sesuaikan Jadwal"}
           </PrimaryButton>
         </div>
       </div>
@@ -8262,11 +8336,21 @@ function TennisScoreTracker({ s, target, onPoint, onReset, onSetGames, readOnly 
 // LEADERBOARD / STANDINGS SCREEN
 // ---------------------------------------------------------------------------
 
-function LeaderboardScreen({ eventName, leaderboard, ended, hasSplitBill, onNav, onBackToLobby }) {
+function LeaderboardScreen({ eventName, leaderboard, players, ended, hasSplitBill, onNav, onBackToLobby }) {
   const [sortBy, setSortBy] = useState("winPercent"); // wins | diff | winPercent | ppm
+  const [showNotArrived, setShowNotArrived] = useState(true);
+
+  const notArrivedIds = React.useMemo(
+    () => new Set((players || []).filter((p) => p.arrived === false).map((p) => p.id)),
+    [players]
+  );
+  const visibleLeaderboard = React.useMemo(
+    () => (showNotArrived ? leaderboard : leaderboard.filter((p) => !notArrivedIds.has(p.id))),
+    [leaderboard, showNotArrived, notArrivedIds]
+  );
 
   const sorted = React.useMemo(() => {
-    const arr = [...leaderboard];
+    const arr = [...visibleLeaderboard];
     if (sortBy === "wins") {
       arr.sort((x, y) => y.wins - x.wins || y.diff - x.diff || y.winPercent - x.winPercent || y.ppm - x.ppm);
     } else if (sortBy === "diff") {
@@ -8277,7 +8361,7 @@ function LeaderboardScreen({ eventName, leaderboard, ended, hasSplitBill, onNav,
       arr.sort((x, y) => y.ppm - x.ppm || y.wins - x.wins || y.diff - x.diff);
     }
     return arr;
-  }, [leaderboard, sortBy]);
+  }, [visibleLeaderboard, sortBy]);
 
   // Standard competition ranking ("1224"): players who are exactly equal on
   // every criterion share the same rank number, and the next distinct player
@@ -8339,6 +8423,22 @@ function LeaderboardScreen({ eventName, leaderboard, ended, hasSplitBill, onNav,
             </button>
           ))}
         </div>
+
+        {notArrivedIds.size > 0 && (
+          <button
+            onClick={() => setShowNotArrived((v) => !v)}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border mt-2 ${
+              showNotArrived
+                ? "bg-slate-900 text-slate-400 border-slate-700"
+                : "bg-amber-400/10 text-amber-300 border-amber-400/40"
+            }`}
+          >
+            {showNotArrived ? <Eye size={12} /> : <UserCircle2 size={12} />}
+            {showNotArrived
+              ? `Tampilkan semua (termasuk ${notArrivedIds.size} yang tidak hadir)`
+              : `Sembunyikan yang tidak hadir (${notArrivedIds.size})`}
+          </button>
+        )}
       </div>
 
       <div className="px-6 pt-4">
@@ -9129,8 +9229,17 @@ function ViewOnlyApp({ sessionId }) {
     [data]
   );
   const [lbSortBy, setLbSortBy] = useState("winPercent"); // wins | diff | winPercent | ppm
+  const [lbShowNotArrived, setLbShowNotArrived] = useState(true);
+  const lbNotArrivedIds = React.useMemo(
+    () => new Set((data?.players || []).filter((p) => p.arrived === false).map((p) => p.id)),
+    [data]
+  );
+  const visibleLeaderboard = React.useMemo(
+    () => (lbShowNotArrived ? leaderboard : leaderboard.filter((p) => !lbNotArrivedIds.has(p.id))),
+    [leaderboard, lbShowNotArrived, lbNotArrivedIds]
+  );
   const sortedLeaderboard = React.useMemo(() => {
-    const arr = [...leaderboard];
+    const arr = [...visibleLeaderboard];
     if (lbSortBy === "wins") {
       arr.sort((x, y) => y.wins - x.wins || y.diff - x.diff || y.winPercent - x.winPercent || y.ppm - x.ppm);
     } else if (lbSortBy === "diff") {
@@ -9141,7 +9250,7 @@ function ViewOnlyApp({ sessionId }) {
       arr.sort((x, y) => y.ppm - x.ppm || y.wins - x.wins || y.diff - x.diff);
     }
     return arr;
-  }, [leaderboard, lbSortBy]);
+  }, [visibleLeaderboard, lbSortBy]);
   const lbRanks = React.useMemo(() => computeTiedRanks(sortedLeaderboard), [sortedLeaderboard]);
   const lbActiveCol = lbSortBy === "wins" ? "wlt" : lbSortBy;
   const hasSplitBill =
@@ -9491,6 +9600,21 @@ function ViewOnlyApp({ sessionId }) {
                 </button>
               ))}
             </div>
+            {lbNotArrivedIds.size > 0 && (
+              <button
+                onClick={() => setLbShowNotArrived((v) => !v)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border mb-4 ${
+                  lbShowNotArrived
+                    ? "bg-slate-900 text-slate-400 border-slate-700"
+                    : "bg-amber-400/10 text-amber-300 border-amber-400/40"
+                }`}
+              >
+                {lbShowNotArrived ? <Eye size={12} /> : <UserCircle2 size={12} />}
+                {lbShowNotArrived
+                  ? `Tampilkan semua (termasuk ${lbNotArrivedIds.size} yang tidak hadir)`
+                  : `Sembunyikan yang tidak hadir (${lbNotArrivedIds.size})`}
+              </button>
+            )}
             {sortedLeaderboard.length === 0 ? (
               <p className="text-slate-500 text-sm">Belum ada skor yang diisi.</p>
             ) : (
