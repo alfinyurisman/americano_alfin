@@ -3374,11 +3374,29 @@ function AmericanoPadel() {
       setActivityLog((prev) => {
         if (options?.dedupe && prev.some((a) => a.message === message)) return prev;
         const next = [...prev, { ts: Date.now(), who, message }].slice(-300);
-        persist({ activityLog: next });
+        // Deliberately NOT going through persist() here. persist() rebuilds
+        // the ENTIRE session snapshot from this component's current React
+        // closure — and logActivity is very often called after an `await`
+        // (e.g. right after a verified player-delete finishes saving). If
+        // enough time passed during that await for React to re-render with
+        // updated state, the closure this specific logActivity call was
+        // bound to is stale: calling persist() here would write back the
+        // OLD players/engine/etc. alongside the new activityLog, silently
+        // undoing whatever the awaited action just correctly saved. Instead,
+        // read the freshest copy directly from storage, patch in just the
+        // new activityLog, and write only that back — every other field is
+        // left exactly as it currently is on the server.
+        if (activeId) {
+          (async () => {
+            const latest = await loadSessionData(activeId);
+            if (!latest) return;
+            await saveSessionData(activeId, { ...latest, activityLog: next, updatedAt: Date.now() });
+          })();
+        }
         return next;
       });
     },
-    [persist, currentUser]
+    [activeId, currentUser]
   );
 
   // Lets the host mark an event as a trial/practice run so its matches don't
