@@ -2840,13 +2840,25 @@ function AmericanoPadel() {
   const handleAdjustSchedule = (newPlayers, newCourts) => {
     if (!engine) return;
     try {
+      // Name exactly who was added/removed (by id, not just a count) — this
+      // is the detail that was hardest to reconstruct after the fact when
+      // debugging a real event's log: without it, there's no way to tell
+      // whether a roster change was a same-person attendance flip or an
+      // actual add/remove (which resets that person's history, since a
+      // freshly-added entry always gets a brand-new id).
+      const oldIds = new Set(players.map((p) => p.id));
+      const newIds = new Set(newPlayers.map((p) => p.id));
+      const added = newPlayers
+        .filter((p) => !oldIds.has(p.id))
+        .map((p) => `${p.name}${p.accountId ? "" : " [guest]"}`);
+      const removed = players.filter((p) => !newIds.has(p.id)).map((p) => p.name);
       handleAdjustScheduleInner(newPlayers, newCourts);
       const activeCount = newPlayers.filter((p) => p.arrived !== false).length;
-      logActivity(
-        `Sesuaikan jadwal: ${activeCount} pemain aktif dari ${newPlayers.length} total${
-          newCourts ? `, ${newCourts} lapangan` : ""
-        }`
-      );
+      const parts = [`${activeCount} pemain aktif dari ${newPlayers.length} total`];
+      if (newCourts) parts.push(`${newCourts} lapangan`);
+      if (added.length) parts.push(`+ tambah: ${added.join(", ")}`);
+      if (removed.length) parts.push(`- hapus: ${removed.join(", ")}`);
+      logActivity(`Sesuaikan jadwal: ${parts.join(", ")}`);
     } catch (e) {
       console.error("handleAdjustSchedule failed:", e);
       alert(
@@ -3109,6 +3121,9 @@ function AmericanoPadel() {
     if (!target) return;
     const nowArrived = target.arrived === false; // toggling from not-arrived -> arrived
     const newPlayers = players.map((p) => (p.id === playerId ? { ...p, arrived: nowArrived } : p));
+    logActivity(
+      `Toggle kehadiran: ${target.name} jadi ${nowArrived ? "HADIR" : "TIDAK HADIR"} (id tetap sama, histori tidak direset)`
+    );
     handleAdjustSchedule(newPlayers);
   };
 
@@ -6076,6 +6091,11 @@ function buildSessionExport({
       excludeFromStats: !!excludeFromStats,
     },
     players,
+    playersSummary: {
+      total: (players || []).length,
+      denganAkun: (players || []).filter((p) => p.accountId).length,
+      guest: (players || []).filter((p) => !p.accountId).length,
+    },
     playerMap,
     schedule: engine
       ? {
