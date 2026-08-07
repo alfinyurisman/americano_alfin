@@ -2331,7 +2331,7 @@ function AmericanoPadel() {
         ...partial,
         updatedAt,
       };
-      saveSessionData(id, snapshot);
+      const savePromise = saveSessionData(id, snapshot);
       syncPublicEventEntry(snapshot);
       syncAllMatchesRegistryEntry(snapshot);
       const theOwnerId = snapshot.ownerId;
@@ -2373,7 +2373,7 @@ function AmericanoPadel() {
           await saveLobbyIndex(theOwnerId, next);
         })();
       }
-      return;
+      return savePromise;
     },
     [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, loggedMatchKeys, courtStages, playDate, excludeFromStats, activityLog, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, sportType, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
   );
@@ -3166,7 +3166,7 @@ function AmericanoPadel() {
   //            varied relative to the new reality)
   //   - false: leave every other round exactly as it already was — only
   //            this one match changes
-  const handleEditMatchPlayers = (roundIdx, courtIdx, swaps, regenerateRest) => {
+  const handleEditMatchPlayers = async (roundIdx, courtIdx, swaps, regenerateRest) => {
     if (!engine || !swaps.length) return;
     const rd = engine.roundsData[roundIdx];
     const court = rd.courts[courtIdx];
@@ -3196,7 +3196,13 @@ function AmericanoPadel() {
       const rebuilt = replayRoundsIntoSeed(newRoundsData, activeIds);
       const newEngine = { ...engine, roundsData: newRoundsData, ...rebuilt };
       setEngine(newEngine);
-      persist({ engine: newEngine });
+      // Awaited on purpose: without this, closing the edit modal and
+      // navigating straight back to the Lobby (a very natural next action)
+      // could race the in-flight save — reopening the event moments later
+      // might read storage before this write actually lands, silently
+      // reverting the edit. Awaiting here means the promise this function
+      // returns only resolves once the change is genuinely persisted.
+      await persist({ engine: newEngine });
       logActivity(
         `Edit pemain Ronde ${roundIdx + 1} Lap.${courtIdx + 1}: ${swapDesc} (ronde lain tidak diubah)`
       );
@@ -3224,7 +3230,7 @@ function AmericanoPadel() {
       });
       setEngine(newEngine);
       setScores(newScores);
-      persist({ engine: newEngine, scores: newScores });
+      await persist({ engine: newEngine, scores: newScores });
       logActivity(
         `Edit pemain Ronde ${roundIdx + 1} Lap.${courtIdx + 1}: ${swapDesc} + sesuaikan ronde sisanya`
       );
@@ -7251,8 +7257,8 @@ function SessionScreen(props) {
           playerMap={playerMap}
           roundNumber={currentRound + 1}
           courtNumber={editingCourtIdx + 1}
-          onConfirm={(swaps, regenerateRest) => {
-            onEditMatchPlayers(currentRound, editingCourtIdx, swaps, regenerateRest);
+          onConfirm={async (swaps, regenerateRest) => {
+            await onEditMatchPlayers(currentRound, editingCourtIdx, swaps, regenerateRest);
             setEditingCourtIdx(null);
           }}
           onClose={() => setEditingCourtIdx(null)}
@@ -7842,6 +7848,7 @@ function EditMatchPlayersModal({ match, resting, playerMap, roundNumber, courtNu
   const [swaps, setSwaps] = useState({}); // outId -> inId
   const [pickerFor, setPickerFor] = useState(null); // outId currently choosing a replacement, or null
   const [step, setStep] = useState("pick"); // pick | confirm
+  const [saving, setSaving] = useState(false);
 
   const usedInIds = new Set(Object.values(swaps));
   const availableToPick = resting.filter((id) => !usedInIds.has(id));
@@ -7858,13 +7865,23 @@ function EditMatchPlayersModal({ match, resting, playerMap, roundNumber, courtNu
       return next;
     });
   };
-  const handleFinalConfirm = (regenerateRest) => {
+  const handleFinalConfirm = async (regenerateRest) => {
     const swapList = Object.entries(swaps).map(([outId, inId]) => ({ outId, inId }));
-    onConfirm(swapList, regenerateRest);
+    setSaving(true);
+    try {
+      // Awaited so the modal stays open (with a visible "menyimpan" state)
+      // until the change is actually confirmed saved — closing immediately
+      // would let the host navigate away while the write is still
+      // in-flight, risking the edit getting silently reverted if they
+      // reopen the event before it lands.
+      await onConfirm(swapList, regenerateRest);
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
-    <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center" onClick={saving ? undefined : onClose}>
       <div
         className="bg-slate-950 border border-slate-800 rounded-t-3xl sm:rounded-3xl w-full sm:max-w-sm max-h-[85vh] overflow-y-auto p-5"
         onClick={(e) => e.stopPropagation()}
@@ -7972,9 +7989,12 @@ function EditMatchPlayersModal({ match, resting, playerMap, roundNumber, courtNu
             <div className="space-y-2">
               <button
                 onClick={() => handleFinalConfirm(true)}
-                className="w-full text-left rounded-xl border border-lime-400/40 bg-lime-400/5 px-4 py-3"
+                disabled={saving}
+                className="w-full text-left rounded-xl border border-lime-400/40 bg-lime-400/5 px-4 py-3 disabled:opacity-50"
               >
-                <div className="font-semibold text-lime-300 text-sm">Ya, sesuaikan ronde sisanya</div>
+                <div className="font-semibold text-lime-300 text-sm">
+                  {saving ? "Menyimpan…" : "Ya, sesuaikan ronde sisanya"}
+                </div>
                 <div className="text-[11px] text-slate-500 mt-0.5">
                   Ronde setelah ini digenerate ulang, mempertimbangkan histori baru dari perubahan
                   tadi.
@@ -7982,10 +8002,11 @@ function EditMatchPlayersModal({ match, resting, playerMap, roundNumber, courtNu
               </button>
               <button
                 onClick={() => handleFinalConfirm(false)}
-                className="w-full text-left rounded-xl border border-slate-700 bg-slate-900/50 px-4 py-3"
+                disabled={saving}
+                className="w-full text-left rounded-xl border border-slate-700 bg-slate-900/50 px-4 py-3 disabled:opacity-50"
               >
                 <div className="font-semibold text-slate-200 text-sm">
-                  Tidak, jangan ubah ronde lainnya
+                  {saving ? "Menyimpan…" : "Tidak, jangan ubah ronde lainnya"}
                 </div>
                 <div className="text-[11px] text-slate-500 mt-0.5">
                   Cuma match ronde {roundNumber} ini yang berubah, ronde-ronde lain tetap seperti
@@ -7995,7 +8016,8 @@ function EditMatchPlayersModal({ match, resting, playerMap, roundNumber, courtNu
             </div>
             <button
               onClick={() => setStep("pick")}
-              className="w-full mt-3 py-2 text-xs font-semibold text-slate-500"
+              disabled={saving}
+              className="w-full mt-3 py-2 text-xs font-semibold text-slate-500 disabled:opacity-50"
             >
               ← Kembali
             </button>
