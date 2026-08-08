@@ -3759,19 +3759,64 @@ function AmericanoPadel() {
     players.forEach((p) => {
       idToAccountId[p.id] = p.accountId || null;
     });
+    const currentRosterIds = new Set(players.map((p) => p.id)); // still on the roster (arrived or not — only a genuine delete removes someone from this)
     const playedSoFar = {};
+    const wins = {};
+    const losses = {};
+    const partnersOf = {};
+    const oppsOf = {};
+    currentRosterIds.forEach((id) => {
+      partnersOf[id] = new Set();
+      oppsOf[id] = new Set();
+    });
     engine.roundsData.forEach((rd, rIdx) => {
-      if (rIdx > currentRound) return;
-      const playingIds = new Set(rd.courts.flatMap((c) => [...c.team1, ...c.team2]));
-      Object.keys(playerMap).forEach((id) => {
-        if (playingIds.has(id)) playedSoFar[id] = (playedSoFar[id] || 0) + 1;
+      const isScored = rd.courts.every((_, cIdx) => isMatchScoreComplete(scores[`${rIdx}-${cIdx}`]));
+      if (rIdx <= currentRound) {
+        const playingIds = new Set(rd.courts.flatMap((c) => [...c.team1, ...c.team2]));
+        Object.keys(playerMap).forEach((id) => {
+          if (playingIds.has(id)) playedSoFar[id] = (playedSoFar[id] || 0) + 1;
+        });
+      }
+      rd.courts.forEach((match, cIdx) => {
+        const matchScored = isMatchScoreComplete(scores[`${rIdx}-${cIdx}`]);
+        [match.team1, match.team2].forEach((team, tIdx) => {
+          const other = tIdx === 0 ? match.team2 : match.team1;
+          team.forEach((id) => {
+            if (!partnersOf[id]) return; // no longer on the roster — no card to update
+            const partnerId = team.find((x) => x !== id);
+            // Someone still on the roster counts regardless of whether this
+            // round has been played yet (it's a real, committed pairing).
+            // Someone no longer on the roster only counts if the match
+            // genuinely happened — an unplayed pairing with someone who
+            // got removed before it was ever played isn't a real encounter.
+            if (currentRosterIds.has(partnerId) || matchScored) {
+              partnersOf[id].add(partnerId);
+            }
+            other.forEach((oppId) => {
+              if (currentRosterIds.has(oppId) || matchScored) {
+                oppsOf[id].add(oppId);
+              }
+            });
+          });
+        });
+        const s = scores[`${rIdx}-${cIdx}`];
+        const ab = matchAB(s);
+        if (!ab || !Number.isFinite(ab.a) || !Number.isFinite(ab.b) || ab.a === ab.b) return;
+        const winningTeam = ab.a > ab.b ? match.team1 : match.team2;
+        const losingTeam = ab.a > ab.b ? match.team2 : match.team1;
+        winningTeam.forEach((id) => {
+          wins[id] = (wins[id] || 0) + 1;
+        });
+        losingTeam.forEach((id) => {
+          losses[id] = (losses[id] || 0) + 1;
+        });
       });
     });
     const ids = players.map((p) => p.id); // same fix as leaderboard — attendance toggle shouldn't hide someone from stats
     return ids
       .map((id) => {
-        const partners = Object.values(engine.partner[id] || {}).filter((v) => v > 0).length;
-        const opps = Object.values(engine.opp[id] || {}).filter((v) => v > 0).length;
+        const partners = partnersOf[id] ? partnersOf[id].size : 0;
+        const opps = oppsOf[id] ? oppsOf[id].size : 0;
         const accId = idToAccountId[id];
         const role = accId && accId === ownerId ? "host" : accId && coHostIds.includes(accId) ? "cohost" : null;
         return {
@@ -3780,13 +3825,15 @@ function AmericanoPadel() {
           matches: engine.playCount[id] || 0,
           playedSoFar: playedSoFar[id] || 0,
           rests: engine.restCount[id] || 0,
+          wins: wins[id] || 0,
+          losses: losses[id] || 0,
           partners,
           opps,
           role,
         };
       })
       .sort((a, b) => b.matches - a.matches);
-  }, [engine, playerMap, players, ownerId, coHostIds, currentRound]);
+  }, [engine, playerMap, scores, players, ownerId, coHostIds, currentRound]);
 
   const handleShare = async () => {
     if (!engine) return;
@@ -4173,6 +4220,10 @@ function AmericanoPadel() {
           stats={fairnessStats}
           totalPlayers={players.length}
           hasSplitBill={hasSplitBill}
+          canManage={canManage}
+          isOwner={sessionRole === "owner"}
+          excludeFromStats={excludeFromStats}
+          onToggleExcludeFromStats={handleToggleExcludeFromStats}
           onNav={setScreen}
           onBackToLobby={handleBackToLobby}
         />
@@ -8971,16 +9022,6 @@ function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, e
       </div>
 
       <div className="px-6 pt-4 space-y-3">
-        {isOwner && (
-          <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <BarChart3 size={14} className="text-lime-300" />
-              <span className="text-sm font-semibold text-slate-200">Hitung ke Statistik?</span>
-            </div>
-            <StatsCountToggle excluded={excludeFromStats} onToggle={onToggleExcludeFromStats} />
-          </div>
-        )}
-
         {currentUser?.accountId === "alfinyr" && (
           <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
             <div className="flex items-center gap-2 mb-3">
@@ -9072,7 +9113,7 @@ function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, e
 // STATS SCREEN (fairness proof)
 // ---------------------------------------------------------------------------
 
-function StatsScreen({ eventName, stats, totalPlayers, hasSplitBill, onNav, onBackToLobby }) {
+function StatsScreen({ eventName, stats, totalPlayers, hasSplitBill, canManage, isOwner, excludeFromStats, onToggleExcludeFromStats, onNav, onBackToLobby }) {
   const maxPossible = Math.max(0, totalPlayers - 1);
   return (
     <div className="pb-24">
@@ -9096,6 +9137,18 @@ function StatsScreen({ eventName, stats, totalPlayers, hasSplitBill, onNav, onBa
         </p>
       </div>
 
+      {isOwner && (
+        <div className="px-6 pt-4">
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <BarChart3 size={14} className="text-lime-300" />
+              <span className="text-sm font-semibold text-slate-200">Hitung ke Statistik?</span>
+            </div>
+            <StatsCountToggle excluded={excludeFromStats} onToggle={onToggleExcludeFromStats} />
+          </div>
+        </div>
+      )}
+
       <div className="px-6 pt-4 space-y-2">
         {stats.map((p) => (
           <div key={p.id} className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3">
@@ -9110,7 +9163,7 @@ function StatsScreen({ eventName, stats, totalPlayers, hasSplitBill, onNav, onBa
                   <Check size={11} /> {p.playedSoFar}/{p.matches} main
                 </Chip>
                 <Chip tone="amber">
-                  <Coffee size={11} /> {p.rests} off
+                  <Trophy size={11} /> {p.wins}W-{p.losses}L
                 </Chip>
               </div>
             </div>
