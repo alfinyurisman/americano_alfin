@@ -3938,24 +3938,24 @@ function AmericanoPadel() {
         .font-mono2 { font-family: 'Space Mono', monospace; }
 
         /* Default browser scrollbars render dark/near-invisible against
-           this app's dark background (noticeable in scrollable areas like
-           the Edit Pemain player list) — make the thumb light so it's
-           actually visible, in both Chrome/Safari and Firefox. */
-        * {
+           this app's dark background — scoped specifically to the Edit
+           Pemain player-picker list (the rest of the app keeps the
+           browser's default scrollbar look). */
+        .edit-pemain-scroll {
           scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
         }
-        *::-webkit-scrollbar {
+        .edit-pemain-scroll::-webkit-scrollbar {
           width: 8px;
           height: 8px;
         }
-        *::-webkit-scrollbar-track {
+        .edit-pemain-scroll::-webkit-scrollbar-track {
           background: transparent;
         }
-        *::-webkit-scrollbar-thumb {
+        .edit-pemain-scroll::-webkit-scrollbar-thumb {
           background-color: rgba(255, 255, 255, 0.35);
           border-radius: 9999px;
         }
-        *::-webkit-scrollbar-thumb:hover {
+        .edit-pemain-scroll::-webkit-scrollbar-thumb:hover {
           background-color: rgba(255, 255, 255, 0.55);
         }
       `}</style>
@@ -8208,7 +8208,7 @@ function EditMatchPlayersModal({ round, courtIdx, scoredCourtIdxs, playerMap, ro
         {pickerFor === slotIdx && (() => {
           const options = pickableForSlot(slotIdx);
           return (
-            <div className="mt-1.5 ml-2 space-y-1.5 border-l-2 border-slate-800 pl-3 max-h-40 overflow-y-auto">
+            <div className="edit-pemain-scroll mt-1.5 ml-2 space-y-1.5 border-l-2 border-slate-800 pl-3 max-h-40 overflow-y-auto">
               {options.length === 0 ? (
                 <p className="text-[11px] text-slate-600 py-1">Nggak ada orang lain buat ditukar.</p>
               ) : (
@@ -8245,7 +8245,7 @@ function EditMatchPlayersModal({ round, courtIdx, scoredCourtIdxs, playerMap, ro
   return (
     <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center" onClick={saving ? undefined : onClose}>
       <div
-        className="bg-slate-950 border border-slate-800 rounded-t-3xl sm:rounded-3xl w-full sm:max-w-sm max-h-[85vh] overflow-y-auto p-5"
+        className="edit-pemain-scroll bg-slate-950 border border-slate-800 rounded-t-3xl sm:rounded-3xl w-full sm:max-w-sm max-h-[85vh] overflow-y-auto p-5"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="text-xs font-semibold tracking-[0.15em] text-amber-300 uppercase mb-1">
