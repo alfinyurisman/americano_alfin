@@ -3937,14 +3937,23 @@ function AmericanoPadel() {
         .font-display { font-family: 'Teko', sans-serif; }
         .font-mono2 { font-family: 'Space Mono', monospace; }
 
-        /* Default browser scrollbars render dark/near-invisible against
-           this app's dark background — scoped specifically to the Edit
-           Pemain player-picker list (the rest of the app keeps the
-           browser's default scrollbar look). */
+        /* Scrollbars hidden everywhere by default (still scrollable, just
+           no visible track/thumb — the visible bar felt intrusive) —
+           except the Edit Pemain replacement-player list below, which
+           specifically needs a visible scrollbar since it's the one place
+           people are likely to miss that there's more to scroll through. */
+        * {
+          scrollbar-width: none; /* Firefox */
+        }
+        *::-webkit-scrollbar {
+          display: none; /* Chrome/Safari/Edge */
+        }
         .edit-pemain-scroll {
+          scrollbar-width: thin; /* Firefox */
           scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
         }
         .edit-pemain-scroll::-webkit-scrollbar {
+          display: block;
           width: 8px;
           height: 8px;
         }
@@ -8245,7 +8254,7 @@ function EditMatchPlayersModal({ round, courtIdx, scoredCourtIdxs, playerMap, ro
   return (
     <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center" onClick={saving ? undefined : onClose}>
       <div
-        className="edit-pemain-scroll bg-slate-950 border border-slate-800 rounded-t-3xl sm:rounded-3xl w-full sm:max-w-sm max-h-[85vh] overflow-y-auto p-5"
+        className="bg-slate-950 border border-slate-800 rounded-t-3xl sm:rounded-3xl w-full sm:max-w-sm max-h-[85vh] overflow-y-auto p-5"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="text-xs font-semibold tracking-[0.15em] text-amber-300 uppercase mb-1">
