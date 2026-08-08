@@ -3936,6 +3936,28 @@ function AmericanoPadel() {
         @import url('https://fonts.googleapis.com/css2?family=Teko:wght@500;600;700&family=Inter:wght@400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap');
         .font-display { font-family: 'Teko', sans-serif; }
         .font-mono2 { font-family: 'Space Mono', monospace; }
+
+        /* Default browser scrollbars render dark/near-invisible against
+           this app's dark background (noticeable in scrollable areas like
+           the Edit Pemain player list) — make the thumb light so it's
+           actually visible, in both Chrome/Safari and Firefox. */
+        * {
+          scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
+        }
+        *::-webkit-scrollbar {
+          width: 8px;
+          height: 8px;
+        }
+        *::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        *::-webkit-scrollbar-thumb {
+          background-color: rgba(255, 255, 255, 0.35);
+          border-radius: 9999px;
+        }
+        *::-webkit-scrollbar-thumb:hover {
+          background-color: rgba(255, 255, 255, 0.55);
+        }
       `}</style>
 
       <div className="max-w-md mx-auto relative">
