@@ -2757,69 +2757,67 @@ function AmericanoPadel() {
   // are lost, later rounds shift down by one, and its contribution to the
   // partner/opponent/rest fairness counters is subtracted out (rather than
   // replaying everything from scratch).
-  const handleDeleteRound = (roundIdx) => {
-    if (!engine) return;
+  // HOST-ONLY: removes one specific round entirely. `regenerateRest` decides
+  // what happens to the rounds that come after it (same idea as manually
+  // editing a match's players):
+  //   - true:  everything after the deleted round is regenerated fresh,
+  //            using fairness history that correctly reflects the deletion
+  //   - false: the remaining rounds keep their current pairings exactly as
+  //            they were — only their round NUMBERS shift down by one
+  // Either way, playCount/restCount/partner/opp/lastPlayed are rebuilt by
+  // replaying the actual resulting schedule from scratch, rather than
+  // manually decrementing counters — the same fix applied to other actions
+  // in this app after a stale/incremental-update bug caused numbers to
+  // silently drift from reality over a long session.
+  const handleDeleteRound = async (roundIdx, regenerateRest) => {
+    if (!engine) return false;
     if (engine.roundsData.length <= 1) {
       alert("Nggak bisa hapus — minimal harus tersisa 1 ronde.");
-      return;
+      return false;
     }
-    if (
-      !window.confirm(
-        `Hapus Ronde ${roundIdx + 1}? Skor yang sudah diisi di ronde ini ikut hilang, dan ronde-ronde setelahnya bakal bergeser nomornya.`
-      )
-    )
-      return;
+    const activeIds = players.filter((p) => p.arrived !== false).map((p) => p.id);
 
-    const rd = engine.roundsData[roundIdx];
-    const newPlayCount = { ...engine.playCount };
-    const newRestCount = { ...engine.restCount };
-    const newPartner = {};
-    const newOpp = {};
-    Object.keys(engine.partner).forEach((id) => (newPartner[id] = { ...engine.partner[id] }));
-    Object.keys(engine.opp).forEach((id) => (newOpp[id] = { ...engine.opp[id] }));
+    let newRoundsData;
+    let newScores;
+    let newEngine;
 
-    rd.resting.forEach((id) => {
-      if (newRestCount[id] !== undefined) newRestCount[id] = Math.max(0, newRestCount[id] - 1);
-    });
-    rd.courts.forEach(({ team1, team2 }) => {
-      const [a, b] = team1;
-      const [c, d] = team2;
-      [a, b, c, d].forEach((id) => {
-        if (newPlayCount[id] !== undefined) newPlayCount[id] = Math.max(0, newPlayCount[id] - 1);
+    if (!regenerateRest) {
+      newRoundsData = engine.roundsData.filter((_, i) => i !== roundIdx);
+      newScores = {};
+      Object.keys(scores).forEach((key) => {
+        const [rStr, cStr] = key.split("-");
+        const r = parseInt(rStr, 10);
+        if (r === roundIdx) return;
+        const newR = r > roundIdx ? r - 1 : r;
+        newScores[`${newR}-${cStr}`] = scores[key];
       });
-      if (newPartner[a]) newPartner[a][b] = Math.max(0, (newPartner[a][b] || 0) - 1);
-      if (newPartner[b]) newPartner[b][a] = Math.max(0, (newPartner[b][a] || 0) - 1);
-      if (newPartner[c]) newPartner[c][d] = Math.max(0, (newPartner[c][d] || 0) - 1);
-      if (newPartner[d]) newPartner[d][c] = Math.max(0, (newPartner[d][c] || 0) - 1);
-      [a, b].forEach((x) =>
-        [c, d].forEach((y) => {
-          if (newOpp[x]) newOpp[x][y] = Math.max(0, (newOpp[x][y] || 0) - 1);
-          if (newOpp[y]) newOpp[y][x] = Math.max(0, (newOpp[y][x] || 0) - 1);
-        })
-      );
-    });
+      const rebuilt = replayRoundsIntoSeed(newRoundsData, activeIds);
+      newEngine = { ...engine, roundsData: newRoundsData, ...rebuilt };
+    } else {
+      const lockedRounds = engine.roundsData.slice(0, roundIdx);
+      const seed = replayRoundsIntoSeed(lockedRounds, activeIds);
+      const remainingCount = engine.roundsData.length - 1 - roundIdx;
+      const freshPart =
+        remainingCount > 0
+          ? generateSchedule(activeIds, courts, remainingCount, seed, roundIdx)
+          : { roundsData: [], playCount: seed.playCount, restCount: seed.restCount, partner: seed.partner, opp: seed.opp, usableCourts: 0, lastPlayed: seed.lastPlayed };
+      newRoundsData = [...lockedRounds, ...freshPart.roundsData];
+      newEngine = {
+        roundsData: newRoundsData,
+        playCount: freshPart.playCount,
+        restCount: freshPart.restCount,
+        partner: freshPart.partner,
+        opp: freshPart.opp,
+        usableCourts: freshPart.usableCourts,
+        lastPlayed: freshPart.lastPlayed,
+      };
+      newScores = {};
+      Object.keys(scores).forEach((key) => {
+        const rIdx = parseInt(key.split("-")[0], 10);
+        if (rIdx < roundIdx) newScores[key] = scores[key];
+      });
+    }
 
-    const newRoundsData = engine.roundsData.filter((_, i) => i !== roundIdx);
-
-    // Re-index scores: drop the deleted round's own, shift every round after
-    // it down by one so keys still line up with their round's new position.
-    const newScores = {};
-    Object.keys(scores).forEach((key) => {
-      const [rStr, cStr] = key.split("-");
-      const r = parseInt(rStr, 10);
-      if (r === roundIdx) return;
-      const newR = r > roundIdx ? r - 1 : r;
-      newScores[`${newR}-${cStr}`] = scores[key];
-    });
-
-    const newEngine = {
-      ...engine,
-      roundsData: newRoundsData,
-      playCount: newPlayCount,
-      restCount: newRestCount,
-      partner: newPartner,
-      opp: newOpp,
-    };
     const newCurrentRound = Math.max(
       0,
       Math.min(currentRound > roundIdx ? currentRound - 1 : currentRound, newRoundsData.length - 1)
@@ -2828,8 +2826,22 @@ function AmericanoPadel() {
     setEngine(newEngine);
     setScores(newScores);
     setCurrentRound(newCurrentRound);
-    persist({ engine: newEngine, scores: newScores, currentRound: newCurrentRound });
-    logActivity(`Hapus Ronde ${roundIdx + 1} (sisa ${newRoundsData.length} ronde)`);
+    const saved = await persistAndVerify(
+      { engine: newEngine, scores: newScores, currentRound: newCurrentRound },
+      (readBack) => (readBack?.engine?.roundsData?.length || 0) === newRoundsData.length
+    );
+    if (!saved) {
+      alert(
+        "Hapus ronde kelihatannya BELUM tersimpan ke server (koneksi mungkin bermasalah). Coba lagi, dan pastikan koneksi internet stabil sebelum pindah layar."
+      );
+      return false;
+    }
+    logActivity(
+      `Hapus Ronde ${roundIdx + 1} (sisa ${newRoundsData.length} ronde)${
+        regenerateRest ? " + sesuaikan ronde sisanya" : " (ronde lain tidak diubah)"
+      }`
+    );
+    return true;
   };
 
   // Adds/removes players mid-match and re-generates the schedule for
@@ -3213,36 +3225,39 @@ function AmericanoPadel() {
     return false;
   };
 
-  const handleEditMatchPlayers = async (roundIdx, courtIdx, swaps, regenerateRest) => {
-    if (!engine || !swaps.length) return;
+  const handleEditMatchPlayers = async (roundIdx, courtIdx, newTeam1, newTeam2, regenerateRest) => {
+    if (!engine) return;
     const rd = engine.roundsData[roundIdx];
     const court = rd.courts[courtIdx];
-    const newTeam1 = [...court.team1];
-    const newTeam2 = [...court.team2];
-    let newResting = [...rd.resting];
-    swaps.forEach(({ outId, inId }) => {
-      const i1 = newTeam1.indexOf(outId);
-      if (i1 !== -1) newTeam1[i1] = inId;
-      const i2 = newTeam2.indexOf(outId);
-      if (i2 !== -1) newTeam2[i2] = inId;
-      newResting = newResting.filter((id) => id !== inId);
-      newResting.push(outId);
-    });
+    const originalFour = [...court.team1, ...court.team2];
+    const newFour = [...newTeam1, ...newTeam2];
+    if (originalFour.every((id, i) => id === newFour[i])) return; // nothing actually changed
+    // Whoever was involved before (playing this specific match OR resting
+    // this round) is the full pool that could end up resting now — anyone
+    // from that pool not in the new foursome is resting; anyone in the new
+    // foursome is playing, regardless of where they were before (handles
+    // resting<->playing swaps AND playing<->playing position swaps alike).
+    const involvedBefore = [...new Set([...originalFour, ...rd.resting])];
+    const newResting = involvedBefore.filter((id) => !newFour.includes(id));
     const editedRound = {
       ...rd,
       resting: newResting,
       courts: rd.courts.map((c, i) => (i === courtIdx ? { team1: newTeam1, team2: newTeam2 } : c)),
     };
-    const swapDesc = swaps
-      .map(({ outId, inId }) => `${playerMap[inId]} gantiin ${playerMap[outId]}`)
+    const changedDesc = originalFour
+      .map((oldId, i) => (oldId !== newFour[i] ? `${playerMap[newFour[i]]} gantiin ${playerMap[oldId]}` : null))
+      .filter(Boolean)
       .join(", ");
     // What we'll check for in the read-back: this exact round's court now
-    // contains the swapped-in player(s), confirming the write we intended
-    // to make is genuinely the one sitting in storage.
+    // matches the intended new lineup, confirming the write we intended to
+    // make is genuinely the one sitting in storage.
     const verifyEdit = (saved) => {
       const savedCourt = saved?.engine?.roundsData?.[roundIdx]?.courts?.[courtIdx];
       if (!savedCourt) return false;
-      return swaps.every(({ inId }) => savedCourt.team1.includes(inId) || savedCourt.team2.includes(inId));
+      return (
+        JSON.stringify(savedCourt.team1) === JSON.stringify(newTeam1) &&
+        JSON.stringify(savedCourt.team2) === JSON.stringify(newTeam2)
+      );
     };
 
     if (!regenerateRest) {
@@ -3264,7 +3279,7 @@ function AmericanoPadel() {
         return;
       }
       logActivity(
-        `Edit pemain Ronde ${roundIdx + 1} Lap.${courtIdx + 1}: ${swapDesc} (ronde lain tidak diubah)`
+        `Edit pemain Ronde ${roundIdx + 1} Lap.${courtIdx + 1}: ${changedDesc} (ronde lain tidak diubah)`
       );
     } else {
       const lockedRounds = [...engine.roundsData.slice(0, roundIdx), editedRound];
@@ -3298,7 +3313,7 @@ function AmericanoPadel() {
         return;
       }
       logActivity(
-        `Edit pemain Ronde ${roundIdx + 1} Lap.${courtIdx + 1}: ${swapDesc} + sesuaikan ronde sisanya`
+        `Edit pemain Ronde ${roundIdx + 1} Lap.${courtIdx + 1}: ${changedDesc} + sesuaikan ronde sisanya`
       );
     }
   };
@@ -3845,9 +3860,9 @@ function AmericanoPadel() {
       const t1 = fmtClock(((totalMins % 1440) + 1440) % 1440);
       text += `Ronde ${rIdx + 1} (${t1})\n`;
       rd.courts.forEach((mt, cIdx) => {
-        text += `  Lap.${cIdx + 1}: ${mt.team1.map((id) => playerMap[id]).join(" & ")} vs ${mt.team2
+        text += `  Lap.${cIdx + 1}: ${mt.team1.map((id) => playerMap[id]).join(" - ")} vs ${mt.team2
           .map((id) => playerMap[id])
-          .join(" & ")}\n`;
+          .join(" - ")}\n`;
       });
       if (rd.resting.length) {
         text += `  Istirahat: ${rd.resting.map((id) => playerMap[id]).join(", ")}\n`;
@@ -7121,6 +7136,7 @@ function SessionScreen(props) {
   const [showAttendance, setShowAttendance] = useState(false);
   const [showAddAutoRound, setShowAddAutoRound] = useState(false);
   const [editingCourtIdx, setEditingCourtIdx] = useState(null); // court index being manually edited, or null
+  const [showDeleteRoundConfirm, setShowDeleteRoundConfirm] = useState(false);
 
   useEffect(() => {
     setScoreModal(null);
@@ -7283,10 +7299,19 @@ function SessionScreen(props) {
           const openModal = canManage && scoreFormat === "points" ? () => setScoreModal(cIdx) : undefined;
           return (
             <div key={cIdx} className="rounded-2xl border border-slate-800 overflow-hidden bg-slate-900/40">
-              <div className="px-4 py-2 bg-slate-900 border-b border-slate-800">
+              <div className="px-4 py-2 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
                 <span className="text-xs font-bold tracking-widest text-slate-400 uppercase">
                   Lapangan {cIdx + 1}
                 </span>
+                {isOwner && cIdx === 0 && (
+                  <button
+                    onClick={() => setShowDeleteRoundConfirm(true)}
+                    className="text-slate-600 hover:text-red-400"
+                    title="Hapus ronde ini"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                )}
               </div>
               <div className="grid grid-cols-[1fr_auto_1fr] items-stretch">
                 <TeamSide
@@ -7393,11 +7418,22 @@ function SessionScreen(props) {
           playerMap={playerMap}
           roundNumber={currentRound + 1}
           courtNumber={editingCourtIdx + 1}
-          onConfirm={async (swaps, regenerateRest) => {
-            await onEditMatchPlayers(currentRound, editingCourtIdx, swaps, regenerateRest);
+          onConfirm={async (newTeam1, newTeam2, regenerateRest) => {
+            await onEditMatchPlayers(currentRound, editingCourtIdx, newTeam1, newTeam2, regenerateRest);
             setEditingCourtIdx(null);
           }}
           onClose={() => setEditingCourtIdx(null)}
+        />
+      )}
+
+      {showDeleteRoundConfirm && (
+        <DeleteRoundModal
+          roundNumber={currentRound + 1}
+          onConfirm={async (regenerateRest) => {
+            const ok = await onDeleteRound(currentRound, regenerateRest);
+            if (ok) setShowDeleteRoundConfirm(false);
+          }}
+          onClose={() => setShowDeleteRoundConfirm(false)}
         />
       )}
 
@@ -7480,7 +7516,15 @@ function AllRoundsList({ engine, playerMap, scores, scoreFormat, currentRound, c
             </div>
             {canManage && (
               <button
-                onClick={() => onDeleteRound(rIdx)}
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      `Hapus Ronde ${rIdx + 1}? Skor yang sudah diisi di ronde ini ikut hilang, dan ronde-ronde setelahnya bakal bergeser nomornya. Ronde lain tidak diubah.`
+                    )
+                  ) {
+                    onDeleteRound(rIdx, false);
+                  }
+                }}
                 className="w-7 h-7 rounded-full bg-slate-900 border border-slate-700 text-slate-500 hover:text-red-400 hover:border-red-400/50 flex items-center justify-center shrink-0"
               >
                 <Trash2 size={13} />
@@ -7506,9 +7550,9 @@ function AllRoundsList({ engine, playerMap, scores, scoreFormat, currentRound, c
                     Lap. {cIdx + 1}
                   </div>
                   <div className="text-sm text-slate-200 leading-snug">
-                    {match.team1.map((id) => playerMap[id]).join(" & ")}{" "}
+                    {match.team1.map((id) => playerMap[id]).join(" - ")}{" "}
                     <span className="text-slate-600">vs</span>{" "}
-                    {match.team2.map((id) => playerMap[id]).join(" & ")}
+                    {match.team2.map((id) => playerMap[id]).join(" - ")}
                   </div>
                   <div
                     className={`font-mono2 text-sm ${
@@ -7598,45 +7642,47 @@ function PointsScorePicker({ s, target, onPick, team1Label, team2Label }) {
         <span className="font-mono2 text-3xl text-lime-300 w-10 text-center">{b ?? "–"}</span>
       </div>
 
-      <div>
-        <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-2 truncate">
-          Skor {team1Label || "tim kiri"}
+      <div className="grid grid-cols-2 gap-0 relative max-h-[45vh] overflow-y-auto">
+        <div className="absolute left-1/2 top-0 bottom-0 w-px bg-slate-700" />
+        <div className="pr-3">
+          <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-2 truncate sticky top-0 bg-slate-950 py-1">
+            {team1Label || "tim kiri"}
+          </div>
+          <div className="space-y-1.5">
+            {nums.map((n) => (
+              <button
+                key={n}
+                onClick={() => onPick("a", n)}
+                className={`w-full h-9 rounded-lg text-sm font-bold border ${
+                  a === n
+                    ? "bg-lime-300 text-slate-950 border-lime-300"
+                    : "bg-slate-900 text-slate-300 border-slate-700"
+                }`}
+              >
+                {n}
+              </button>
+            ))}
+          </div>
         </div>
-        <div className="grid grid-cols-6 gap-1.5">
-          {nums.map((n) => (
-            <button
-              key={n}
-              onClick={() => onPick("a", n)}
-              className={`h-9 rounded-lg text-xs font-bold border ${
-                a === n
-                  ? "bg-lime-300 text-slate-950 border-lime-300"
-                  : "bg-slate-900 text-slate-300 border-slate-700"
-              }`}
-            >
-              {n}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div>
-        <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-2 truncate">
-          Skor {team2Label || "tim kanan"}
-        </div>
-        <div className="grid grid-cols-6 gap-1.5">
-          {nums.map((n) => (
-            <button
-              key={n}
-              onClick={() => onPick("b", n)}
-              className={`h-9 rounded-lg text-xs font-bold border ${
-                b === n
-                  ? "bg-lime-300 text-slate-950 border-lime-300"
-                  : "bg-slate-900 text-slate-300 border-slate-700"
-              }`}
-            >
-              {n}
-            </button>
-          ))}
+        <div className="pl-3">
+          <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-2 truncate sticky top-0 bg-slate-950 py-1">
+            {team2Label || "tim kanan"}
+          </div>
+          <div className="space-y-1.5">
+            {nums.map((n) => (
+              <button
+                key={n}
+                onClick={() => onPick("b", n)}
+                className={`w-full h-9 rounded-lg text-sm font-bold border ${
+                  b === n
+                    ? "bg-lime-300 text-slate-950 border-lime-300"
+                    : "bg-slate-900 text-slate-300 border-slate-700"
+                }`}
+              >
+                {n}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
     </div>
@@ -7657,17 +7703,17 @@ function ScoreModal({ roundLabel, team1, team2, s, target, onPick, onReset, onCl
           {roundLabel}
         </div>
         <div className="flex items-center gap-2 text-sm text-slate-300 mb-4">
-          <span className="font-semibold text-slate-100">{team1.join(" & ")}</span>
+          <span className="font-semibold text-white">{team1.join(" - ")}</span>
           <span className="text-slate-600">vs</span>
-          <span className="font-semibold text-slate-100">{team2.join(" & ")}</span>
+          <span className="font-semibold text-white">{team2.join(" - ")}</span>
         </div>
 
         <PointsScorePicker
           s={s}
           target={target}
           onPick={onPick}
-          team1Label={team1.join(" & ")}
-          team2Label={team2.join(" & ")}
+          team1Label={team1.join(" - ")}
+          team2Label={team2.join(" - ")}
         />
 
         <div className="flex items-center gap-3 mt-5">
@@ -7733,14 +7779,14 @@ function AddMatchModal({ players, onConfirm, onClose }) {
           <div className="text-center">
             <div className="text-[10px] text-slate-500 uppercase mb-1">Tim Kiri</div>
             <div className="text-slate-200 font-semibold min-h-[18px]">
-              {team1.map((id) => players.find((p) => p.id === id)?.name).join(" & ") || "—"}
+              {team1.map((id) => players.find((p) => p.id === id)?.name).join(" - ") || "—"}
             </div>
           </div>
           <span className="text-slate-600 font-display text-lg">VS</span>
           <div className="text-center">
             <div className="text-[10px] text-slate-500 uppercase mb-1">Tim Kanan</div>
             <div className="text-slate-200 font-semibold min-h-[18px]">
-              {team2.map((id) => players.find((p) => p.id === id)?.name).join(" & ") || "—"}
+              {team2.map((id) => players.find((p) => p.id === id)?.name).join(" - ") || "—"}
             </div>
           </div>
         </div>
@@ -7988,29 +8034,56 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, onConfir
 // whether every round AFTER this one should be regenerated to reflect the
 // change, or left exactly as-is.
 function EditMatchPlayersModal({ match, resting, playerMap, roundNumber, courtNumber, onConfirm, onClose }) {
-  const slots = [...match.team1, ...match.team2]; // 4 original player ids, fixed order
-  const [swaps, setSwaps] = useState({}); // outId -> inId
-  const [pickerFor, setPickerFor] = useState(null); // outId currently choosing a replacement, or null
+  // Slots are fixed positions: 0-1 = Tim Kiri (team1), 2-3 = Tim Kanan (team2).
+  const originalFour = [...match.team1, ...match.team2];
+  const [assignment, setAssignment] = useState(originalFour); // current occupant of each of the 4 slots
+  const [pickerFor, setPickerFor] = useState(null); // slot index currently choosing a replacement, or null
   const [step, setStep] = useState("pick"); // pick | confirm
   const [saving, setSaving] = useState(false);
 
-  const usedInIds = new Set(Object.values(swaps));
-  const availableToPick = resting.filter((id) => !usedInIds.has(id));
-  const hasSwaps = Object.keys(swaps).length > 0;
+  // Anyone who could conceivably fill one of these 4 slots: whoever's
+  // resting this round, PLUS the 4 people who originally started this match
+  // (so swapping someone out and later wanting them back — or swapping two
+  // of the original four between teams — both just work, without needing
+  // to close and reopen the editor).
+  const eligiblePool = [...new Set([...resting, ...originalFour])];
+  const poolNotOnCourt = eligiblePool.filter((id) => !assignment.includes(id));
+  const changed = assignment.some((id, i) => id !== originalFour[i]);
+  const hasDuplicate = new Set(assignment).size !== assignment.length;
 
-  const handlePick = (outId, inId) => {
-    setSwaps((s) => ({ ...s, [outId]: inId }));
+  const handlePick = (slotIdx, pickedId) => {
+    setAssignment((prev) => {
+      const next = [...prev];
+      const otherSlot = prev.indexOf(pickedId);
+      if (otherSlot !== -1 && otherSlot !== slotIdx) {
+        // Picked someone currently occupying a different slot — swap the two
+        // positions outright (e.g. trading a player from Tim Kiri to Tim
+        // Kanan and vice versa), rather than leaving a gap.
+        next[otherSlot] = prev[slotIdx];
+      }
+      next[slotIdx] = pickedId;
+      return next;
+    });
     setPickerFor(null);
   };
-  const handleUndo = (outId) => {
-    setSwaps((s) => {
-      const next = { ...s };
-      delete next[outId];
+  const handleUndo = (slotIdx) => {
+    setAssignment((prev) => {
+      const next = [...prev];
+      const shouldBeHere = originalFour[slotIdx];
+      const whereIsShouldBeHere = prev.indexOf(shouldBeHere);
+      if (whereIsShouldBeHere !== -1 && whereIsShouldBeHere !== slotIdx) {
+        // The person who originally belonged in this slot is currently
+        // sitting in a DIFFERENT slot (from an earlier swap) — swap them
+        // back properly instead of just overwriting, which would otherwise
+        // leave that person duplicated in two slots and whoever was here
+        // silently dropped.
+        next[whereIsShouldBeHere] = prev[slotIdx];
+      }
+      next[slotIdx] = shouldBeHere;
       return next;
     });
   };
   const handleFinalConfirm = async (regenerateRest) => {
-    const swapList = Object.entries(swaps).map(([outId, inId]) => ({ outId, inId }));
     setSaving(true);
     try {
       // Awaited so the modal stays open (with a visible "menyimpan" state)
@@ -8018,10 +8091,75 @@ function EditMatchPlayersModal({ match, resting, playerMap, roundNumber, courtNu
       // would let the host navigate away while the write is still
       // in-flight, risking the edit getting silently reverted if they
       // reopen the event before it lands.
-      await onConfirm(swapList, regenerateRest);
+      await onConfirm([assignment[0], assignment[1]], [assignment[2], assignment[3]], regenerateRest);
     } finally {
       setSaving(false);
     }
+  };
+
+  const renderSlot = (slotIdx) => {
+    const currentId = assignment[slotIdx];
+    const isChanged = currentId !== originalFour[slotIdx];
+    return (
+      <div key={slotIdx}>
+        <div className="flex items-center justify-between gap-2 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3">
+          <div className="min-w-0">
+            {isChanged ? (
+              <>
+                <span className="text-[11px] text-slate-500 line-through block">
+                  {playerMap[originalFour[slotIdx]]}
+                </span>
+                <span className="font-semibold text-lime-300 truncate block">
+                  {playerMap[currentId]}
+                </span>
+              </>
+            ) : (
+              <span className="font-semibold text-slate-100 truncate block">
+                {playerMap[currentId]}
+              </span>
+            )}
+          </div>
+          {isChanged ? (
+            <button
+              onClick={() => handleUndo(slotIdx)}
+              className="px-3 py-1.5 rounded-full text-xs font-semibold shrink-0 bg-slate-800 border border-slate-700 text-slate-300"
+            >
+              Batal
+            </button>
+          ) : (
+            <button
+              onClick={() => setPickerFor(slotIdx)}
+              className="px-3 py-1.5 rounded-full text-xs font-semibold shrink-0 bg-lime-300 text-slate-950"
+            >
+              Ganti
+            </button>
+          )}
+        </div>
+        {pickerFor === slotIdx && (
+          <div className="mt-1.5 ml-2 space-y-1.5 border-l-2 border-slate-800 pl-3">
+            {poolNotOnCourt.length === 0 ? (
+              <p className="text-[11px] text-slate-600 py-1">Nggak ada orang lain buat ditukar.</p>
+            ) : (
+              poolNotOnCourt.map((id) => {
+                const isFromOtherSlot = originalFour.includes(id) && !resting.includes(id);
+                return (
+                  <button
+                    key={id}
+                    onClick={() => handlePick(slotIdx, id)}
+                    className="block w-full text-left text-sm text-slate-200 py-1.5"
+                  >
+                    → {playerMap[id]}
+                    {isFromOtherSlot && (
+                      <span className="text-[10px] text-slate-500"> (tukar posisi)</span>
+                    )}
+                  </button>
+                );
+              })
+            )}
+          </div>
+        )}
+      </div>
+    );
   };
 
   return (
@@ -8037,73 +8175,37 @@ function EditMatchPlayersModal({ match, resting, playerMap, roundNumber, courtNu
         {step === "pick" && (
           <>
             <p className="text-xs text-slate-500 mb-4">
-              Tap salah satu pemain buat ganti dengan yang lagi istirahat ronde ini.
+              Tap salah satu pemain buat ganti — bisa dengan yang lagi istirahat, atau tukar posisi
+              sama pemain lain di match ini.
             </p>
-            <div className="space-y-2 mb-4">
-              {slots.map((outId) => {
-                const inId = swaps[outId];
-                return (
-                  <div key={outId}>
-                    <div className="flex items-center justify-between gap-2 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3">
-                      <div className="min-w-0">
-                        {inId ? (
-                          <>
-                            <span className="text-[11px] text-slate-500 line-through block">
-                              {playerMap[outId]}
-                            </span>
-                            <span className="font-semibold text-lime-300 truncate block">
-                              {playerMap[inId]}
-                            </span>
-                          </>
-                        ) : (
-                          <span className="font-semibold text-slate-100 truncate block">
-                            {playerMap[outId]}
-                          </span>
-                        )}
-                      </div>
-                      {inId ? (
-                        <button
-                          onClick={() => handleUndo(outId)}
-                          className="px-3 py-1.5 rounded-full text-xs font-semibold shrink-0 bg-slate-800 border border-slate-700 text-slate-300"
-                        >
-                          Batal
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => setPickerFor(outId)}
-                          disabled={availableToPick.length === 0}
-                          className="px-3 py-1.5 rounded-full text-xs font-semibold shrink-0 bg-lime-300 text-slate-950 disabled:opacity-40"
-                        >
-                          Ganti
-                        </button>
-                      )}
-                    </div>
-                    {pickerFor === outId && (
-                      <div className="mt-1.5 ml-2 space-y-1.5 border-l-2 border-slate-800 pl-3">
-                        {availableToPick.length === 0 ? (
-                          <p className="text-[11px] text-slate-600 py-1">
-                            Nggak ada yang istirahat buat ganti.
-                          </p>
-                        ) : (
-                          availableToPick.map((inId) => (
-                            <button
-                              key={inId}
-                              onClick={() => handlePick(outId, inId)}
-                              className="block w-full text-left text-sm text-slate-200 py-1.5"
-                            >
-                              → {playerMap[inId]}
-                            </button>
-                          ))
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+            <div className="mb-4">
+              <div className="text-[10px] font-bold tracking-widest text-cyan-300 uppercase mb-1.5 pl-1">
+                Tim Kiri
+              </div>
+              <div className="space-y-2 rounded-2xl border border-cyan-400/20 bg-cyan-400/[0.03] p-2">
+                {renderSlot(0)}
+                {renderSlot(1)}
+              </div>
+            </div>
+            <div className="mb-4">
+              <div className="text-[10px] font-bold tracking-widest text-orange-300 uppercase mb-1.5 pl-1">
+                Tim Kanan
+              </div>
+              <div className="space-y-2 rounded-2xl border border-orange-400/20 bg-orange-400/[0.03] p-2">
+                {renderSlot(2)}
+                {renderSlot(3)}
+              </div>
             </div>
             {resting.length === 0 && (
               <p className="text-[11px] text-amber-300/80 mb-3">
-                Nggak ada yang istirahat di ronde ini buat ditukar masuk.
+                Nggak ada yang istirahat di ronde ini — tapi kamu tetap bisa tukar posisi antar
+                pemain yang lagi main.
+              </p>
+            )}
+            {hasDuplicate && (
+              <p className="text-[11px] text-red-400 mb-3">
+                ⚠️ Ada nama yang kepilih dobel di 2 slot — nggak bisa lanjut. Tap "Batal" di slot
+                yang bermasalah, lalu coba lagi.
               </p>
             )}
             <div className="flex gap-2">
@@ -8115,7 +8217,7 @@ function EditMatchPlayersModal({ match, resting, playerMap, roundNumber, courtNu
               </button>
               <button
                 onClick={() => setStep("confirm")}
-                disabled={!hasSwaps}
+                disabled={!changed || hasDuplicate}
                 className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-lime-300 text-slate-950 disabled:opacity-40"
               >
                 Lanjut
@@ -8167,6 +8269,74 @@ function EditMatchPlayersModal({ match, resting, playerMap, roundNumber, courtNu
             </button>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+// HOST-ONLY: confirms deleting the currently-viewed round, offering the same
+// "regenerate what comes after, or leave it alone" choice as manually
+// editing a match's players.
+function DeleteRoundModal({ roundNumber, onConfirm, onClose }) {
+  const [saving, setSaving] = useState(false);
+  const handle = async (regenerateRest) => {
+    setSaving(true);
+    try {
+      await onConfirm(regenerateRest);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div
+      className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center"
+      onClick={saving ? undefined : onClose}
+    >
+      <div
+        className="bg-slate-950 border border-slate-800 rounded-t-3xl sm:rounded-3xl w-full sm:max-w-sm max-h-[85vh] overflow-y-auto p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="text-xs font-semibold tracking-[0.15em] text-red-300 uppercase mb-1">
+          Hapus Ronde {roundNumber}
+        </div>
+        <p className="text-xs text-slate-500 mb-4">
+          Skor yang sudah diisi di ronde ini ikut hilang, dan ronde-ronde setelahnya bakal bergeser
+          nomornya. Ronde-ronde SETELAH ronde {roundNumber} ini mau disesuaikan juga biar tetap adil
+          dan variatif, atau dibiarkan seperti semula?
+        </p>
+        <div className="space-y-2">
+          <button
+            onClick={() => handle(true)}
+            disabled={saving}
+            className="w-full text-left rounded-xl border border-lime-400/40 bg-lime-400/5 px-4 py-3 disabled:opacity-50"
+          >
+            <div className="font-semibold text-lime-300 text-sm">
+              {saving ? "Menghapus…" : "Ya, sesuaikan ronde sisanya"}
+            </div>
+            <div className="text-[11px] text-slate-500 mt-0.5">
+              Ronde setelah ini digenerate ulang, mempertimbangkan histori baru dari penghapusan ini.
+            </div>
+          </button>
+          <button
+            onClick={() => handle(false)}
+            disabled={saving}
+            className="w-full text-left rounded-xl border border-slate-700 bg-slate-900/50 px-4 py-3 disabled:opacity-50"
+          >
+            <div className="font-semibold text-slate-200 text-sm">
+              {saving ? "Menghapus…" : "Tidak, jangan ubah ronde lainnya"}
+            </div>
+            <div className="text-[11px] text-slate-500 mt-0.5">
+              Ronde-ronde lain tetap seperti semula, cuma nomornya bergeser.
+            </div>
+          </button>
+        </div>
+        <button
+          onClick={onClose}
+          disabled={saving}
+          className="w-full mt-3 py-2 text-xs font-semibold text-slate-500 disabled:opacity-50"
+        >
+          Batal
+        </button>
       </div>
     </div>
   );
@@ -9073,7 +9243,7 @@ function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, e
                     r.winner === "team1" ? "text-lime-300 font-semibold" : "text-slate-200"
                   }`}
                 >
-                  {r.team1.join(" & ")}
+                  {r.team1.join(" - ")}
                 </span>
                 <span
                   className={`font-mono2 text-lg shrink-0 ${
@@ -9089,7 +9259,7 @@ function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, e
                     r.winner === "team2" ? "text-lime-300 font-semibold" : "text-slate-200"
                   }`}
                 >
-                  {r.team2.join(" & ")}
+                  {r.team2.join(" - ")}
                 </span>
                 <span
                   className={`font-mono2 text-lg shrink-0 ${
@@ -9815,7 +9985,7 @@ function ViewOnlyApp({ sessionId }) {
                   <div className="px-4 py-3 space-y-1.5">
                     <div className="flex items-center justify-between gap-3">
                       <span className={`text-sm truncate ${r.winner === "team1" ? "text-lime-300 font-semibold" : "text-slate-200"}`}>
-                        {r.team1.join(" & ")}
+                        {r.team1.join(" - ")}
                       </span>
                       <span className={`font-mono2 text-lg shrink-0 ${r.winner === "team1" ? "text-lime-300" : "text-slate-400"}`}>
                         {r.a}
@@ -9823,7 +9993,7 @@ function ViewOnlyApp({ sessionId }) {
                     </div>
                     <div className="flex items-center justify-between gap-3">
                       <span className={`text-sm truncate ${r.winner === "team2" ? "text-lime-300 font-semibold" : "text-slate-200"}`}>
-                        {r.team2.join(" & ")}
+                        {r.team2.join(" - ")}
                       </span>
                       <span className={`font-mono2 text-lg shrink-0 ${r.winner === "team2" ? "text-lime-300" : "text-slate-400"}`}>
                         {r.b}
