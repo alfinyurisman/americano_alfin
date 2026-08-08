@@ -4257,6 +4257,7 @@ function AmericanoPadel() {
           pointTarget={pointTarget}
           tennisTarget={tennisTarget}
           activityLog={activityLog}
+          players={players}
           ended={ended}
           hasSplitBill={hasSplitBill}
           canManage={canManage}
@@ -9179,7 +9180,7 @@ function SplitBillScreen({
 // RECAP SCREEN (all scored matches, for monitoring rotation fairness)
 // ---------------------------------------------------------------------------
 
-function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, engine, playerMap, scores, scoreFormat, pointTarget, tennisTarget, activityLog, ended, hasSplitBill, canManage, isOwner, currentUser, excludeFromStats, onToggleExcludeFromStats, onNav, onBackToLobby }) {
+function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, engine, playerMap, scores, scoreFormat, pointTarget, tennisTarget, activityLog, players, ended, hasSplitBill, canManage, isOwner, currentUser, excludeFromStats, onToggleExcludeFromStats, onNav, onBackToLobby }) {
   const [filterId, setFilterId] = useState("all");
 
   const allRows = React.useMemo(() => {
@@ -9220,12 +9221,24 @@ function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, e
     return list;
   }, [engine, playerMap, scores]);
 
-  const players = React.useMemo(
+  // Everyone who's ever appeared in this event's schedule, including
+  // people since removed from the roster — kept around for things that
+  // need the full history (like the export button below).
+  const allKnownPlayers = React.useMemo(
     () =>
       Object.entries(playerMap)
         .map(([id, name]) => ({ id, name }))
         .sort((x, y) => x.name.localeCompare(y.name)),
     [playerMap]
+  );
+  // For the filter chips specifically: only people still on the CURRENT
+  // roster. Someone marked not-arrived still counts (they're still on the
+  // roster, just not present that day) — only a genuine delete removes
+  // someone from this list, and their filter chip along with it.
+  const currentRosterIds = React.useMemo(() => new Set((players || []).map((p) => p.id)), [players]);
+  const filterablePlayers = React.useMemo(
+    () => allKnownPlayers.filter((p) => currentRosterIds.has(p.id)),
+    [allKnownPlayers, currentRosterIds]
   );
 
   const rows =
@@ -9251,7 +9264,7 @@ function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, e
         </div>
         <h1 className="font-display text-5xl text-slate-50">REKAP MATCH</h1>
 
-        {players.length > 0 && (
+        {filterablePlayers.length > 0 && (
           <div className="flex gap-1.5 overflow-x-auto pb-1 mt-4 -mx-6 px-6">
             <button
               onClick={() => setFilterId("all")}
@@ -9263,7 +9276,7 @@ function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, e
             >
               Semua
             </button>
-            {players.map((p) => (
+            {filterablePlayers.map((p) => (
               <button
                 key={p.id}
                 onClick={() => setFilterId(p.id)}
