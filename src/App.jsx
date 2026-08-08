@@ -8070,12 +8070,15 @@ function EditMatchPlayersModal({ round, courtIdx, scoredCourtIdxs, playerMap, ro
     ...assignment,
     ...otherCourts.flatMap((c) => (c ? [...c.team1, ...c.team2] : [])),
   ]);
-  // Anyone active this round who ISN'T currently sitting in any of the 4
-  // slots being shown here: could be resting, or playing on a different
-  // court — either way, tapping them pulls them straight into this slot.
-  const pickable = round.resting
-    .concat(otherCourts.flatMap((c) => (c ? [...c.team1, ...c.team2] : [])))
-    .filter((id) => !assignment.includes(id));
+  // Anyone who could go into a given slot: the OTHER 3 people currently in
+  // this same match, whoever's resting this round, and whoever's playing a
+  // different (not-yet-scored) court — everyone genuinely eligible, not
+  // just the resting pool.
+  const pickableForSlot = (slotIdx) => {
+    const withinMatch = assignment.filter((_, i) => i !== slotIdx);
+    const otherCourtPlayers = otherCourts.flatMap((c) => (c ? [...c.team1, ...c.team2] : []));
+    return [...new Set([...withinMatch, ...round.resting, ...otherCourtPlayers])];
+  };
   const changed =
     assignment.some((id, i) => id !== originalFour[i]) ||
     otherCourts.some((c, i) => c && (c.team1[0] !== round.courts[i].team1[0] || c.team1[1] !== round.courts[i].team1[1] || c.team2[0] !== round.courts[i].team2[0] || c.team2[1] !== round.courts[i].team2[1]));
@@ -8093,11 +8096,25 @@ function EditMatchPlayersModal({ round, courtIdx, scoredCourtIdxs, playerMap, ro
 
   const handlePick = (slotIdx, pickedId) => {
     const displaced = assignment[slotIdx];
+    // Picked someone already in a DIFFERENT slot of THIS SAME match — swap
+    // the two positions directly (e.g. trading someone from Tim Kiri to
+    // Tim Kanan and vice versa).
+    const withinIdx = assignment.indexOf(pickedId);
+    if (withinIdx !== -1 && withinIdx !== slotIdx) {
+      setAssignment((prev) => {
+        const next = [...prev];
+        next[withinIdx] = displaced;
+        next[slotIdx] = pickedId;
+        return next;
+      });
+      setPickerFor(null);
+      return;
+    }
+    // Picked someone playing a DIFFERENT court — pull them in, and put
+    // whoever was in this slot into the spot they're vacating, so that
+    // other court still ends up with exactly 4 players too.
     const foundElsewhere = whichCourtHas(pickedId);
     if (foundElsewhere) {
-      // Pulling someone in from a DIFFERENT court — put whoever was in
-      // this slot into the spot they're vacating, so that other court
-      // still ends up with exactly 4 players too.
       setOtherCourts((prev) => {
         const next = [...prev];
         const court = { team1: [...next[foundElsewhere.i].team1], team2: [...next[foundElsewhere.i].team2] };
@@ -8169,32 +8186,39 @@ function EditMatchPlayersModal({ round, courtIdx, scoredCourtIdxs, playerMap, ro
             {isChanged ? "Ganti Lagi" : "Ganti"}
           </button>
         </div>
-        {pickerFor === slotIdx && (
-          <div className="mt-1.5 ml-2 space-y-1.5 border-l-2 border-slate-800 pl-3 max-h-40 overflow-y-auto">
-            {pickable.length === 0 ? (
-              <p className="text-[11px] text-slate-600 py-1">Nggak ada orang lain buat ditukar.</p>
-            ) : (
-              pickable.map((id) => {
-                const elsewhere = whichCourtHas(id);
-                return (
-                  <button
-                    key={id}
-                    onClick={() => handlePick(slotIdx, id)}
-                    className="block w-full text-left text-sm text-slate-200 py-1.5"
-                  >
-                    → {playerMap[id]}
-                    {elsewhere && (
-                      <span className="text-[10px] text-slate-500">
-                        {" "}
-                        (main di Lap.{elsewhere.i + 1})
-                      </span>
-                    )}
-                  </button>
-                );
-              })
-            )}
-          </div>
-        )}
+        {pickerFor === slotIdx && (() => {
+          const options = pickableForSlot(slotIdx);
+          return (
+            <div className="mt-1.5 ml-2 space-y-1.5 border-l-2 border-slate-800 pl-3 max-h-40 overflow-y-auto">
+              {options.length === 0 ? (
+                <p className="text-[11px] text-slate-600 py-1">Nggak ada orang lain buat ditukar.</p>
+              ) : (
+                options.map((id) => {
+                  const elsewhere = whichCourtHas(id);
+                  const isInThisMatch = assignment.includes(id);
+                  return (
+                    <button
+                      key={id}
+                      onClick={() => handlePick(slotIdx, id)}
+                      className="block w-full text-left text-sm text-slate-200 py-1.5"
+                    >
+                      → {playerMap[id]}
+                      {elsewhere && (
+                        <span className="text-[10px] text-slate-500">
+                          {" "}
+                          (main di Lap.{elsewhere.i + 1})
+                        </span>
+                      )}
+                      {isInThisMatch && (
+                        <span className="text-[10px] text-slate-500"> (tukar posisi)</span>
+                      )}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          );
+        })()}
       </div>
     );
   };
