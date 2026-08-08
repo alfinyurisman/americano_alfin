@@ -4808,7 +4808,6 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
               ev.ownerUsername ||
               (isOwnerEntry ? currentUser?.displayName || currentUser?.username : "");
             const isInvited = ev.role === "invited";
-            const waiting = ev.status === "waiting";
 
             if (isInvited) {
               return (
@@ -4890,19 +4889,17 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
                     </Chip>
                     {ev.ended ? (
                       <Chip tone="lime">
-                        <Trophy size={11} /> Selesai
-                      </Chip>
-                    ) : waiting ? (
-                      <Chip tone="amber">
-                        <Clock size={11} /> Menunggu peserta
+                        <Trophy size={11} /> Sudah Selesai
                       </Chip>
                     ) : started ? (
-                      <Chip tone="lime">
-                        <Clock size={11} /> Ronde {Math.min(ev.currentRound + 1, ev.roundsTotal)}/
+                      <Chip tone="cyan">
+                        <Zap size={11} /> Berjalan · Ronde {Math.min(ev.currentRound + 1, ev.roundsTotal)}/
                         {ev.roundsTotal}
                       </Chip>
                     ) : (
-                      <Chip tone="slate">Belum dimulai</Chip>
+                      <Chip tone="amber">
+                        <Clock size={11} /> Menunggu
+                      </Chip>
                     )}
                   </div>
                 </button>
