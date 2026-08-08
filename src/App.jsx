@@ -3225,39 +3225,48 @@ function AmericanoPadel() {
     return false;
   };
 
-  const handleEditMatchPlayers = async (roundIdx, courtIdx, newTeam1, newTeam2, regenerateRest) => {
+  const handleEditMatchPlayers = async (roundIdx, courtIdx, newTeam1, newTeam2, otherCourtChanges, regenerateRest) => {
     if (!engine) return;
     const rd = engine.roundsData[roundIdx];
-    const court = rd.courts[courtIdx];
-    const originalFour = [...court.team1, ...court.team2];
+    const originalCourt = rd.courts[courtIdx];
+    const originalFour = [...originalCourt.team1, ...originalCourt.team2];
     const newFour = [...newTeam1, ...newTeam2];
-    if (originalFour.every((id, i) => id === newFour[i])) return; // nothing actually changed
-    // Whoever was involved before (playing this specific match OR resting
+    const nothingChanged =
+      originalFour.every((id, i) => id === newFour[i]) &&
+      (!otherCourtChanges || otherCourtChanges.length === 0);
+    if (nothingChanged) return;
+
+    const newCourts = rd.courts.map((c, i) => {
+      if (i === courtIdx) return { team1: newTeam1, team2: newTeam2 };
+      const change = otherCourtChanges?.find((oc) => oc.courtIdx === i);
+      return change ? { team1: change.team1, team2: change.team2 } : c;
+    });
+    // Whoever was involved before (playing ANY court this round, OR resting
     // this round) is the full pool that could end up resting now — anyone
-    // from that pool not in the new foursome is resting; anyone in the new
-    // foursome is playing, regardless of where they were before (handles
-    // resting<->playing swaps AND playing<->playing position swaps alike).
-    const involvedBefore = [...new Set([...originalFour, ...rd.resting])];
-    const newResting = involvedBefore.filter((id) => !newFour.includes(id));
-    const editedRound = {
-      ...rd,
-      resting: newResting,
-      courts: rd.courts.map((c, i) => (i === courtIdx ? { team1: newTeam1, team2: newTeam2 } : c)),
-    };
-    const changedDesc = originalFour
+    // from that pool not currently in ANY court's lineup is resting; this
+    // covers resting<->playing swaps, playing<->playing swaps within one
+    // court, AND pulling someone in from a different court, all at once.
+    const involvedBefore = [...new Set([...rd.courts.flatMap((c) => [...c.team1, ...c.team2]), ...rd.resting])];
+    const allNewPlaying = newCourts.flatMap((c) => [...c.team1, ...c.team2]);
+    const newResting = involvedBefore.filter((id) => !allNewPlaying.includes(id));
+    const editedRound = { ...rd, resting: newResting, courts: newCourts };
+    const changedDescParts = originalFour
       .map((oldId, i) => (oldId !== newFour[i] ? `${playerMap[newFour[i]]} gantiin ${playerMap[oldId]}` : null))
-      .filter(Boolean)
-      .join(", ");
-    // What we'll check for in the read-back: this exact round's court now
-    // matches the intended new lineup, confirming the write we intended to
+      .filter(Boolean);
+    if (otherCourtChanges?.length) {
+      changedDescParts.push(`(+ ${otherCourtChanges.length} penyesuaian di lapangan lain)`);
+    }
+    const changedDesc = changedDescParts.join(", ");
+    // What we'll check for in the read-back: this exact round's courts now
+    // match the intended new lineup, confirming the write we intended to
     // make is genuinely the one sitting in storage.
     const verifyEdit = (saved) => {
-      const savedCourt = saved?.engine?.roundsData?.[roundIdx]?.courts?.[courtIdx];
-      if (!savedCourt) return false;
-      return (
-        JSON.stringify(savedCourt.team1) === JSON.stringify(newTeam1) &&
-        JSON.stringify(savedCourt.team2) === JSON.stringify(newTeam2)
-      );
+      const savedRound = saved?.engine?.roundsData?.[roundIdx];
+      if (!savedRound) return false;
+      return newCourts.every((c, i) => {
+        const sc = savedRound.courts?.[i];
+        return sc && JSON.stringify(sc.team1) === JSON.stringify(c.team1) && JSON.stringify(sc.team2) === JSON.stringify(c.team2);
+      });
     };
 
     if (!regenerateRest) {
@@ -7413,13 +7422,16 @@ function SessionScreen(props) {
 
       {editingCourtIdx !== null && (
         <EditMatchPlayersModal
-          match={round.courts[editingCourtIdx]}
-          resting={round.resting}
+          round={round}
+          courtIdx={editingCourtIdx}
+          scoredCourtIdxs={round.courts
+            .map((c, i) => (isMatchScoreComplete(scores[`${currentRound}-${i}`]) ? i : null))
+            .filter((i) => i !== null)}
           playerMap={playerMap}
           roundNumber={currentRound + 1}
           courtNumber={editingCourtIdx + 1}
-          onConfirm={async (newTeam1, newTeam2, regenerateRest) => {
-            await onEditMatchPlayers(currentRound, editingCourtIdx, newTeam1, newTeam2, regenerateRest);
+          onConfirm={async (newTeam1, newTeam2, otherCourtChanges, regenerateRest) => {
+            await onEditMatchPlayers(currentRound, editingCourtIdx, newTeam1, newTeam2, otherCourtChanges, regenerateRest);
             setEditingCourtIdx(null);
           }}
           onClose={() => setEditingCourtIdx(null)}
@@ -7642,18 +7654,18 @@ function PointsScorePicker({ s, target, onPick, team1Label, team2Label }) {
         <span className="font-mono2 text-3xl text-lime-300 w-10 text-center">{b ?? "–"}</span>
       </div>
 
-      <div className="grid grid-cols-2 gap-0 relative max-h-[45vh] overflow-y-auto">
+      <div className="grid grid-cols-2 gap-0 relative max-h-[50vh] overflow-y-auto">
         <div className="absolute left-1/2 top-0 bottom-0 w-px bg-slate-700" />
         <div className="pr-3">
-          <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-2 truncate sticky top-0 bg-slate-950 py-1">
+          <div className="text-xs font-semibold text-white text-center mb-2 truncate sticky top-0 bg-slate-950 py-1">
             {team1Label || "tim kiri"}
           </div>
-          <div className="space-y-1.5">
+          <div className="grid grid-cols-3 gap-1.5">
             {nums.map((n) => (
               <button
                 key={n}
                 onClick={() => onPick("a", n)}
-                className={`w-full h-9 rounded-lg text-sm font-bold border ${
+                className={`h-9 rounded-lg text-sm font-bold border ${
                   a === n
                     ? "bg-lime-300 text-slate-950 border-lime-300"
                     : "bg-slate-900 text-slate-300 border-slate-700"
@@ -7665,15 +7677,15 @@ function PointsScorePicker({ s, target, onPick, team1Label, team2Label }) {
           </div>
         </div>
         <div className="pl-3">
-          <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-2 truncate sticky top-0 bg-slate-950 py-1">
+          <div className="text-xs font-semibold text-white text-center mb-2 truncate sticky top-0 bg-slate-950 py-1">
             {team2Label || "tim kanan"}
           </div>
-          <div className="space-y-1.5">
+          <div className="grid grid-cols-3 gap-1.5">
             {nums.map((n) => (
               <button
                 key={n}
                 onClick={() => onPick("b", n)}
-                className={`w-full h-9 rounded-lg text-sm font-bold border ${
+                className={`h-9 rounded-lg text-sm font-bold border ${
                   b === n
                     ? "bg-lime-300 text-slate-950 border-lime-300"
                     : "bg-slate-900 text-slate-300 border-slate-700"
@@ -8033,65 +8045,92 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, onConfir
 // Two-step flow: (1) pick which slot(s) to swap and with whom, (2) decide
 // whether every round AFTER this one should be regenerated to reflect the
 // change, or left exactly as-is.
-function EditMatchPlayersModal({ match, resting, playerMap, roundNumber, courtNumber, onConfirm, onClose }) {
+function EditMatchPlayersModal({ round, courtIdx, scoredCourtIdxs, playerMap, roundNumber, courtNumber, onConfirm, onClose }) {
   // Slots are fixed positions: 0-1 = Tim Kiri (team1), 2-3 = Tim Kanan (team2).
-  const originalFour = [...match.team1, ...match.team2];
-  const [assignment, setAssignment] = useState(originalFour); // current occupant of each of the 4 slots
+  const originalMatch = round.courts[courtIdx];
+  const originalFour = [...originalMatch.team1, ...originalMatch.team2];
+  const [assignment, setAssignment] = useState(originalFour); // this court's 4 slots
+  // Deep-copyable snapshot of every OTHER court this round that ISN'T
+  // already scored, so pulling someone in from a different court (not just
+  // from resting) works too — "all player tersedia" means literally
+  // everyone active this round who's eligible, not just whoever's resting.
+  // Courts that already have a recorded score are deliberately left out —
+  // pulling from one of those would silently change who a real result
+  // belongs to.
+  const [otherCourts, setOtherCourts] = useState(() =>
+    round.courts.map((c, i) =>
+      i === courtIdx || scoredCourtIdxs.includes(i) ? null : { team1: [...c.team1], team2: [...c.team2] }
+    )
+  );
   const [pickerFor, setPickerFor] = useState(null); // slot index currently choosing a replacement, or null
   const [step, setStep] = useState("pick"); // pick | confirm
   const [saving, setSaving] = useState(false);
 
-  // Anyone who could conceivably fill one of these 4 slots: whoever's
-  // resting this round, PLUS the 4 people who originally started this match
-  // (so swapping someone out and later wanting them back — or swapping two
-  // of the original four between teams — both just work, without needing
-  // to close and reopen the editor).
-  const eligiblePool = [...new Set([...resting, ...originalFour])];
-  const poolNotOnCourt = eligiblePool.filter((id) => !assignment.includes(id));
-  const changed = assignment.some((id, i) => id !== originalFour[i]);
-  const hasDuplicate = new Set(assignment).size !== assignment.length;
+  const everyoneOnAnyCourt = new Set([
+    ...assignment,
+    ...otherCourts.flatMap((c) => (c ? [...c.team1, ...c.team2] : [])),
+  ]);
+  // Anyone active this round who ISN'T currently sitting in any of the 4
+  // slots being shown here: could be resting, or playing on a different
+  // court — either way, tapping them pulls them straight into this slot.
+  const pickable = round.resting
+    .concat(otherCourts.flatMap((c) => (c ? [...c.team1, ...c.team2] : [])))
+    .filter((id) => !assignment.includes(id));
+  const changed =
+    assignment.some((id, i) => id !== originalFour[i]) ||
+    otherCourts.some((c, i) => c && (c.team1[0] !== round.courts[i].team1[0] || c.team1[1] !== round.courts[i].team1[1] || c.team2[0] !== round.courts[i].team2[0] || c.team2[1] !== round.courts[i].team2[1]));
+  const hasDuplicate = everyoneOnAnyCourt.size !== assignment.length + otherCourts.reduce((s, c) => s + (c ? 4 : 0), 0);
+
+  const whichCourtHas = (id) => {
+    for (let i = 0; i < otherCourts.length; i++) {
+      const c = otherCourts[i];
+      if (!c) continue;
+      if (c.team1.includes(id)) return { i, side: "team1", pos: c.team1.indexOf(id) };
+      if (c.team2.includes(id)) return { i, side: "team2", pos: c.team2.indexOf(id) };
+    }
+    return null;
+  };
 
   const handlePick = (slotIdx, pickedId) => {
+    const displaced = assignment[slotIdx];
+    const foundElsewhere = whichCourtHas(pickedId);
+    if (foundElsewhere) {
+      // Pulling someone in from a DIFFERENT court — put whoever was in
+      // this slot into the spot they're vacating, so that other court
+      // still ends up with exactly 4 players too.
+      setOtherCourts((prev) => {
+        const next = [...prev];
+        const court = { team1: [...next[foundElsewhere.i].team1], team2: [...next[foundElsewhere.i].team2] };
+        court[foundElsewhere.side][foundElsewhere.pos] = displaced;
+        next[foundElsewhere.i] = court;
+        return next;
+      });
+    }
     setAssignment((prev) => {
       const next = [...prev];
-      const otherSlot = prev.indexOf(pickedId);
-      if (otherSlot !== -1 && otherSlot !== slotIdx) {
-        // Picked someone currently occupying a different slot — swap the two
-        // positions outright (e.g. trading a player from Tim Kiri to Tim
-        // Kanan and vice versa), rather than leaving a gap.
-        next[otherSlot] = prev[slotIdx];
-      }
       next[slotIdx] = pickedId;
       return next;
     });
     setPickerFor(null);
   };
-  const handleUndo = (slotIdx) => {
-    setAssignment((prev) => {
-      const next = [...prev];
-      const shouldBeHere = originalFour[slotIdx];
-      const whereIsShouldBeHere = prev.indexOf(shouldBeHere);
-      if (whereIsShouldBeHere !== -1 && whereIsShouldBeHere !== slotIdx) {
-        // The person who originally belonged in this slot is currently
-        // sitting in a DIFFERENT slot (from an earlier swap) — swap them
-        // back properly instead of just overwriting, which would otherwise
-        // leave that person duplicated in two slots and whoever was here
-        // silently dropped.
-        next[whereIsShouldBeHere] = prev[slotIdx];
-      }
-      next[slotIdx] = shouldBeHere;
-      return next;
-    });
-  };
+
   const handleFinalConfirm = async (regenerateRest) => {
     setSaving(true);
     try {
+      const otherCourtChanges = otherCourts
+        .map((c, i) => (c ? { courtIdx: i, team1: c.team1, team2: c.team2 } : null))
+        .filter(Boolean);
       // Awaited so the modal stays open (with a visible "menyimpan" state)
       // until the change is actually confirmed saved — closing immediately
       // would let the host navigate away while the write is still
       // in-flight, risking the edit getting silently reverted if they
       // reopen the event before it lands.
-      await onConfirm([assignment[0], assignment[1]], [assignment[2], assignment[3]], regenerateRest);
+      await onConfirm(
+        [assignment[0], assignment[1]],
+        [assignment[2], assignment[3]],
+        otherCourtChanges,
+        regenerateRest
+      );
     } finally {
       setSaving(false);
     }
@@ -8119,29 +8158,24 @@ function EditMatchPlayersModal({ match, resting, playerMap, roundNumber, courtNu
               </span>
             )}
           </div>
-          {isChanged ? (
-            <button
-              onClick={() => handleUndo(slotIdx)}
-              className="px-3 py-1.5 rounded-full text-xs font-semibold shrink-0 bg-slate-800 border border-slate-700 text-slate-300"
-            >
-              Batal
-            </button>
-          ) : (
-            <button
-              onClick={() => setPickerFor(slotIdx)}
-              className="px-3 py-1.5 rounded-full text-xs font-semibold shrink-0 bg-lime-300 text-slate-950"
-            >
-              Ganti
-            </button>
-          )}
+          <button
+            onClick={() => setPickerFor(pickerFor === slotIdx ? null : slotIdx)}
+            className={`px-3 py-1.5 rounded-full text-xs font-semibold shrink-0 ${
+              isChanged
+                ? "bg-slate-800 border border-slate-700 text-slate-300"
+                : "bg-lime-300 text-slate-950"
+            }`}
+          >
+            {isChanged ? "Ganti Lagi" : "Ganti"}
+          </button>
         </div>
         {pickerFor === slotIdx && (
-          <div className="mt-1.5 ml-2 space-y-1.5 border-l-2 border-slate-800 pl-3">
-            {poolNotOnCourt.length === 0 ? (
+          <div className="mt-1.5 ml-2 space-y-1.5 border-l-2 border-slate-800 pl-3 max-h-40 overflow-y-auto">
+            {pickable.length === 0 ? (
               <p className="text-[11px] text-slate-600 py-1">Nggak ada orang lain buat ditukar.</p>
             ) : (
-              poolNotOnCourt.map((id) => {
-                const isFromOtherSlot = originalFour.includes(id) && !resting.includes(id);
+              pickable.map((id) => {
+                const elsewhere = whichCourtHas(id);
                 return (
                   <button
                     key={id}
@@ -8149,8 +8183,11 @@ function EditMatchPlayersModal({ match, resting, playerMap, roundNumber, courtNu
                     className="block w-full text-left text-sm text-slate-200 py-1.5"
                   >
                     → {playerMap[id]}
-                    {isFromOtherSlot && (
-                      <span className="text-[10px] text-slate-500"> (tukar posisi)</span>
+                    {elsewhere && (
+                      <span className="text-[10px] text-slate-500">
+                        {" "}
+                        (main di Lap.{elsewhere.i + 1})
+                      </span>
                     )}
                   </button>
                 );
@@ -8175,8 +8212,8 @@ function EditMatchPlayersModal({ match, resting, playerMap, roundNumber, courtNu
         {step === "pick" && (
           <>
             <p className="text-xs text-slate-500 mb-4">
-              Tap salah satu pemain buat ganti — bisa dengan yang lagi istirahat, atau tukar posisi
-              sama pemain lain di match ini.
+              Tap salah satu pemain buat ganti — semua orang di ronde ini tersedia, baik yang lagi
+              istirahat maupun yang main di lapangan lain.
             </p>
             <div className="mb-4">
               <div className="text-[10px] font-bold tracking-widest text-cyan-300 uppercase mb-1.5 pl-1">
@@ -8196,16 +8233,16 @@ function EditMatchPlayersModal({ match, resting, playerMap, roundNumber, courtNu
                 {renderSlot(3)}
               </div>
             </div>
-            {resting.length === 0 && (
-              <p className="text-[11px] text-amber-300/80 mb-3">
-                Nggak ada yang istirahat di ronde ini — tapi kamu tetap bisa tukar posisi antar
-                pemain yang lagi main.
+            {otherCourts.some((c) => c) && (
+              <p className="text-[11px] text-slate-600 mb-3">
+                Kalau kamu tarik orang dari lapangan lain, orang yang digeser otomatis ngisi
+                posisinya di lapangan itu — nggak akan ada yang kelewatan.
               </p>
             )}
             {hasDuplicate && (
               <p className="text-[11px] text-red-400 mb-3">
-                ⚠️ Ada nama yang kepilih dobel di 2 slot — nggak bisa lanjut. Tap "Batal" di slot
-                yang bermasalah, lalu coba lagi.
+                ⚠️ Ada nama yang kepilih dobel — nggak bisa lanjut. Coba tap "Ganti Lagi" di slot
+                yang bermasalah.
               </p>
             )}
             <div className="flex gap-2">
