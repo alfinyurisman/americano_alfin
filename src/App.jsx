@@ -4301,20 +4301,30 @@ function BottomNav({ active, onNav, showSplitBill }) {
     { key: "stats", label: "Statistik", icon: BarChart3 },
     ...(showSplitBill ? [{ key: "splitbill", label: "Split Bill", icon: Wallet }] : []),
   ];
+  const activeIdx = Math.max(0, items.findIndex((i) => i.key === active));
+  const pct = 100 / items.length;
+
   return (
-    <div className="fixed bottom-0 left-0 right-0 bg-slate-950/95 backdrop-blur border-t border-slate-800 flex z-20 max-w-md mx-auto">
-      {items.map(({ key, label, icon: Icon }) => (
-        <button
-          key={key}
-          onClick={() => onNav(key)}
-          className={`flex-1 py-3 flex flex-col items-center gap-1 ${
-            active === key ? "text-lime-300" : "text-slate-500"
-          }`}
-        >
-          <Icon size={20} strokeWidth={active === key ? 2.5 : 2} />
-          <span className="text-[11px] font-semibold">{label}</span>
-        </button>
-      ))}
+    <div className="fixed bottom-0 left-0 right-0 bg-slate-950/95 backdrop-blur border-t border-slate-800 z-20 max-w-md mx-auto px-3">
+      <div className="relative bg-slate-900 rounded-full p-1 flex">
+        {/* Sliding highlight — animates left/width to the active tab */}
+        <div
+          className="absolute top-1 bottom-1 bg-lime-300 rounded-full transition-all duration-300 ease-out"
+          style={{ left: `${activeIdx * pct}%`, width: `${pct}%` }}
+        />
+        {items.map(({ key, label, icon: Icon }) => (
+          <button
+            key={key}
+            onClick={() => onNav(key)}
+            className={`relative z-10 flex-1 py-2 flex flex-col items-center gap-1 transition-colors duration-300 ${
+              active === key ? "text-slate-950" : "text-slate-500"
+            }`}
+          >
+            <Icon size={20} strokeWidth={active === key ? 2.5 : 2} />
+            <span className="text-[11px] font-semibold">{label}</span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -10220,25 +10230,38 @@ function ViewOnlyApp({ sessionId }) {
       </div>
       </div>
 
-      <div className="fixed bottom-0 left-0 right-0 bg-slate-950/95 backdrop-blur border-t border-slate-800 flex z-20 max-w-md mx-auto">
-        {[
+      {(() => {
+        const voItems = [
           { key: "session", label: "Jadwal", icon: Clock },
           { key: "leaderboard", label: "Klasemen", icon: Trophy },
           { key: "recap", label: "Rekap", icon: ClipboardList },
           ...(hasSplitBill ? [{ key: "splitbill", label: "Split Bill", icon: Wallet }] : []),
-        ].map(({ key, label, icon: Icon }) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={`flex-1 py-3 flex flex-col items-center gap-1 ${
-              tab === key ? "text-lime-300" : "text-slate-500"
-            }`}
-          >
-            <Icon size={20} strokeWidth={tab === key ? 2.5 : 2} />
-            <span className="text-[11px] font-semibold">{label}</span>
-          </button>
-        ))}
-      </div>
+        ];
+        const voActiveIdx = Math.max(0, voItems.findIndex((i) => i.key === tab));
+        const voPct = 100 / voItems.length;
+        return (
+          <div className="fixed bottom-0 left-0 right-0 bg-slate-950/95 backdrop-blur border-t border-slate-800 z-20 max-w-md mx-auto px-3">
+            <div className="relative bg-slate-900 rounded-full p-1 flex">
+              <div
+                className="absolute top-1 bottom-1 bg-lime-300 rounded-full transition-all duration-300 ease-out"
+                style={{ left: `${voActiveIdx * voPct}%`, width: `${voPct}%` }}
+              />
+              {voItems.map(({ key, label, icon: Icon }) => (
+                <button
+                  key={key}
+                  onClick={() => setTab(key)}
+                  className={`relative z-10 flex-1 py-2 flex flex-col items-center gap-1 transition-colors duration-300 ${
+                    tab === key ? "text-slate-950" : "text-slate-500"
+                  }`}
+                >
+                  <Icon size={20} strokeWidth={tab === key ? 2.5 : 2} />
+                  <span className="text-[11px] font-semibold">{label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
