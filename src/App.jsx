@@ -3120,7 +3120,18 @@ function AmericanoPadel() {
     // where a silently-failed or raced write is easy to miss until the
     // event is reopened later and the "removed" person is mysteriously
     // back — confirm it actually landed instead of assuming it did.
-    const intendedIds = new Set(newPlayers.map((p) => p.id));
+    //
+    // IMPORTANT: this has to check more than just "same set of ids" — for
+    // an attendance toggle specifically, the id set never changes (same
+    // people, just one person's `arrived` flag flips), so an id-only check
+    // would trivially "pass" even if the write silently failed to persist
+    // the actual arrived value, giving a false sense of success and
+    // exactly matching the "looked like it worked, then reverted later"
+    // symptom this is meant to catch.
+    const intendedById = {};
+    newPlayers.forEach((p) => {
+      intendedById[p.id] = p.arrived !== false;
+    });
     const saved = await persistAndVerify(
       {
         players: newPlayers,
@@ -3132,10 +3143,18 @@ function AmericanoPadel() {
         courtStages: newCourtStages,
       },
       (readBack) => {
-        const savedIds = new Set((readBack.players || []).map((p) => p.id));
-        return (
-          savedIds.size === intendedIds.size && [...intendedIds].every((id) => savedIds.has(id))
+        const savedPlayers = readBack.players || [];
+        const savedById = {};
+        savedPlayers.forEach((p) => {
+          savedById[p.id] = p.arrived !== false;
+        });
+        const idsMatch =
+          savedPlayers.length === newPlayers.length &&
+          Object.keys(intendedById).every((id) => id in savedById);
+        const arrivedMatches = Object.keys(intendedById).every(
+          (id) => savedById[id] === intendedById[id]
         );
+        return idsMatch && arrivedMatches;
       }
     );
     if (!saved) {
@@ -8445,8 +8464,18 @@ function DeleteRoundModal({ roundNumber, onConfirm, onClose }) {
 
 function AttendanceModal({ players, onToggle, onClose }) {
   const arrivedCount = players.filter((p) => p.arrived !== false).length;
+  const [togglingId, setTogglingId] = useState(null); // which player's toggle is currently in-flight
+  const handleToggle = async (id) => {
+    if (togglingId) return; // one in flight at a time — prevents the confusing "did that register?" double-tap
+    setTogglingId(id);
+    try {
+      await onToggle(id);
+    } finally {
+      setTogglingId(null);
+    }
+  };
   return (
-    <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center" onClick={togglingId ? undefined : onClose}>
       <div
         className="bg-slate-950 border border-slate-800 rounded-t-3xl sm:rounded-3xl w-full sm:max-w-sm max-h-[85vh] overflow-y-auto p-5"
         onClick={(e) => e.stopPropagation()}
@@ -8466,6 +8495,7 @@ function AttendanceModal({ players, onToggle, onClose }) {
         <div className="space-y-2">
           {players.map((p) => {
             const arrived = p.arrived !== false;
+            const isToggling = togglingId === p.id;
             return (
               <div
                 key={p.id}
@@ -8475,21 +8505,22 @@ function AttendanceModal({ players, onToggle, onClose }) {
               >
                 <span className="font-semibold text-slate-100 truncate">{p.name}</span>
                 <button
-                  onClick={() => onToggle(p.id)}
-                  className={`px-3 py-1.5 rounded-full text-xs font-semibold shrink-0 ${
+                  onClick={() => handleToggle(p.id)}
+                  disabled={!!togglingId}
+                  className={`px-3 py-1.5 rounded-full text-xs font-semibold shrink-0 disabled:opacity-50 ${
                     arrived
                       ? "bg-lime-300 text-slate-950"
                       : "bg-slate-800 border border-amber-400/60 text-amber-300"
                   }`}
                 >
-                  {arrived ? "Sudah Datang" : "Belum Datang"}
+                  {isToggling ? "Menyimpan…" : arrived ? "Sudah Datang" : "Belum Datang"}
                 </button>
               </div>
             );
           })}
         </div>
 
-        <PrimaryButton onClick={onClose} className="w-full mt-5">
+        <PrimaryButton onClick={onClose} disabled={!!togglingId} className="w-full mt-5">
           Tutup
         </PrimaryButton>
       </div>
