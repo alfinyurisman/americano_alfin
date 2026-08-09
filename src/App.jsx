@@ -49,11 +49,20 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
   // their rest-count stayed low relative to everyone else, badly delaying
   // their next turn. Tracking wait-to-play directly avoids that.
   const lastPlayed = seed ? { ...seed.lastPlayed } : {};
+  // Tracks, per player, how many consecutive rounds in a row they've been
+  // bumped out of a tied "everyone here is equally overdue" group in favor
+  // of someone else for variety's sake (see the clump-swap logic below).
+  // Bounded to a max of 1 — once someone's already been bumped once, they
+  // become fully protected (unconditionally guaranteed) until they play,
+  // so nobody ever waits more than one extra round beyond their fair turn
+  // because of this mechanism.
+  const skipDebt = seed && seed.skipDebt ? { ...seed.skipDebt } : {};
 
   playerIds.forEach((id) => {
     if (playCount[id] === undefined) playCount[id] = 0;
     if (restCount[id] === undefined) restCount[id] = 0;
     if (lastPlayed[id] === undefined) lastPlayed[id] = -1;
+    if (skipDebt[id] === undefined) skipDebt[id] = 0;
     if (!partner[id]) partner[id] = {};
     if (!opp[id]) opp[id] = {};
     playerIds.forEach((o) => {
@@ -100,8 +109,42 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
       // never if the round below is "just played last round" (wait 1) since
       // reusing them back-to-back is never worth it for variety's sake.
       const cutoffWait = globalR - lastPlayed[sorted[capacity - 1]];
-      const guaranteed = sorted.filter((id) => globalR - lastPlayed[id] > cutoffWait);
+      let guaranteed = sorted.filter((id) => globalR - lastPlayed[id] > cutoffWait);
       const tier0 = sorted.filter((id) => globalR - lastPlayed[id] === cutoffWait);
+
+      // Clump-swap: when 3+ guaranteed players are all tied at the exact
+      // same (highest) wait — the classic "everyone who rested last round
+      // is unconditionally guaranteed next round" situation with a small
+      // court-to-player ratio — that whole group has genuinely equal claim
+      // to the next slot, yet locking all of them in every single time
+      // repeatedly recombines the same trio and starves partner/opponent
+      // variety. So: split them into whoever's already been bumped once
+      // (skipDebt >= 1 — fully protected, must play, no exceptions) and
+      // whoever hasn't (skipDebt === 0 — eligible to be swapped out this
+      // round). The eligible ones join the flex pool below, where the
+      // existing variety-optimized trial selection decides — using the
+      // same cost function as always — whether swapping one of them out
+      // for a tier0 candidate actually helps. If it doesn't help, nothing
+      // changes. Debt bookkeeping after `active` is finalized guarantees
+      // nobody who gets bumped this way waits more than one extra round.
+      let clumpEligible = [];
+      if (capacity <= 4 && guaranteed.length >= 3) {
+        const topWait = globalR - lastPlayed[guaranteed[0]];
+        const tiedAtTop = guaranteed.filter((id) => globalR - lastPlayed[id] === topWait);
+        if (tiedAtTop.length >= 3) {
+          const eligible = tiedAtTop.filter((id) => (skipDebt[id] || 0) === 0);
+          // Keep at least 2 of the tied group unconditionally guaranteed
+          // even if all of them are debt-eligible — the swap should trade
+          // ONE person's turn for better variety, never gamble with the
+          // whole group at once.
+          clumpEligible = eligible.slice(0, tiedAtTop.length - 2);
+          if (clumpEligible.length > 0) {
+            const clumpEligibleSet = new Set(clumpEligible);
+            guaranteed = guaranteed.filter((id) => !clumpEligibleSet.has(id));
+          }
+        }
+      }
+
       const neededFromFlex = capacity - guaranteed.length;
 
       const cutoffIsNeverPlayedTier = tier0.some((id) => lastPlayed[id] === -1);
@@ -120,6 +163,9 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
         if (cutoffWait - 1 >= 2 || tier0.length <= neededFromFlex) {
           flexCandidates = [...tier0, ...tier1];
         }
+      }
+      if (clumpEligible.length > 0) {
+        flexCandidates = [...clumpEligible, ...flexCandidates];
       }
 
       if (flexCandidates.length <= neededFromFlex) {
@@ -169,6 +215,15 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
       });
       active.forEach((id) => {
         lastPlayed[id] = globalR;
+        skipDebt[id] = 0; // playing this round pays off any debt from a previous bump
+      });
+      // Anyone who was eligible to be swapped out of the guaranteed clump
+      // but genuinely didn't make it into `active` this round has now been
+      // bumped once — mark them fully protected (guaranteed, no more
+      // swapping) until they play, so the wait they take on here is capped
+      // at exactly one extra round.
+      clumpEligible.forEach((id) => {
+        if (!activeSet.has(id)) skipDebt[id] = 1;
       });
     }
 
@@ -243,7 +298,7 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
     roundsData.push({ resting, courts: courtsResult });
   }
 
-  return { roundsData, playCount, restCount, partner, opp, usableCourts, lastPlayed };
+  return { roundsData, playCount, restCount, partner, opp, usableCourts, lastPlayed, skipDebt };
 }
 
 // ---------------------------------------------------------------------------
@@ -2593,6 +2648,7 @@ function AmericanoPadel() {
           playCount: part.playCount,
           restCount: part.restCount,
           lastPlayed: part.lastPlayed,
+          skipDebt: part.skipDebt,
         };
         lastPart = part;
       });
@@ -2604,6 +2660,7 @@ function AmericanoPadel() {
         opp: lastPart.opp,
         usableCourts: lastPart.usableCourts,
         lastPlayed: lastPart.lastPlayed,
+        skipDebt: lastPart.skipDebt,
       };
     } else {
       result = generateSchedule(ids, courts, computedRounds);
@@ -2734,6 +2791,7 @@ function AmericanoPadel() {
       playCount: engine.playCount,
       restCount: engine.restCount,
       lastPlayed: engine.lastPlayed || {},
+      skipDebt: engine.skipDebt || {},
     };
     const part = generateSchedule(ids, courts, n, seed, engine.roundsData.length);
     const newRoundsData = [...engine.roundsData, ...part.roundsData];
@@ -2745,6 +2803,7 @@ function AmericanoPadel() {
       opp: part.opp,
       usableCourts: part.usableCourts,
       lastPlayed: part.lastPlayed,
+      skipDebt: part.skipDebt,
     };
     const newRoundIdx = newRoundsData.length - 1;
     setEngine(newEngine);
@@ -2800,7 +2859,7 @@ function AmericanoPadel() {
       const freshPart =
         remainingCount > 0
           ? generateSchedule(activeIds, courts, remainingCount, seed, roundIdx)
-          : { roundsData: [], playCount: seed.playCount, restCount: seed.restCount, partner: seed.partner, opp: seed.opp, usableCourts: 0, lastPlayed: seed.lastPlayed };
+          : { roundsData: [], playCount: seed.playCount, restCount: seed.restCount, partner: seed.partner, opp: seed.opp, usableCourts: 0, lastPlayed: seed.lastPlayed, skipDebt: seed.skipDebt };
       newRoundsData = [...lockedRounds, ...freshPart.roundsData];
       newEngine = {
         roundsData: newRoundsData,
@@ -2810,6 +2869,7 @@ function AmericanoPadel() {
         opp: freshPart.opp,
         usableCourts: freshPart.usableCourts,
         lastPlayed: freshPart.lastPlayed,
+        skipDebt: freshPart.skipDebt,
       };
       newScores = {};
       Object.keys(scores).forEach((key) => {
@@ -2923,45 +2983,7 @@ function AmericanoPadel() {
 
     // Rebuild the fairness-history seed by replaying ONLY the locked rounds
     // (not the discarded future ones) against the active roster.
-    const seed = { partner: {}, opp: {}, playCount: {}, restCount: {}, lastPlayed: {} };
-    activePlayers.forEach((p) => {
-      seed.playCount[p.id] = 0;
-      seed.restCount[p.id] = 0;
-      seed.lastPlayed[p.id] = -1;
-      seed.partner[p.id] = {};
-      seed.opp[p.id] = {};
-    });
-    lockedRounds.forEach((rd, rIdx) => {
-      rd.resting.forEach((id) => {
-        if (seed.restCount[id] !== undefined) {
-          seed.restCount[id]++;
-        }
-      });
-      rd.courts.forEach(({ team1, team2 }) => {
-        const [a, b] = team1;
-        const [c, d] = team2;
-        [a, b, c, d].forEach((id) => {
-          if (seed.playCount[id] !== undefined) seed.playCount[id]++;
-          if (seed.lastPlayed[id] !== undefined) seed.lastPlayed[id] = rIdx;
-        });
-        if (seed.partner[a] && seed.partner[a][b] !== undefined) {
-          seed.partner[a][b]++;
-          seed.partner[b][a]++;
-        }
-        if (seed.partner[c] && seed.partner[c][d] !== undefined) {
-          seed.partner[c][d]++;
-          seed.partner[d][c]++;
-        }
-        [a, b].forEach((x) =>
-          [c, d].forEach((y) => {
-            if (seed.opp[x] && seed.opp[x][y] !== undefined) {
-              seed.opp[x][y]++;
-              seed.opp[y][x]++;
-            }
-          })
-        );
-      });
-    });
+    const seed = replayRoundsIntoSeed(lockedRounds, activePlayers.map((p) => p.id));
 
     // Anyone who has genuinely never played a single (locked/scored) round
     // yet starts with lastPlayed=-1 and zero partner/opponent history. That's
@@ -3076,6 +3098,7 @@ function AmericanoPadel() {
           playCount: part.playCount,
           restCount: part.restCount,
           lastPlayed: part.lastPlayed,
+          skipDebt: part.skipDebt,
         };
         lastPart = part;
       });
@@ -3093,6 +3116,7 @@ function AmericanoPadel() {
       opp: freshPart.opp,
       usableCourts: freshPart.usableCourts,
       lastPlayed: freshPart.lastPlayed,
+      skipDebt: freshPart.skipDebt,
     };
 
     // Keep scores for locked (already-complete) rounds; drop everything else
@@ -3170,15 +3194,43 @@ function AmericanoPadel() {
   // manual-edit paths below so "what the numbers should be" always comes
   // from the actual round data, never from incrementally patching state.
   const replayRoundsIntoSeed = (roundsToReplay, activeIds) => {
-    const seed = { partner: {}, opp: {}, playCount: {}, restCount: {}, lastPlayed: {} };
+    const seed = { partner: {}, opp: {}, playCount: {}, restCount: {}, lastPlayed: {}, skipDebt: {} };
     activeIds.forEach((id) => {
       seed.playCount[id] = 0;
       seed.restCount[id] = 0;
       seed.lastPlayed[id] = -1;
+      seed.skipDebt[id] = 0;
       seed.partner[id] = {};
       seed.opp[id] = {};
     });
     roundsToReplay.forEach((rd, rIdx) => {
+      // Infer skipDebt the same way generateSchedule tracks it: before this
+      // round's actual outcome is known, work out who a strict wait-time
+      // clump-swap would've considered "eligible to be bumped", then check
+      // whether they actually ended up playing. This keeps debt state
+      // consistent with real history whenever the schedule gets replayed
+      // and regenerated (reshuffle, edits, roster changes), rather than
+      // resetting everyone's bump eligibility to a clean slate each time.
+      const capacityThisRound = rd.courts.length * 4;
+      if (capacityThisRound <= 4 && activeIds.length > capacityThisRound) {
+        const sorted = [...activeIds].sort(
+          (x, y) => rIdx - seed.lastPlayed[x] - (rIdx - seed.lastPlayed[y])
+        );
+        const cutoffWait = rIdx - seed.lastPlayed[sorted[capacityThisRound - 1]];
+        const guaranteed = sorted.filter((id) => rIdx - seed.lastPlayed[id] > cutoffWait);
+        if (guaranteed.length >= 3) {
+          const topWait = rIdx - seed.lastPlayed[guaranteed[0]];
+          const tiedAtTop = guaranteed.filter((id) => rIdx - seed.lastPlayed[id] === topWait);
+          if (tiedAtTop.length >= 3) {
+            const eligible = tiedAtTop.filter((id) => (seed.skipDebt[id] || 0) === 0);
+            const clumpEligible = eligible.slice(0, tiedAtTop.length - 2);
+            const actuallyPlayed = new Set(rd.courts.flatMap((c) => [...c.team1, ...c.team2]));
+            clumpEligible.forEach((id) => {
+              if (!actuallyPlayed.has(id)) seed.skipDebt[id] = 1;
+            });
+          }
+        }
+      }
       rd.resting.forEach((id) => {
         if (seed.restCount[id] !== undefined) seed.restCount[id]++;
       });
@@ -3188,6 +3240,7 @@ function AmericanoPadel() {
         [a, b, c, d].forEach((id) => {
           if (seed.playCount[id] !== undefined) seed.playCount[id]++;
           if (seed.lastPlayed[id] !== undefined) seed.lastPlayed[id] = rIdx;
+          if (seed.skipDebt[id] !== undefined) seed.skipDebt[id] = 0;
         });
         if (seed.partner[a] && seed.partner[a][b] !== undefined) {
           seed.partner[a][b]++;
@@ -3325,6 +3378,7 @@ function AmericanoPadel() {
         opp: freshPart.opp,
         usableCourts: freshPart.usableCourts,
         lastPlayed: freshPart.lastPlayed,
+        skipDebt: freshPart.skipDebt,
       };
       const newScores = {};
       Object.keys(scores).forEach((key) => {
