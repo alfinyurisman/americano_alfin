@@ -2106,6 +2106,22 @@ function AmericanoPadel() {
     const newInvitations = (data.hostInvitations || []).filter(
       (i) => i.accountId !== currentUser.accountId
     );
+
+    const saveAndVerify = async (partial, checkFn) => {
+      const delays = [300, 700, 1200];
+      for (let attempt = 0; attempt < delays.length; attempt++) {
+        const ok = await saveSessionData(sessionId, partial);
+        if (ok) {
+          await new Promise((r) => setTimeout(r, delays[attempt]));
+          const readBack = await loadSessionData(sessionId);
+          if (readBack && checkFn(readBack)) return true;
+        } else {
+          await new Promise((r) => setTimeout(r, delays[attempt]));
+        }
+      }
+      return false;
+    };
+
     if (accept) {
       const already = (data.players || []).some((p) => p.accountId === currentUser.accountId);
       const newPlayers = already
@@ -2114,18 +2130,25 @@ function AmericanoPadel() {
             ...(data.players || []),
             { id: uid(), name: currentUser.username, accountId: currentUser.accountId },
           ];
-      await saveSessionData(sessionId, {
-        ...data,
-        players: newPlayers,
-        hostInvitations: newInvitations,
-        updatedAt: Date.now(),
-      });
+      // Mirrors the cleanup in handleJoinViaLink: if this person ALSO opened
+      // the share link around the same time (racing this accept), there
+      // could be a leftover pendingRequest for them too — clear that here
+      // as well, so neither path can leave a stale entry for the other to
+      // stumble over later and re-add them.
+      const newPending = (data.pendingRequests || []).filter(
+        (p) => p.accountId !== currentUser.accountId
+      );
+      await saveAndVerify(
+        { ...data, players: newPlayers, pendingRequests: newPending, hostInvitations: newInvitations, updatedAt: Date.now() },
+        (readBack) =>
+          (readBack.players || []).some((p) => p.accountId === currentUser.accountId) &&
+          !(readBack.hostInvitations || []).some((i) => i.accountId === currentUser.accountId)
+      );
     } else {
-      await saveSessionData(sessionId, {
-        ...data,
-        hostInvitations: newInvitations,
-        updatedAt: Date.now(),
-      });
+      await saveAndVerify(
+        { ...data, hostInvitations: newInvitations, updatedAt: Date.now() },
+        (readBack) => !(readBack.hostInvitations || []).some((i) => i.accountId === currentUser.accountId)
+      );
     }
 
     const myList = await loadLobbyIndex(currentUser.accountId);
@@ -2174,11 +2197,40 @@ function AmericanoPadel() {
       // If the host had sent this person an invitation but they came in via
       // the share link instead of accepting it, that invitation is now moot
       // — drop it so it doesn't sit forever under "Undangan Menunggu Respon".
+      // This used to be a single unverified save; strengthened with a
+      // read-back retry (same reasoning as persistAndVerify elsewhere) after
+      // a real case showed someone ending up listed twice — accepting an
+      // invitation directly AND opening the link close together raced two
+      // separate un-verified writes against each other.
       const invitationsWithoutMe = (data.hostInvitations || []).filter(
         (i) => i.accountId !== account.accountId
       );
       const hadStaleInvitation =
         invitationsWithoutMe.length !== (data.hostInvitations || []).length;
+
+      const saveAndVerify = async (partial) => {
+        const delays = [300, 700, 1200];
+        for (let attempt = 0; attempt < delays.length; attempt++) {
+          const ok = await saveSessionData(id, partial);
+          if (ok) {
+            await new Promise((r) => setTimeout(r, delays[attempt]));
+            const readBack = await loadSessionData(id);
+            if (readBack) {
+              const stillPlayer = (readBack.players || []).some((p) => p.accountId === account.accountId);
+              const stillPending = (readBack.pendingRequests || []).some(
+                (p) => p.accountId === account.accountId
+              );
+              const invitationCleared = !(readBack.hostInvitations || []).some(
+                (i) => i.accountId === account.accountId
+              );
+              if ((stillPlayer || stillPending) && invitationCleared) return readBack;
+            }
+          } else {
+            await new Promise((r) => setTimeout(r, delays[attempt]));
+          }
+        }
+        return null;
+      };
 
       if (!alreadyPlayer && !alreadyPending) {
         const newPending = [
@@ -2191,10 +2243,12 @@ function AmericanoPadel() {
           hostInvitations: invitationsWithoutMe,
           updatedAt: Date.now(),
         };
-        await saveSessionData(id, current);
+        const verified = await saveAndVerify(current);
+        if (verified) current = verified;
       } else if (hadStaleInvitation) {
         current = { ...data, hostInvitations: invitationsWithoutMe, updatedAt: Date.now() };
-        await saveSessionData(id, current);
+        const verified = await saveAndVerify(current);
+        if (verified) current = verified;
       }
     }
 
@@ -3533,8 +3587,16 @@ function AmericanoPadel() {
   const handleApproveRequest = (reqId) => {
     const req = pendingRequests.find((r) => r.id === reqId);
     if (!req) return;
-    const newPlayers = [...players, { id: req.id, name: req.name, accountId: req.accountId }];
     const newPending = pendingRequests.filter((r) => r.id !== reqId);
+    // Same safety check already used in handleRespondInvitation and
+    // handleJoinViaLink: if this person is somehow already in the roster
+    // (e.g. they accepted a direct invitation separately, or opened the
+    // share link more than once before this request got cleared), don't
+    // add them a second time — just clear the now-redundant request.
+    const alreadyPlayer = req.accountId && players.some((p) => p.accountId === req.accountId);
+    const newPlayers = alreadyPlayer
+      ? players
+      : [...players, { id: req.id, name: req.name, accountId: req.accountId }];
     // They're in the roster now, so any invitation still waiting on them is
     // obsolete — clear it rather than leaving it pending forever.
     const newInvitations = req.accountId
