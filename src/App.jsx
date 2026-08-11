@@ -7417,7 +7417,7 @@ function SessionScreen(props) {
             scoreFormat === "tennis" ? s.gamesA || 0 : s.a !== undefined && s.a !== "" ? s.a : "–";
           const scoreB =
             scoreFormat === "tennis" ? s.gamesB || 0 : s.b !== undefined && s.b !== "" ? s.b : "–";
-          const openModal = canManage && scoreFormat === "points" ? () => setScoreModal(cIdx) : undefined;
+          const openModal = canManage ? () => setScoreModal(cIdx) : undefined;
           return (
             <div key={cIdx} className="rounded-2xl border border-slate-800 overflow-hidden bg-slate-900/40">
               <div className="px-4 py-2 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
@@ -7463,7 +7463,6 @@ function SessionScreen(props) {
                   readOnly={!canManage}
                   onPoint={(side) => incrementTennisPoint(cIdx, side)}
                   onReset={() => resetTennisMatch(cIdx)}
-                  onSetGames={(side, value) => setTennisGamesDirect(cIdx, side, value)}
                 />
               )}
 
@@ -7500,8 +7499,23 @@ function SessionScreen(props) {
           team2={round.courts[scoreModal].team2.map((id) => playerMap[id])}
           s={scores[`${currentRound}-${scoreModal}`] || {}}
           target={pointTarget}
+          mode="points"
           onPick={(side, n) => setPointsPair(scoreModal, side, n)}
           onReset={() => resetPointsScore(scoreModal)}
+          onClose={() => setScoreModal(null)}
+        />
+      )}
+
+      {scoreModal !== null && scoreFormat === "tennis" && (
+        <ScoreModal
+          roundLabel={`Ronde ${currentRound + 1} – Lapangan ${scoreModal + 1}`}
+          team1={round.courts[scoreModal].team1.map((id) => playerMap[id])}
+          team2={round.courts[scoreModal].team2.map((id) => playerMap[id])}
+          s={scores[`${currentRound}-${scoreModal}`] || {}}
+          target={tennisTarget}
+          mode="tennis"
+          onPick={(side, n) => setTennisGamesDirect(scoreModal, side, n)}
+          onReset={() => resetTennisMatch(scoreModal)}
           onClose={() => setScoreModal(null)}
         />
       )}
@@ -7710,7 +7724,7 @@ function TeamSide({ names, align, won, score, onClick }) {
         className={`shrink-0 font-mono2 text-lg px-2.5 py-1 rounded-lg border ${
           won
             ? "bg-lime-300 text-slate-950 border-lime-300"
-            : "bg-slate-900 text-slate-400 border-slate-700"
+            : "bg-slate-900 text-white border-slate-700"
         }`}
       >
         {score}
@@ -7752,9 +7766,9 @@ function TeamSide({ names, align, won, score, onClick }) {
   );
 }
 
-function PointsScorePicker({ s, target, onPick, team1Label, team2Label }) {
-  const a = s.a !== undefined && s.a !== "" && s.a !== null ? Number(s.a) : null;
-  const b = s.b !== undefined && s.b !== "" && s.b !== null ? Number(s.b) : null;
+function PointsScorePicker({ valueA, valueB, target, onPick, team1Label, team2Label }) {
+  const a = valueA !== undefined && valueA !== "" && valueA !== null ? Number(valueA) : null;
+  const b = valueB !== undefined && valueB !== "" && valueB !== null ? Number(valueB) : null;
   const t = Math.max(1, Number(target) || 21);
   const nums = Array.from({ length: t + 1 }, (_, i) => i);
 
@@ -7813,7 +7827,9 @@ function PointsScorePicker({ s, target, onPick, team1Label, team2Label }) {
   );
 }
 
-function ScoreModal({ roundLabel, team1, team2, s, target, onPick, onReset, onClose }) {
+function ScoreModal({ roundLabel, team1, team2, s, target, mode = "points", onPick, onReset, onClose }) {
+  const valueA = mode === "tennis" ? s.gamesA || 0 : s.a;
+  const valueB = mode === "tennis" ? s.gamesB || 0 : s.b;
   return (
     <div
       className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center"
@@ -7831,9 +7847,16 @@ function ScoreModal({ roundLabel, team1, team2, s, target, onPick, onReset, onCl
           <span className="text-slate-600">vs</span>
           <span className="font-semibold text-white">{team2.join(" - ")}</span>
         </div>
+        {mode === "tennis" && (
+          <p className="text-[11px] text-slate-500 -mt-2 mb-4">
+            Pilih jumlah game akhir (race to {target}). Progres poin per game (0/15/30/40) ikut
+            direset ke 0-0.
+          </p>
+        )}
 
         <PointsScorePicker
-          s={s}
+          valueA={valueA}
+          valueB={valueB}
           target={target}
           onPick={onPick}
           team1Label={team1.join(" - ")}
@@ -8649,15 +8672,13 @@ function tennisPointLabels(pointsA, pointsB) {
   return { a: labels[Math.min(pointsA, 3)], b: labels[Math.min(pointsB, 3)] };
 }
 
-function TennisScoreTracker({ s, target, onPoint, onReset, onSetGames, readOnly }) {
-  const [showGameEditor, setShowGameEditor] = useState(false);
+function TennisScoreTracker({ s, target, onPoint, onReset, readOnly }) {
   const gamesA = s.gamesA || 0;
   const gamesB = s.gamesB || 0;
   const pointsA = s.pointsA || 0;
   const pointsB = s.pointsB || 0;
   const finished = gamesA >= target || gamesB >= target;
   const labels = tennisPointLabels(pointsA, pointsB);
-  const gameOptions = Array.from({ length: target + 1 }, (_, i) => i);
 
   return (
     <div className="border-t border-slate-800">
@@ -8695,63 +8716,10 @@ function TennisScoreTracker({ s, target, onPoint, onReset, onSetGames, readOnly 
         </button>
       </div>
       )}
-      {!readOnly && onSetGames && (
-        <div className="px-4 pb-3">
-          <button
-            onClick={() => setShowGameEditor((v) => !v)}
-            className="text-[11px] font-semibold text-cyan-300"
-          >
-            {showGameEditor ? "Sembunyikan set skor langsung" : "Set skor game langsung →"}
-          </button>
-          {showGameEditor && (
-            <div className="mt-3 space-y-3">
-              <p className="text-[11px] text-slate-500">
-                Langsung tentukan jumlah game akhir tanpa perlu tap poin satu-satu. Progres poin
-                (0/15/30/40) akan direset ke 0-0.
-              </p>
-              <div>
-                <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-1.5">
-                  Game tim kiri: <span className="text-slate-300">{gamesA}</span>
-                </div>
-                <div className="grid grid-cols-6 gap-1.5">
-                  {gameOptions.map((n) => (
-                    <button
-                      key={n}
-                      onClick={() => onSetGames("a", n)}
-                      className={`h-8 rounded-lg text-xs font-bold border ${
-                        gamesA === n
-                          ? "bg-lime-300 text-slate-950 border-lime-300"
-                          : "bg-slate-900 text-slate-300 border-slate-700"
-                      }`}
-                    >
-                      {n}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-1.5">
-                  Game tim kanan: <span className="text-slate-300">{gamesB}</span>
-                </div>
-                <div className="grid grid-cols-6 gap-1.5">
-                  {gameOptions.map((n) => (
-                    <button
-                      key={n}
-                      onClick={() => onSetGames("b", n)}
-                      className={`h-8 rounded-lg text-xs font-bold border ${
-                        gamesB === n
-                          ? "bg-lime-300 text-slate-950 border-lime-300"
-                          : "bg-slate-900 text-slate-300 border-slate-700"
-                      }`}
-                    >
-                      {n}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
+      {!readOnly && (
+        <p className="px-4 pb-3 text-[11px] text-slate-500">
+          Tap angka skor di atas buat langsung pilih jumlah game akhir (race to {target}).
+        </p>
       )}
     </div>
   );
