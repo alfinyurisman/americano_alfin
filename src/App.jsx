@@ -2123,6 +2123,15 @@ function AmericanoPadel() {
     };
 
     if (accept) {
+      // Deliberately matches by accountId ONLY, not by name. Auto-merging
+      // into a same-named guest entry felt convenient for the one case that
+      // prompted it, but it's not safe as a general rule: two different
+      // real people can easily share a name, and silently attaching
+      // someone's real account to a guest entry that was actually a
+      // DIFFERENT person would incorrectly credit them with matches they
+      // never played. If this exact situation comes up, the host can
+      // manually delete the redundant guest entry via Kelola Pertandingan
+      // instead — a deliberate action instead of an automatic guess.
       const already = (data.players || []).some((p) => p.accountId === currentUser.accountId);
       const newPlayers = already
         ? data.players || []
@@ -2561,11 +2570,19 @@ function AmericanoPadel() {
   const addPlayerFromInput = () => {
     const name = nameInput.trim();
     if (!name) return;
+    const dup = players.some((p) => p.name.trim().toLowerCase() === name.toLowerCase());
+    if (dup) {
+      const confirmed = window.confirm(
+        `"${name}" sudah ada di daftar. Tetap tambahkan sebagai orang yang berbeda? (Kalau maksudnya orang yang SAMA, batalkan ini — dia udah ada.)`
+      );
+      if (!confirmed) return;
+    }
     setPlayers((p) => {
       const next = [...p, { id: uid(), name }];
       persist({ players: next });
       return next;
     });
+    if (activeId) logActivity(`Tambah pemain: ${name}${dup ? " (nama sama dengan yang sudah ada)" : ""}`);
     setNameInput("");
   };
 
@@ -2576,8 +2593,27 @@ function AmericanoPadel() {
       .filter(Boolean);
     if (!names.length) return;
     setPlayers((p) => {
-      const next = [...p, ...names.map((name) => ({ id: uid(), name }))];
+      const existingLower = new Set(p.map((x) => x.name.trim().toLowerCase()));
+      const genuinelyNew = [];
+      const skipped = [];
+      names.forEach((name) => {
+        if (existingLower.has(name.toLowerCase())) {
+          skipped.push(name);
+        } else {
+          genuinelyNew.push(name);
+          existingLower.add(name.toLowerCase()); // guard against duplicates within the pasted list itself too
+        }
+      });
+      if (skipped.length) {
+        alert(
+          `${skipped.length} nama dilewati karena sudah ada di daftar: ${skipped.join(", ")}.\n\n` +
+            `${genuinelyNew.length} nama baru ditambahkan.`
+        );
+      }
+      if (genuinelyNew.length === 0) return p;
+      const next = [...p, ...genuinelyNew.map((name) => ({ id: uid(), name }))];
       persist({ players: next });
+      if (activeId) logActivity(`Tambah pemain (tempel banyak): ${genuinelyNew.join(", ")}`);
       return next;
     });
     setBulkInput("");
@@ -2727,6 +2763,13 @@ function AmericanoPadel() {
     setScores({});
     setStatus("active");
     setScreen("session");
+    // Once the event has actually started, a still-pending invitation
+    // serves no purpose — whoever it was for either already made it into
+    // the roster some other way (added manually, joined via link) or
+    // simply isn't playing this time. Leaving it dangling is what let the
+    // "accept a stale invitation after already being added as a guest"
+    // duplicate-entry bug happen in the first place, so clear the slate
+    // here rather than relying only on the accept-time guest-matching fix.
     persist({
       status: "active",
       players: arrivedPlayers,
@@ -2734,7 +2777,9 @@ function AmericanoPadel() {
       playerMap: map,
       currentRound: 0,
       scores: {},
+      hostInvitations: [],
     });
+    setHostInvitations([]);
     logActivity(`Generate jadwal awal (${ids.length} pemain, ${courts} lapangan, ${computedRounds} ronde)`);
   };
 
@@ -2750,7 +2795,7 @@ function AmericanoPadel() {
   // over). This mirrors exactly how attendance-toggling/"Kelola
   // Pertandingan" already behaves, so reshuffling and toggling someone's
   // attendance can be mixed freely as two ways to reach the same result.
-  const handleReshuffleMatches = () => {
+  const handleReshuffleMatches = async () => {
     if (!engine) return;
     const allScored = engine.roundsData.every((rd, rIdx) =>
       rd.courts.every((_, cIdx) => isMatchScoreComplete(scores[`${rIdx}-${cIdx}`]))
@@ -2766,8 +2811,15 @@ function AmericanoPadel() {
     )
       return;
     try {
-      handleAdjustScheduleInner(players);
-      logActivity("Reshuffle sisa jadwal (ronde yang sudah lengkap skornya tetap disimpan)");
+      // Awaited on purpose: this used to fire-and-forget, so clicking
+      // Reshuffle rapidly several times in a row (easy to do when hunting
+      // for a better-looking combination) could have MULTIPLE regeneration
+      // calls in flight at once, each reading/writing based on a slightly
+      // different snapshot — whichever finished last would silently win,
+      // occasionally producing a result that looked like it ignored a
+      // change (e.g. a just-deleted player) made moments before.
+      const saved = await handleAdjustScheduleInner(players);
+      if (saved) logActivity("Reshuffle sisa jadwal (ronde yang sudah lengkap skornya tetap disimpan)");
     } catch (e) {
       console.error("handleReshuffleMatches failed:", e);
       alert(
@@ -3594,6 +3646,11 @@ function AmericanoPadel() {
     // share link more than once before this request got cleared), don't
     // add them a second time — just clear the now-redundant request.
     const alreadyPlayer = req.accountId && players.some((p) => p.accountId === req.accountId);
+    // Deliberately matches by accountId ONLY, not by name — see the same
+    // reasoning in handleRespondInvitation. Auto-merging by name risks
+    // attaching a real account to a DIFFERENT person's guest entry just
+    // because they happen to share a name; if that's genuinely the same
+    // person, the host can merge them manually via Kelola Pertandingan.
     const newPlayers = alreadyPlayer
       ? players
       : [...players, { id: req.id, name: req.name, accountId: req.accountId }];
@@ -7319,6 +7376,7 @@ function SessionScreen(props) {
   const [showAttendance, setShowAttendance] = useState(false);
   const [showAddAutoRound, setShowAddAutoRound] = useState(false);
   const [editingCourtIdx, setEditingCourtIdx] = useState(null); // court index being manually edited, or null
+  const [reshuffling, setReshuffling] = useState(false);
   const [showDeleteRoundConfirm, setShowDeleteRoundConfirm] = useState(false);
 
   useEffect(() => {
@@ -7615,6 +7673,7 @@ function SessionScreen(props) {
           scoredCourtIdxs={round.courts
             .map((c, i) => (isMatchScoreComplete(scores[`${currentRound}-${i}`]) ? i : null))
             .filter((i) => i !== null)}
+          currentRosterIds={new Set(players.map((p) => p.id))}
           playerMap={playerMap}
           roundNumber={currentRound + 1}
           courtNumber={editingCourtIdx + 1}
@@ -7683,11 +7742,20 @@ function SessionScreen(props) {
           </PrimaryButton>
           {isOwner && (
             <button
-              onClick={onReshuffle}
-              className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-bold tracking-wide bg-amber-500 text-white active:scale-[0.98] transition-transform w-full"
+              onClick={async () => {
+                if (reshuffling) return;
+                setReshuffling(true);
+                try {
+                  await onReshuffle();
+                } finally {
+                  setReshuffling(false);
+                }
+              }}
+              disabled={reshuffling}
+              className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-bold tracking-wide bg-amber-500 text-white active:scale-[0.98] transition-transform w-full disabled:opacity-50"
             >
-              <Shuffle size={18} strokeWidth={2.5} />
-              Reshuffle
+              <Shuffle size={18} strokeWidth={2.5} className={reshuffling ? "animate-spin" : ""} />
+              {reshuffling ? "Menyesuaikan…" : "Reshuffle"}
             </button>
           )}
           <p className="text-[11px] text-slate-500 text-center px-4">
@@ -8093,6 +8161,13 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, onConfir
   const addManual = () => {
     const name = nameInput.trim();
     if (!name) return;
+    const dup = roster.some((p) => p.name.trim().toLowerCase() === name.toLowerCase());
+    if (dup) {
+      const confirmed = window.confirm(
+        `"${name}" sudah ada di daftar. Tetap tambahkan sebagai orang yang berbeda? (Kalau maksudnya orang yang SAMA, batalkan ini — dia udah ada, cukup toggle kehadirannya kalau perlu.)`
+      );
+      if (!confirmed) return;
+    }
     setRoster([...roster, { id: uid(), name }]);
     setNameInput("");
   };
@@ -8242,7 +8317,7 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, onConfir
 // Two-step flow: (1) pick which slot(s) to swap and with whom, (2) decide
 // whether every round AFTER this one should be regenerated to reflect the
 // change, or left exactly as-is.
-function EditMatchPlayersModal({ round, courtIdx, scoredCourtIdxs, playerMap, roundNumber, courtNumber, onConfirm, onClose }) {
+function EditMatchPlayersModal({ round, courtIdx, scoredCourtIdxs, currentRosterIds, playerMap, roundNumber, courtNumber, onConfirm, onClose }) {
   // Slots are fixed positions: 0-1 = Tim Kiri (team1), 2-3 = Tim Kanan (team2).
   const originalMatch = round.courts[courtIdx];
   const originalFour = [...originalMatch.team1, ...originalMatch.team2];
@@ -8274,7 +8349,13 @@ function EditMatchPlayersModal({ round, courtIdx, scoredCourtIdxs, playerMap, ro
   const pickableForSlot = (slotIdx) => {
     const withinMatch = assignment.filter((_, i) => i !== slotIdx);
     const otherCourtPlayers = otherCourts.flatMap((c) => (c ? [...c.team1, ...c.team2] : []));
-    return [...new Set([...withinMatch, ...round.resting, ...otherCourtPlayers])];
+    const pool = [...new Set([...withinMatch, ...round.resting, ...otherCourtPlayers])];
+    // Defensive filter: a round's resting/court data is baked in at
+    // generation time and can go stale if someone gets deleted from the
+    // roster afterward without every unscored round having a chance to
+    // regenerate — don't offer someone who's no longer actually part of
+    // the event.
+    return currentRosterIds ? pool.filter((id) => currentRosterIds.has(id)) : pool;
   };
   const changed =
     assignment.some((id, i) => id !== originalFour[i]) ||
