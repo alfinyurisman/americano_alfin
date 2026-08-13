@@ -1987,6 +1987,145 @@ function buildLeaderboard(engine, playerMap, scores, activeIds) {
     }));
 }
 
+// Fixed Partner counterpart to buildLeaderboard: aggregates by TEAM (fixed
+// pair) instead of by individual player, since in this mode both partners
+// always have identical stats anyway (they're never separated) — showing
+// them as one combined row is both more accurate to how the format works
+// and less repetitive than two identical-looking individual rows.
+function buildTeamLeaderboard(engine, playerMap, scores, fixedPairs) {
+  if (!engine || !fixedPairs || fixedPairs.length === 0) return [];
+  const totals = {};
+  const teamOfPlayer = {};
+  fixedPairs.forEach(([a, b], i) => {
+    const teamId = `team_${i}_${a}_${b}`;
+    totals[teamId] = {
+      id: teamId,
+      name: `${playerMap[a] || a} & ${playerMap[b] || b}`,
+      playerIds: [a, b],
+      points: 0,
+      wins: 0,
+      losses: 0,
+      ties: 0,
+      diff: 0,
+      matches: 0,
+      rests: (engine.restCount && engine.restCount[teamId]) || 0,
+    };
+    teamOfPlayer[a] = teamId;
+    teamOfPlayer[b] = teamId;
+  });
+
+  engine.roundsData.forEach((rd, rIdx) => {
+    rd.courts.forEach((match, cIdx) => {
+      const s = scores[`${rIdx}-${cIdx}`];
+      const ab = matchAB(s);
+      if (!ab) return;
+      const { a, b } = ab;
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return;
+      const team1Id = teamOfPlayer[match.team1[0]];
+      const team2Id = teamOfPlayer[match.team2[0]];
+      if (!team1Id || !team2Id || !totals[team1Id] || !totals[team2Id]) return;
+      totals[team1Id].points += a;
+      totals[team1Id].diff += a - b;
+      totals[team1Id].matches += 1;
+      totals[team2Id].points += b;
+      totals[team2Id].diff += b - a;
+      totals[team2Id].matches += 1;
+      if (a > b) {
+        totals[team1Id].wins += 1;
+        totals[team2Id].losses += 1;
+      } else if (b > a) {
+        totals[team2Id].wins += 1;
+        totals[team1Id].losses += 1;
+      } else {
+        totals[team1Id].ties += 1;
+        totals[team2Id].ties += 1;
+      }
+    });
+  });
+
+  return Object.values(totals).map((t) => ({
+    ...t,
+    winPercent: t.matches > 0 ? (t.wins / t.matches) * 100 : 0,
+    ppm: t.matches > 0 ? t.points / t.matches : 0,
+  }));
+}
+
+// Given a Fixed Partner event's fixedPairs and a playerMap, returns a
+// lookup from individual player id -> display team name ("Alfin & Budi").
+// Used to relabel match participants as their team wherever individual
+// names would otherwise be shown (Rekap, Statistik).
+function buildTeamNameByPlayer(fixedPairs, playerMap) {
+  const map = {};
+  (fixedPairs || []).forEach(([a, b]) => {
+    const teamName = `${playerMap[a] || a} & ${playerMap[b] || b}`;
+    map[a] = teamName;
+    map[b] = teamName;
+  });
+  return map;
+}
+
+// Fixed Partner counterpart to the individual fairness-stats computation
+// (matches/rests/wins/losses/unique-opponents) built inline in the main
+// component — same idea, aggregated by team. "Unique partners" doesn't
+// apply here (a team's partner is always the same person by definition),
+// so this tracks unique OPPONENT TEAMS faced instead.
+function buildTeamFairnessStats(engine, playerMap, scores, fixedPairs, currentRound) {
+  if (!engine || !fixedPairs || fixedPairs.length === 0) return [];
+  const teams = fixedPairs.map(([a, b], i) => ({
+    id: `team_${i}_${a}_${b}`,
+    name: `${playerMap[a] || a} & ${playerMap[b] || b}`,
+    players: [a, b],
+  }));
+  const teamOfPlayer = {};
+  teams.forEach((t) => t.players.forEach((pid) => (teamOfPlayer[pid] = t.id)));
+
+  const playedSoFar = {};
+  const wins = {};
+  const losses = {};
+  const oppsOf = {};
+  teams.forEach((t) => (oppsOf[t.id] = new Set()));
+
+  engine.roundsData.forEach((rd, rIdx) => {
+    if (rIdx <= currentRound) {
+      const playingTeamIds = new Set(
+        rd.courts.flatMap((c) => [teamOfPlayer[c.team1[0]], teamOfPlayer[c.team2[0]]]).filter(Boolean)
+      );
+      playingTeamIds.forEach((id) => (playedSoFar[id] = (playedSoFar[id] || 0) + 1));
+    }
+    rd.courts.forEach((match, cIdx) => {
+      const team1Id = teamOfPlayer[match.team1[0]];
+      const team2Id = teamOfPlayer[match.team2[0]];
+      if (!team1Id || !team2Id) return;
+      const matchScored = isMatchScoreComplete(scores[`${rIdx}-${cIdx}`]);
+      if (matchScored) {
+        oppsOf[team1Id].add(team2Id);
+        oppsOf[team2Id].add(team1Id);
+      }
+      const s = scores[`${rIdx}-${cIdx}`];
+      const ab = matchAB(s);
+      if (!ab || !Number.isFinite(ab.a) || !Number.isFinite(ab.b) || ab.a === ab.b) return;
+      const winnerId = ab.a > ab.b ? team1Id : team2Id;
+      const loserId = ab.a > ab.b ? team2Id : team1Id;
+      wins[winnerId] = (wins[winnerId] || 0) + 1;
+      losses[loserId] = (losses[loserId] || 0) + 1;
+    });
+  });
+
+  return teams
+    .map((t) => ({
+      id: t.id,
+      name: t.name,
+      matches: (engine.playCount && engine.playCount[t.id]) || 0,
+      playedSoFar: playedSoFar[t.id] || 0,
+      rests: (engine.restCount && engine.restCount[t.id]) || 0,
+      wins: wins[t.id] || 0,
+      losses: losses[t.id] || 0,
+      opps: oppsOf[t.id] ? oppsOf[t.id].size : 0,
+      role: null,
+    }))
+    .sort((a, b) => b.matches - a.matches);
+}
+
 // ---------------------------------------------------------------------------
 // MAIN APP
 // ---------------------------------------------------------------------------
@@ -4354,17 +4493,22 @@ function AmericanoPadel() {
 
   const leaderboard = React.useMemo(
     () =>
-      buildLeaderboard(
-        engine,
-        playerMap,
-        scores,
-        players.map((p) => p.id) // genuinely-removed only, NOT filtered by arrived — an attendance toggle shouldn't relabel someone as "Pemain Dihapus"
-      ),
-    [engine, playerMap, scores, players]
+      gameFormat === "fixed_partner"
+        ? buildTeamLeaderboard(engine, playerMap, scores, fixedPairs)
+        : buildLeaderboard(
+            engine,
+            playerMap,
+            scores,
+            players.map((p) => p.id) // genuinely-removed only, NOT filtered by arrived — an attendance toggle shouldn't relabel someone as "Pemain Dihapus"
+          ),
+    [engine, playerMap, scores, players, gameFormat, fixedPairs]
   );
 
   const fairnessStats = React.useMemo(() => {
     if (!engine) return [];
+    if (gameFormat === "fixed_partner") {
+      return buildTeamFairnessStats(engine, playerMap, scores, fixedPairs, currentRound);
+    }
     const idToAccountId = {};
     players.forEach((p) => {
       idToAccountId[p.id] = p.accountId || null;
@@ -4443,7 +4587,7 @@ function AmericanoPadel() {
         };
       })
       .sort((a, b) => b.matches - a.matches);
-  }, [engine, playerMap, scores, players, ownerId, coHostIds, currentRound]);
+  }, [engine, playerMap, scores, players, ownerId, coHostIds, currentRound, gameFormat, fixedPairs]);
 
   const handleShare = async () => {
     if (!engine) return;
@@ -4805,6 +4949,8 @@ function AmericanoPadel() {
           eventName={eventName}
           leaderboard={leaderboard}
           players={players}
+          gameFormat={gameFormat}
+          fixedPairs={fixedPairs}
           ended={ended}
           hasSplitBill={hasSplitBill}
           onNav={setScreen}
@@ -4849,6 +4995,8 @@ function AmericanoPadel() {
           tennisTarget={tennisTarget}
           activityLog={activityLog}
           players={players}
+          gameFormat={gameFormat}
+          fixedPairs={fixedPairs}
           ended={ended}
           hasSplitBill={hasSplitBill}
           canManage={canManage}
@@ -4866,6 +5014,7 @@ function AmericanoPadel() {
           eventName={eventName}
           stats={fairnessStats}
           totalPlayers={players.length}
+          gameFormat={gameFormat}
           hasSplitBill={hasSplitBill}
           canManage={canManage}
           isOwner={sessionRole === "owner"}
@@ -9407,14 +9556,24 @@ function TennisScoreTracker({ s, target, onPoint, onReset, readOnly }) {
 // LEADERBOARD / STANDINGS SCREEN
 // ---------------------------------------------------------------------------
 
-function LeaderboardScreen({ eventName, leaderboard, players, ended, hasSplitBill, onNav, onBackToLobby }) {
+function LeaderboardScreen({ eventName, leaderboard, players, gameFormat, fixedPairs, ended, hasSplitBill, onNav, onBackToLobby }) {
   const [sortBy, setSortBy] = useState("winPercent"); // wins | diff | winPercent | ppm
   const [showNotArrived, setShowNotArrived] = useState(true);
 
-  const notArrivedIds = React.useMemo(
-    () => new Set((players || []).filter((p) => p.arrived === false).map((p) => p.id)),
-    [players]
-  );
+  const notArrivedIds = React.useMemo(() => {
+    const notArrivedPlayerIds = new Set((players || []).filter((p) => p.arrived === false).map((p) => p.id));
+    if (gameFormat !== "fixed_partner") return notArrivedPlayerIds;
+    // A team counts as "not arrived" if either half of the pair isn't —
+    // there's no substitute partner in this mode, so the whole team sits
+    // out together.
+    const teamIds = new Set();
+    (fixedPairs || []).forEach(([a, b], i) => {
+      if (notArrivedPlayerIds.has(a) || notArrivedPlayerIds.has(b)) {
+        teamIds.add(`team_${i}_${a}_${b}`);
+      }
+    });
+    return teamIds;
+  }, [players, gameFormat, fixedPairs]);
   const visibleLeaderboard = React.useMemo(
     () => (showNotArrived ? leaderboard : leaderboard.filter((p) => !notArrivedIds.has(p.id))),
     [leaderboard, showNotArrived, notArrivedIds]
@@ -9921,8 +10080,13 @@ function SplitBillScreen({
 // RECAP SCREEN (all scored matches, for monitoring rotation fairness)
 // ---------------------------------------------------------------------------
 
-function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, engine, playerMap, scores, scoreFormat, pointTarget, tennisTarget, activityLog, players, ended, hasSplitBill, canManage, isOwner, currentUser, excludeFromStats, onToggleExcludeFromStats, onNav, onBackToLobby }) {
+function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, engine, playerMap, scores, scoreFormat, pointTarget, tennisTarget, activityLog, players, gameFormat, fixedPairs, ended, hasSplitBill, canManage, isOwner, currentUser, excludeFromStats, onToggleExcludeFromStats, onNav, onBackToLobby }) {
   const [filterId, setFilterId] = useState("all");
+
+  const teamNameByPlayer = React.useMemo(
+    () => (gameFormat === "fixed_partner" ? buildTeamNameByPlayer(fixedPairs, playerMap) : null),
+    [gameFormat, fixedPairs, playerMap]
+  );
 
   const allRows = React.useMemo(() => {
     if (!engine) return [];
@@ -9951,8 +10115,8 @@ function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, e
           court: cIdx + 1,
           team1Ids: match.team1,
           team2Ids: match.team2,
-          team1: match.team1.map((id) => playerMap[id]),
-          team2: match.team2.map((id) => playerMap[id]),
+          team1: teamNameByPlayer ? [teamNameByPlayer[match.team1[0]] || playerMap[match.team1[0]]] : match.team1.map((id) => playerMap[id]),
+          team2: teamNameByPlayer ? [teamNameByPlayer[match.team2[0]] || playerMap[match.team2[0]]] : match.team2.map((id) => playerMap[id]),
           a,
           b,
           winner: a === b ? null : a > b ? "team1" : "team2",
@@ -9960,7 +10124,7 @@ function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, e
       });
     });
     return list;
-  }, [engine, playerMap, scores]);
+  }, [engine, playerMap, scores, teamNameByPlayer]);
 
   // Everyone who's ever appeared in this event's schedule, including
   // people since removed from the roster — kept around for things that
@@ -10126,8 +10290,11 @@ function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, e
 // STATS SCREEN (fairness proof)
 // ---------------------------------------------------------------------------
 
-function StatsScreen({ eventName, stats, totalPlayers, hasSplitBill, canManage, isOwner, excludeFromStats, onToggleExcludeFromStats, onNav, onBackToLobby }) {
-  const maxPossible = Math.max(0, totalPlayers - 1);
+function StatsScreen({ eventName, stats, totalPlayers, gameFormat, hasSplitBill, canManage, isOwner, excludeFromStats, onToggleExcludeFromStats, onNav, onBackToLobby }) {
+  const isTeamMode = gameFormat === "fixed_partner";
+  const maxPossible = isTeamMode
+    ? Math.max(0, Math.floor(totalPlayers / 2) - 1)
+    : Math.max(0, totalPlayers - 1);
   return (
     <div className="pb-24">
       <div className="px-6 pt-14 pb-6 border-b border-slate-800">
@@ -10180,15 +10347,17 @@ function StatsScreen({ eventName, stats, totalPlayers, hasSplitBill, canManage, 
                 </Chip>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-2 text-xs">
+            <div className={`grid ${isTeamMode ? "grid-cols-1" : "grid-cols-2"} gap-2 text-xs`}>
+              {!isTeamMode && (
+                <div className="flex items-center justify-between bg-slate-950/60 rounded-lg px-3 py-1.5">
+                  <span className="text-slate-500">Partner unik</span>
+                  <span className="font-mono2 text-cyan-300">
+                    {p.partners}/{maxPossible}
+                  </span>
+                </div>
+              )}
               <div className="flex items-center justify-between bg-slate-950/60 rounded-lg px-3 py-1.5">
-                <span className="text-slate-500">Partner unik</span>
-                <span className="font-mono2 text-cyan-300">
-                  {p.partners}/{maxPossible}
-                </span>
-              </div>
-              <div className="flex items-center justify-between bg-slate-950/60 rounded-lg px-3 py-1.5">
-                <span className="text-slate-500">Lawan unik</span>
+                <span className="text-slate-500">{isTeamMode ? "Lawan tim unik" : "Lawan unik"}</span>
                 <span className="font-mono2 text-cyan-300">
                   {p.opps}/{maxPossible}
                 </span>
@@ -10309,7 +10478,9 @@ function ViewOnlyApp({ sessionId }) {
   const leaderboard = React.useMemo(
     () =>
       data?.engine
-        ? buildLeaderboard(data.engine, data.playerMap, data.scores, (data.players || []).map((p) => p.id))
+        ? data.gameFormat === "fixed_partner"
+          ? buildTeamLeaderboard(data.engine, data.playerMap, data.scores, data.fixedPairs)
+          : buildLeaderboard(data.engine, data.playerMap, data.scores, (data.players || []).map((p) => p.id))
         : [],
     [data]
   );
@@ -10344,6 +10515,8 @@ function ViewOnlyApp({ sessionId }) {
 
   const recapRows = React.useMemo(() => {
     if (!data?.engine) return [];
+    const teamNameByPlayer =
+      data.gameFormat === "fixed_partner" ? buildTeamNameByPlayer(data.fixedPairs, data.playerMap) : null;
     const list = [];
     data.engine.roundsData.forEach((rd, rIdx) => {
       rd.courts.forEach((match, cIdx) => {
@@ -10365,8 +10538,12 @@ function ViewOnlyApp({ sessionId }) {
           court: cIdx + 1,
           team1Ids: match.team1,
           team2Ids: match.team2,
-          team1: match.team1.map((id) => data.playerMap[id]),
-          team2: match.team2.map((id) => data.playerMap[id]),
+          team1: teamNameByPlayer
+            ? [teamNameByPlayer[match.team1[0]] || data.playerMap[match.team1[0]]]
+            : match.team1.map((id) => data.playerMap[id]),
+          team2: teamNameByPlayer
+            ? [teamNameByPlayer[match.team2[0]] || data.playerMap[match.team2[0]]]
+            : match.team2.map((id) => data.playerMap[id]),
           a,
           b,
           winner: a === b ? null : a > b ? "team1" : "team2",
