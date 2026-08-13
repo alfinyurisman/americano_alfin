@@ -2760,13 +2760,34 @@ function AmericanoPadel() {
   // never actually get saved, then vanish the next time the poll pulls
   // real (player-less) data from the server. Retrying gives React a moment
   // to catch up instead of failing invisibly.
-  const persistWithRetry = async (partial) => {
-    for (let attempt = 0; attempt < 4; attempt++) {
-      if (activeId) {
-        persist(partial);
+  // Verifies the save actually landed on the server (not just that persist()
+  // was called) by reading back and checking the new player id is really
+  // there, retrying if not. This is deliberately more thorough than just
+  // checking activeId is set: a newly-added player disappearing shortly
+  // after being added has been reported even on established events (not
+  // just brand-new ones), so this guards against ANY cause of the write
+  // not sticking — a slow connection, a stale poll landing at an unlucky
+  // moment, whatever — by re-asserting the addition until it's confirmed,
+  // rather than assuming a single persist() call was enough.
+  const persistWithRetry = async (partial, checkPlayerId) => {
+    const delays = [200, 400, 800, 1200];
+    for (let attempt = 0; attempt < delays.length; attempt++) {
+      if (!activeId) {
+        await new Promise((r) => setTimeout(r, delays[attempt]));
+        continue;
+      }
+      persist(partial);
+      await new Promise((r) => setTimeout(r, delays[attempt]));
+      if (checkPlayerId) {
+        const readBack = await loadSessionData(activeId);
+        if (readBack && (readBack.players || []).some((p) => p.id === checkPlayerId)) {
+          return true;
+        }
+        // Not there yet — re-issue the same persist on the next loop
+        // iteration rather than giving up after one attempt.
+      } else {
         return true;
       }
-      await new Promise((r) => setTimeout(r, 150));
     }
     return false;
   };
@@ -2781,12 +2802,13 @@ function AmericanoPadel() {
       );
       if (!confirmed) return;
     }
+    const newId = uid();
     setPlayers((p) => {
-      const next = [...p, { id: uid(), name }];
-      persistWithRetry({ players: next }).then((ok) => {
+      const next = [...p, { id: newId, name }];
+      persistWithRetry({ players: next }, newId).then((ok) => {
         if (!ok) {
           alert(
-            `Gagal menyimpan "${name}" — sesi belum siap. Coba tunggu sebentar lalu tambahkan lagi.`
+            `Gagal menyimpan "${name}" — coba cek koneksi lalu tambahkan lagi.`
           );
         }
       });
@@ -2821,10 +2843,11 @@ function AmericanoPadel() {
         );
       }
       if (genuinelyNew.length === 0) return p;
-      const next = [...p, ...genuinelyNew.map((name) => ({ id: uid(), name }))];
-      persistWithRetry({ players: next }).then((ok) => {
+      const newEntries = genuinelyNew.map((name) => ({ id: uid(), name }));
+      const next = [...p, ...newEntries];
+      persistWithRetry({ players: next }, newEntries[newEntries.length - 1].id).then((ok) => {
         if (!ok) {
-          alert(`Gagal menyimpan pemain baru — sesi belum siap. Coba tunggu sebentar lalu tambahkan lagi.`);
+          alert(`Gagal menyimpan pemain baru — coba cek koneksi lalu tambahkan lagi.`);
         }
       });
       if (activeId) logActivity(`Tambah pemain (tempel banyak): ${genuinelyNew.join(", ")}`);
@@ -2855,10 +2878,9 @@ function AmericanoPadel() {
 
   // PHASE A — create the meeting "concept" (courts, duration, score format,
   // target participant count) and move to the waiting room to gather players.
-  const handleCreateConcept = () => {
+  const handleCreateConcept = async () => {
     const id = activeId || uid();
     const finalName = eventName.trim() || "Sesi Padel";
-    setActiveId(id);
     setEventName(finalName);
     setStatus("waiting");
     setSessionRole("owner");
@@ -2868,8 +2890,19 @@ function AmericanoPadel() {
     setCoHostIds([]);
     setOwnerId(currentUser?.accountId || null);
     setOwnerUsername(currentUser?.displayName || currentUser?.username || "");
-    setScreen("waiting");
-    persist(
+    setActiveId(id);
+    // Deliberately awaited BEFORE moving to the waiting room screen: this
+    // used to fire persist() and immediately switch screens in the same
+    // tick, so a player could get added (its own separate persist() call)
+    // before this creation write had even started. Two independent writes
+    // to the same brand-new session document racing like that meant
+    // whichever one finished LAST would win regardless of which was
+    // semantically newer — occasionally the slower creation write (it also
+    // syncs the lobby index, public listing, and all-matches registry)
+    // would land after the add-player write and silently wipe it back to
+    // an empty roster a few seconds later. Waiting here means nothing else
+    // can touch this session until the initial document genuinely exists.
+    await persist(
       {
         name: finalName,
         status: "waiting",
@@ -2892,6 +2925,7 @@ function AmericanoPadel() {
       },
       id
     );
+    setScreen("waiting");
   };
 
   // Host toggles whether they're joining as a player themselves. When turned
@@ -6541,6 +6575,8 @@ function SetupScreen(props) {
     onBackToLobby,
   } = props;
 
+  const [creating, setCreating] = useState(false);
+
   return (
     <div className="pb-10">
       {/* HERO */}
@@ -6883,11 +6919,20 @@ function SetupScreen(props) {
 
       <div className="px-6">
         <PrimaryButton
-          onClick={onGenerate}
+          onClick={async () => {
+            if (creating) return;
+            setCreating(true);
+            try {
+              await onGenerate();
+            } finally {
+              setCreating(false);
+            }
+          }}
+          disabled={creating}
           icon={Users}
           className="w-full text-lg py-4"
         >
-          Buat Acara & Undang Peserta
+          {creating ? "Membuat acara…" : "Buat Acara & Undang Peserta"}
         </PrimaryButton>
       </div>
     </div>
