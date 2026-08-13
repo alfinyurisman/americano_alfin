@@ -2233,6 +2233,7 @@ function AmericanoPadel() {
           updatedAt: data.updatedAt || entry.updatedAt,
           playDate: data.playDate || entry.playDate || null,
           sportType: data.sportType || entry.sportType || "padel",
+          gameFormat: data.gameFormat || entry.gameFormat || "americano",
           scoreFormat: data.scoreFormat || entry.scoreFormat || "points",
           tennisTarget: data.tennisTarget || entry.tennisTarget || 4,
         };
@@ -2598,6 +2599,7 @@ function AmericanoPadel() {
           ownerUsername: current.ownerUsername || "",
           playDate: current.playDate || null,
           sportType: current.sportType || "padel",
+          gameFormat: current.gameFormat || "americano",
           scoreFormat: current.scoreFormat || "points",
           tennisTarget: current.tennisTarget || 4,
         };
@@ -2790,6 +2792,7 @@ function AmericanoPadel() {
         playDate: snapshot.playDate || null,
         ownerUsername: snapshot.ownerUsername || "",
         sportType: snapshot.sportType || "padel",
+        gameFormat: snapshot.gameFormat || "americano",
         scoreFormat: snapshot.scoreFormat || "points",
         tennisTarget: snapshot.tennisTarget || 4,
         role: "owner",
@@ -5707,6 +5710,9 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
                         {ev.scoreFormat === "tennis"
                           ? `Race to ${ev.tennisTarget || 4}`
                           : "Total Poin"}
+                      </span>
+                      <span className="text-[8.5px] text-cyan-300 text-center leading-tight whitespace-nowrap">
+                        {ev.gameFormat === "fixed_partner" ? "Fixed Partner" : "Americano"}
                       </span>
                     </div>
                   </div>
