@@ -2751,6 +2751,26 @@ function AmericanoPadel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scores, engine, activeId]);
 
+  // Retries persist() a few times with short delays. Exists specifically
+  // for the moment right after creating a brand-new event: activeId gets
+  // set via setActiveId(), but React state updates aren't synchronous, so
+  // a persist() call fired too soon after (e.g. adding the very first
+  // player right after hitting create) can read a stale activeId that's
+  // still null and silently no-op — the player would show up locally but
+  // never actually get saved, then vanish the next time the poll pulls
+  // real (player-less) data from the server. Retrying gives React a moment
+  // to catch up instead of failing invisibly.
+  const persistWithRetry = async (partial) => {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (activeId) {
+        persist(partial);
+        return true;
+      }
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    return false;
+  };
+
   const addPlayerFromInput = () => {
     const name = nameInput.trim();
     if (!name) return;
@@ -2763,7 +2783,13 @@ function AmericanoPadel() {
     }
     setPlayers((p) => {
       const next = [...p, { id: uid(), name }];
-      persist({ players: next });
+      persistWithRetry({ players: next }).then((ok) => {
+        if (!ok) {
+          alert(
+            `Gagal menyimpan "${name}" — sesi belum siap. Coba tunggu sebentar lalu tambahkan lagi.`
+          );
+        }
+      });
       return next;
     });
     if (activeId) logActivity(`Tambah pemain: ${name}${dup ? " (nama sama dengan yang sudah ada)" : ""}`);
@@ -2796,7 +2822,11 @@ function AmericanoPadel() {
       }
       if (genuinelyNew.length === 0) return p;
       const next = [...p, ...genuinelyNew.map((name) => ({ id: uid(), name }))];
-      persist({ players: next });
+      persistWithRetry({ players: next }).then((ok) => {
+        if (!ok) {
+          alert(`Gagal menyimpan pemain baru — sesi belum siap. Coba tunggu sebentar lalu tambahkan lagi.`);
+        }
+      });
       if (activeId) logActivity(`Tambah pemain (tempel banyak): ${genuinelyNew.join(", ")}`);
       return next;
     });
