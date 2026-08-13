@@ -10145,6 +10145,17 @@ function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, e
     () => allKnownPlayers.filter((p) => currentRosterIds.has(p.id)),
     [allKnownPlayers, currentRosterIds]
   );
+  // Fixed Partner mode: one chip per TEAM instead of per person. The
+  // filterId used is simply the first player's id — since both partners
+  // always appear together in team1Ids/team2Ids, filtering by either one
+  // of them already correctly selects that whole team's matches.
+  const filterableTeams = React.useMemo(() => {
+    if (gameFormat !== "fixed_partner") return null;
+    return (fixedPairs || [])
+      .filter(([a, b]) => currentRosterIds.has(a) && currentRosterIds.has(b))
+      .map(([a, b]) => ({ id: a, name: `${playerMap[a] || a} & ${playerMap[b] || b}` }));
+  }, [gameFormat, fixedPairs, currentRosterIds, playerMap]);
+  const filterChips = filterableTeams || filterablePlayers;
 
   const rows =
     filterId === "all"
@@ -10169,7 +10180,7 @@ function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, e
         </div>
         <h1 className="font-display text-5xl text-slate-50">REKAP MATCH</h1>
 
-        {filterablePlayers.length > 0 && (
+        {filterChips.length > 0 && (
           <div className="flex gap-1.5 overflow-x-auto pb-1 mt-4 -mx-6 px-6">
             <button
               onClick={() => setFilterId("all")}
@@ -10181,7 +10192,7 @@ function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, e
             >
               Semua
             </button>
-            {filterablePlayers.map((p) => (
+            {filterChips.map((p) => (
               <button
                 key={p.id}
                 onClick={() => setFilterId(p.id)}
@@ -10567,6 +10578,16 @@ function ViewOnlyApp({ sessionId }) {
         : [],
     [data]
   );
+  // Fixed Partner mode: one filter chip per TEAM instead of per person —
+  // same reasoning as the main app's RecapScreen.
+  const filterableTeams = React.useMemo(() => {
+    if (data?.gameFormat !== "fixed_partner") return null;
+    return (data?.fixedPairs || []).map(([a, b]) => ({
+      id: a,
+      name: `${data.playerMap[a] || a} & ${data.playerMap[b] || b}`,
+    }));
+  }, [data]);
+  const recapFilterChips = filterableTeams || players;
 
   const closeOrBack = () => {
     // Opened as its own tab (from the admin "All Match" list, or a shared
@@ -10962,7 +10983,7 @@ function ViewOnlyApp({ sessionId }) {
         {tab === "recap" && (
           <div className="px-6 pt-6">
             <h2 className="font-display text-3xl text-slate-50 mb-4">REKAP MATCH</h2>
-            {players.length > 0 && (
+            {recapFilterChips.length > 0 && (
               <div className="flex gap-1.5 overflow-x-auto pb-1 mb-4 -mx-6 px-6">
                 <button
                   onClick={() => setRecapFilter("all")}
@@ -10974,7 +10995,7 @@ function ViewOnlyApp({ sessionId }) {
                 >
                   Semua
                 </button>
-                {players.map((p) => (
+                {recapFilterChips.map((p) => (
                   <button
                     key={p.id}
                     onClick={() => setRecapFilter(p.id)}
