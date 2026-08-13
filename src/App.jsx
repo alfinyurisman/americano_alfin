@@ -3269,6 +3269,50 @@ function AmericanoPadel() {
     const resting = allIds.filter((id) => !playing.has(id));
     const newRound = { resting, courts: [{ team1: team1Ids, team2: team2Ids }] };
     const newRoundsData = [...engine.roundsData, newRound];
+    const newRoundIdx = newRoundsData.length - 1;
+
+    if (gameFormat === "fixed_partner") {
+      // Team-based engine shape: history is tracked per TEAM (oppHist), not
+      // per player pair (partner/opp) — find which fixed team each side
+      // corresponds to and update that team's play count / rest count /
+      // opponent history instead.
+      const teamIdOf = (playerId) => {
+        const idx = (fixedPairs || []).findIndex((pair) => pair.includes(playerId));
+        if (idx === -1) return null;
+        const [a, b] = fixedPairs[idx];
+        return `team_${idx}_${a}_${b}`;
+      };
+      const team1Id = teamIdOf(team1Ids[0]);
+      const team2Id = teamIdOf(team2Ids[0]);
+      const newOppHist = {};
+      Object.keys(engine.oppHist || {}).forEach((id) => (newOppHist[id] = { ...engine.oppHist[id] }));
+      const newPlayCount = { ...engine.playCount };
+      const newRestCount = { ...engine.restCount };
+      if (team1Id && team2Id) {
+        newOppHist[team1Id] = newOppHist[team1Id] || {};
+        newOppHist[team2Id] = newOppHist[team2Id] || {};
+        newOppHist[team1Id][team2Id] = (newOppHist[team1Id][team2Id] || 0) + 1;
+        newOppHist[team2Id][team1Id] = (newOppHist[team2Id][team1Id] || 0) + 1;
+        newPlayCount[team1Id] = (newPlayCount[team1Id] || 0) + 1;
+        newPlayCount[team2Id] = (newPlayCount[team2Id] || 0) + 1;
+      }
+      (fixedPairs || []).forEach(([a, b], i) => {
+        const tid = `team_${i}_${a}_${b}`;
+        if (tid !== team1Id && tid !== team2Id) newRestCount[tid] = (newRestCount[tid] || 0) + 1;
+      });
+      const newEngine = {
+        ...engine,
+        roundsData: newRoundsData,
+        oppHist: newOppHist,
+        playCount: newPlayCount,
+        restCount: newRestCount,
+      };
+      setEngine(newEngine);
+      setCurrentRound(newRoundIdx);
+      persist({ engine: newEngine, currentRound: newRoundIdx });
+      logActivity(`Tambah match manual Ronde ${newRoundIdx + 1}: ${team1Ids.join("+")} vs ${team2Ids.join("+")}`);
+      return;
+    }
 
     const newPartner = {};
     const newOpp = {};
@@ -3300,7 +3344,6 @@ function AmericanoPadel() {
       playCount: newPlayCount,
       restCount: newRestCount,
     };
-    const newRoundIdx = newRoundsData.length - 1;
     setEngine(newEngine);
     setCurrentRound(newRoundIdx);
     persist({ engine: newEngine, currentRound: newRoundIdx });
@@ -4937,6 +4980,7 @@ function AmericanoPadel() {
           onToggleArrival={handleToggleArrival}
           courts={courts}
           gameFormat={gameFormat}
+          fixedPairs={fixedPairs}
           onNav={setScreen}
           onShare={handleShare}
           onCopyViewLink={handleCopyViewLink}
@@ -8051,7 +8095,7 @@ function SessionScreen(props) {
     incrementTennisPoint, resetTennisMatch, setTennisGamesDirect,
     ended, hasSplitBill, onEndEvent, onReshuffle, allMatchesScored, players, onAddManualMatch, onAddAutoRound, onDeleteRound,
     friends, onAdjustSchedule, courts, onToggleArrival, onEditMatchPlayers,
-    gameFormat,
+    gameFormat, fixedPairs,
     onNav, onShare, onCopyViewLink, onBackToLobby, onDelete,
   } = props;
 
@@ -8329,6 +8373,9 @@ function SessionScreen(props) {
       {showAddMatch && (
         <AddMatchModal
           players={players}
+          gameFormat={gameFormat}
+          fixedPairs={fixedPairs}
+          playerMap={playerMap}
           onConfirm={(team1Ids, team2Ids) => {
             onAddManualMatch(team1Ids, team2Ids);
             setShowAddMatch(false);
@@ -8699,9 +8746,27 @@ function ScoreModal({ roundLabel, team1, team2, s, target, mode = "points", onPi
 // Lets host/co-host manually pick who plays in an extra bonus match — 2
 // players tap-assigned to "Tim Kiri", 2 to "Tim Kanan". A player can only be
 // on one side at a time.
-function AddMatchModal({ players, onConfirm, onClose }) {
+function AddMatchModal({ players, gameFormat, fixedPairs, playerMap, onConfirm, onClose }) {
   const [team1, setTeam1] = useState([]);
   const [team2, setTeam2] = useState([]);
+  const isFixedPartner = gameFormat === "fixed_partner";
+
+  const teams = React.useMemo(
+    () => (fixedPairs || []).map((pair, i) => ({ ids: pair, name: pair.map((id) => playerMap?.[id] || id).join(" & ") })),
+    [fixedPairs, playerMap]
+  );
+
+  const pickTeam = (side, ids) => {
+    const already = side === "team1" ? team1 : team2;
+    const sameTeam = already.length === 2 && already[0] === ids[0] && already[1] === ids[1];
+    if (side === "team1") {
+      setTeam1(sameTeam ? [] : ids);
+      if (!sameTeam && team2.length === 2 && (team2[0] === ids[0] || team2[1] === ids[1])) setTeam2([]);
+    } else {
+      setTeam2(sameTeam ? [] : ids);
+      if (!sameTeam && team1.length === 2 && (team1[0] === ids[0] || team1[1] === ids[1])) setTeam1([]);
+    }
+  };
 
   const toggle = (side, playerId) => {
     const inTeam1 = team1.includes(playerId);
@@ -8735,8 +8800,9 @@ function AddMatchModal({ players, onConfirm, onClose }) {
           Tambah Match Manual
         </div>
         <p className="text-xs text-slate-500 mb-4">
-          Pilih 2 pemain buat Tim Kiri dan 2 pemain buat Tim Kanan. Cocok kalau masih ada waktu
-          tersisa setelah semua jadwal selesai dimainkan.
+          {isFixedPartner
+            ? "Pilih 1 tim buat Kiri dan 1 tim buat Kanan. Cocok kalau masih ada waktu tersisa setelah semua jadwal selesai dimainkan."
+            : "Pilih 2 pemain buat Tim Kiri dan 2 pemain buat Tim Kanan. Cocok kalau masih ada waktu tersisa setelah semua jadwal selesai dimainkan."}
         </p>
 
         <div className="flex items-center justify-center gap-4 mb-4 text-xs">
@@ -8755,44 +8821,85 @@ function AddMatchModal({ players, onConfirm, onClose }) {
           </div>
         </div>
 
-        <div className="space-y-2 max-h-64 overflow-y-auto">
-          {players.map((p) => {
-            const inTeam1 = team1.includes(p.id);
-            const inTeam2 = team2.includes(p.id);
-            return (
-              <div
-                key={p.id}
-                className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-2"
-              >
-                <span className="font-semibold text-slate-100 flex-1 min-w-0 truncate text-sm">
-                  {p.name}
-                </span>
-                <button
-                  onClick={() => toggle("team1", p.id)}
-                  disabled={!inTeam1 && team1.length >= 2}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border disabled:opacity-30 ${
-                    inTeam1
-                      ? "bg-lime-300 text-slate-950 border-lime-300"
-                      : "bg-slate-900 text-slate-400 border-slate-700"
-                  }`}
+        {isFixedPartner ? (
+          <div className="space-y-2 max-h-64 overflow-y-auto">
+            {teams.map((t) => {
+              const inTeam1 = team1.length === 2 && team1[0] === t.ids[0] && team1[1] === t.ids[1];
+              const inTeam2 = team2.length === 2 && team2[0] === t.ids[0] && team2[1] === t.ids[1];
+              return (
+                <div
+                  key={t.ids.join("-")}
+                  className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-2"
                 >
-                  Kiri
-                </button>
-                <button
-                  onClick={() => toggle("team2", p.id)}
-                  disabled={!inTeam2 && team2.length >= 2}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border disabled:opacity-30 ${
-                    inTeam2
-                      ? "bg-cyan-300 text-slate-950 border-cyan-300"
-                      : "bg-slate-900 text-slate-400 border-slate-700"
-                  }`}
+                  <span className="font-semibold text-slate-100 flex-1 min-w-0 truncate text-sm">
+                    {t.name}
+                  </span>
+                  <button
+                    onClick={() => pickTeam("team1", t.ids)}
+                    disabled={!inTeam1 && inTeam2}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border disabled:opacity-30 ${
+                      inTeam1
+                        ? "bg-lime-300 text-slate-950 border-lime-300"
+                        : "bg-slate-900 text-slate-400 border-slate-700"
+                    }`}
+                  >
+                    Kiri
+                  </button>
+                  <button
+                    onClick={() => pickTeam("team2", t.ids)}
+                    disabled={!inTeam2 && inTeam1}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border disabled:opacity-30 ${
+                      inTeam2
+                        ? "bg-cyan-300 text-slate-950 border-cyan-300"
+                        : "bg-slate-900 text-slate-400 border-slate-700"
+                    }`}
+                  >
+                    Kanan
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="space-y-2 max-h-64 overflow-y-auto">
+            {players.map((p) => {
+              const inTeam1 = team1.includes(p.id);
+              const inTeam2 = team2.includes(p.id);
+              return (
+                <div
+                  key={p.id}
+                  className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-2"
                 >
-                  Kanan
-                </button>
-              </div>
-            );
-          })}
-        </div>
+                  <span className="font-semibold text-slate-100 flex-1 min-w-0 truncate text-sm">
+                    {p.name}
+                  </span>
+                  <button
+                    onClick={() => toggle("team1", p.id)}
+                    disabled={!inTeam1 && team1.length >= 2}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border disabled:opacity-30 ${
+                      inTeam1
+                        ? "bg-lime-300 text-slate-950 border-lime-300"
+                        : "bg-slate-900 text-slate-400 border-slate-700"
+                    }`}
+                  >
+                    Kiri
+                  </button>
+                  <button
+                    onClick={() => toggle("team2", p.id)}
+                    disabled={!inTeam2 && team2.length >= 2}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border disabled:opacity-30 ${
+                      inTeam2
+                        ? "bg-cyan-300 text-slate-950 border-cyan-300"
+                        : "bg-slate-900 text-slate-400 border-slate-700"
+                    }`}
+                  >
+                    Kanan
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         <div className="flex items-center gap-3 mt-5">
           <GhostButton onClick={onClose} className="flex-1">
