@@ -4936,6 +4936,7 @@ function AmericanoPadel() {
           onEditMatchPlayers={handleEditMatchPlayers}
           onToggleArrival={handleToggleArrival}
           courts={courts}
+          gameFormat={gameFormat}
           onNav={setScreen}
           onShare={handleShare}
           onCopyViewLink={handleCopyViewLink}
@@ -8050,6 +8051,7 @@ function SessionScreen(props) {
     incrementTennisPoint, resetTennisMatch, setTennisGamesDirect,
     ended, hasSplitBill, onEndEvent, onReshuffle, allMatchesScored, players, onAddManualMatch, onAddAutoRound, onDeleteRound,
     friends, onAdjustSchedule, courts, onToggleArrival, onEditMatchPlayers,
+    gameFormat,
     onNav, onShare, onCopyViewLink, onBackToLobby, onDelete,
   } = props;
 
@@ -8342,6 +8344,7 @@ function SessionScreen(props) {
           engine={engine}
           scores={scores}
           courts={courts}
+          gameFormat={gameFormat}
           onConfirm={async (newPlayers, newCourts) => {
             await onAdjustSchedule(newPlayers, newCourts);
             setShowManagePlayers(false);
@@ -8811,11 +8814,12 @@ function AddMatchModal({ players, onConfirm, onClose }) {
 // Lets host/co-host add or remove players mid-match, then re-generate the
 // remaining (not-yet-scored) rounds for the new roster — already-completed
 // rounds are left untouched.
-function ManagePlayersModal({ players, friends, engine, scores, courts, onConfirm, onClose }) {
+function ManagePlayersModal({ players, friends, engine, scores, courts, gameFormat, onConfirm, onClose }) {
   const [roster, setRoster] = useState(players);
   const [nameInput, setNameInput] = useState("");
   const [courtsValue, setCourtsValue] = useState(courts);
   const [saving, setSaving] = useState(false);
+  const isFixedPartner = gameFormat === "fixed_partner";
 
   const lockedCount = React.useMemo(() => {
     if (!engine) return 0;
@@ -8871,10 +8875,12 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, onConfir
         onClick={(e) => e.stopPropagation()}
       >
         <div className="text-xs font-semibold tracking-[0.15em] text-lime-300 uppercase mb-1">
-          Kelola Pertandingan
+          {isFixedPartner ? "Sesuaikan Lapangan" : "Kelola Pertandingan"}
         </div>
         <p className="text-xs text-slate-500 mb-4">
-          {lockedCount > 0
+          {isFixedPartner
+            ? "Mode Fixed Partner: daftar pasangan tetap nggak bisa diubah dari sini. Cuma jumlah lapangan yang bisa disesuaikan."
+            : lockedCount > 0
             ? `${lockedCount} ronde yang sudah lengkap skornya akan tetap dipertahankan. ${remainingCount} ronde sisanya akan disusun ulang.`
             : `Semua ${totalRounds} ronde belum ada yang lengkap skornya, jadi seluruh jadwal akan disusun ulang.`}
         </p>
@@ -8907,65 +8913,69 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, onConfir
           </p>
         )}
 
-        <div className="flex gap-2 mb-3">
-          <input
-            value={nameInput}
-            onChange={(e) => setNameInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && addManual()}
-            placeholder="Nama pemain baru (manual)"
-            className="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
-          />
-          <button
-            onClick={addManual}
-            className="w-10 h-10 rounded-lg bg-lime-300 text-slate-950 flex items-center justify-center shrink-0"
-          >
-            <Plus size={16} strokeWidth={3} />
-          </button>
-        </div>
-
-        {availableFriends.length > 0 && (
-          <div className="mb-4">
-            <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-1.5">
-              Tambah dari teman
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {availableFriends.map((f) => (
-                <button
-                  key={f.accountId}
-                  onClick={() => addFriend(f)}
-                  className="px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-900 border border-slate-700 text-slate-300"
-                >
-                  + {f.username}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-1.5">
-          Daftar pemain ({roster.length})
-        </div>
-        <div className="space-y-2 max-h-56 overflow-y-auto mb-4">
-          {roster.map((p) => (
-            <div
-              key={p.id}
-              className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-2"
-            >
-              <span className="font-semibold text-slate-100 flex-1 min-w-0 truncate text-sm">
-                {p.name}
-              </span>
+        {!isFixedPartner && (
+          <>
+            <div className="flex gap-2 mb-3">
+              <input
+                value={nameInput}
+                onChange={(e) => setNameInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && addManual()}
+                placeholder="Nama pemain baru (manual)"
+                className="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+              />
               <button
-                onClick={() => removePlayer(p.id)}
-                className="w-7 h-7 rounded-full bg-slate-800 border border-slate-700 text-slate-400 hover:text-red-400 flex items-center justify-center shrink-0"
+                onClick={addManual}
+                className="w-10 h-10 rounded-lg bg-lime-300 text-slate-950 flex items-center justify-center shrink-0"
               >
-                <X size={13} />
+                <Plus size={16} strokeWidth={3} />
               </button>
             </div>
-          ))}
-        </div>
 
-        {roster.length < 4 && (
-          <p className="text-amber-400 text-xs mb-3">Minimal 4 pemain diperlukan.</p>
+            {availableFriends.length > 0 && (
+              <div className="mb-4">
+                <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-1.5">
+                  Tambah dari teman
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {availableFriends.map((f) => (
+                    <button
+                      key={f.accountId}
+                      onClick={() => addFriend(f)}
+                      className="px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-900 border border-slate-700 text-slate-300"
+                    >
+                      + {f.username}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-1.5">
+              Daftar pemain ({roster.length})
+            </div>
+            <div className="space-y-2 max-h-56 overflow-y-auto mb-4">
+              {roster.map((p) => (
+                <div
+                  key={p.id}
+                  className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-2"
+                >
+                  <span className="font-semibold text-slate-100 flex-1 min-w-0 truncate text-sm">
+                    {p.name}
+                  </span>
+                  <button
+                    onClick={() => removePlayer(p.id)}
+                    className="w-7 h-7 rounded-full bg-slate-800 border border-slate-700 text-slate-400 hover:text-red-400 flex items-center justify-center shrink-0"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            {roster.length < 4 && (
+              <p className="text-amber-400 text-xs mb-3">Minimal 4 pemain diperlukan.</p>
+            )}
+          </>
         )}
 
         <div className="flex items-center gap-3">
@@ -8984,7 +8994,7 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, onConfir
             disabled={roster.length < 4 || !changed || saving}
             className="flex-1"
           >
-            {saving ? "Menyimpan…" : "Sesuaikan Jadwal"}
+            {saving ? "Menyimpan…" : isFixedPartner ? "Sesuaikan Lapangan" : "Sesuaikan Jadwal"}
           </PrimaryButton>
         </div>
       </div>
