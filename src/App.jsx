@@ -301,6 +301,182 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
   return { roundsData, playCount, restCount, partner, opp, usableCourts, lastPlayed, skipDebt };
 }
 
+// Fixed Partner mode: partners are fixed pairs decided by the host up front
+// (never reshuffled), so the thing that rotates each round is which TEAM
+// plays and which opposing team it faces — there's no partner-variety
+// question at all since partners never change. Structurally this reuses the
+// exact same wait-time-priority skeleton as generateSchedule (guaranteed /
+// tier0 / tier1 widening, so a team's turn works the same way an
+// individual's does in Americano mode), just with the "player" unit being a
+// whole team, and the only cost to minimize being "have these two teams
+// already faced each other before."
+//
+// fixedTeams: [{ teamId, players: [idA, idB] }, ...]
+function generateFixedPartnerSchedule(fixedTeams, courtsInput, numRounds, seed, roundOffset = 0) {
+  const teamIds = fixedTeams.map((t) => t.teamId);
+  const teamById = {};
+  fixedTeams.forEach((t) => (teamById[t.teamId] = t));
+
+  const playCount = seed ? { ...seed.playCount } : {};
+  const restCount = seed ? { ...seed.restCount } : {};
+  const lastPlayed = seed ? { ...seed.lastPlayed } : {};
+  const skipDebt = seed && seed.skipDebt ? { ...seed.skipDebt } : {};
+  const oppHist = seed ? { ...seed.oppHist } : {};
+
+  teamIds.forEach((id) => {
+    if (playCount[id] === undefined) playCount[id] = 0;
+    if (restCount[id] === undefined) restCount[id] = 0;
+    if (lastPlayed[id] === undefined) lastPlayed[id] = -1;
+    if (skipDebt[id] === undefined) skipDebt[id] = 0;
+    oppHist[id] = { ...(oppHist[id] || {}) }; // deep-ish copy so we don't mutate the seed's nested object
+  });
+
+  const n = teamIds.length;
+  const usableCourts = Math.max(1, Math.min(courtsInput, Math.floor(n / 2)));
+  const capacity = usableCourts * 2; // teams, not players
+
+  const roundsData = [];
+  let active;
+
+  for (let r = 0; r < numRounds; r++) {
+    const globalR = roundOffset + r;
+    const numResting = n - capacity;
+
+    if (numResting <= 0) {
+      active = [...teamIds];
+    } else {
+      const neverPlayed = teamIds.filter((id) => lastPlayed[id] === -1);
+      const previouslyPlayed = teamIds.filter((id) => lastPlayed[id] !== -1);
+      const sorted = [
+        ...shuffleArray(neverPlayed),
+        ...shuffleArray(previouslyPlayed).sort(
+          (a, b) => globalR - lastPlayed[b] - (globalR - lastPlayed[a])
+        ),
+      ];
+
+      const cutoffWait = globalR - lastPlayed[sorted[capacity - 1]];
+      let guaranteed = sorted.filter((id) => globalR - lastPlayed[id] > cutoffWait);
+      const tier0 = sorted.filter((id) => globalR - lastPlayed[id] === cutoffWait);
+
+      // Same clump-swap safety valve as individual Americano mode: if 3+
+      // teams are all tied at the very top wait, let one of them (never
+      // more than one at a time, and never twice in a row — skipDebt caps
+      // it) be swapped out for better opponent variety, bounded to at most
+      // one extra round of rest.
+      let clumpEligible = [];
+      if (capacity <= 4 && guaranteed.length >= 3) {
+        const topWait = globalR - lastPlayed[guaranteed[0]];
+        const tiedAtTop = guaranteed.filter((id) => globalR - lastPlayed[id] === topWait);
+        if (tiedAtTop.length >= 3) {
+          const eligible = tiedAtTop.filter((id) => (skipDebt[id] || 0) === 0);
+          clumpEligible = eligible.slice(0, tiedAtTop.length - 2);
+          if (clumpEligible.length > 0) {
+            const clumpEligibleSet = new Set(clumpEligible);
+            guaranteed = guaranteed.filter((id) => !clumpEligibleSet.has(id));
+          }
+        }
+      }
+
+      const neededFromFlex = capacity - guaranteed.length;
+      const cutoffIsNeverPlayedTier = tier0.some((id) => lastPlayed[id] === -1);
+      let flexCandidates = tier0;
+      if (!cutoffIsNeverPlayedTier && tier0.length < neededFromFlex + 2) {
+        const tier1 = sorted.filter((id) => globalR - lastPlayed[id] === cutoffWait - 1);
+        if (cutoffWait - 1 >= 2 || tier0.length <= neededFromFlex) {
+          flexCandidates = [...tier0, ...tier1];
+        }
+      }
+      if (clumpEligible.length > 0) {
+        flexCandidates = [...clumpEligible, ...flexCandidates];
+      }
+
+      if (flexCandidates.length <= neededFromFlex) {
+        active = [...guaranteed, ...flexCandidates];
+      } else {
+        let bestActive = null;
+        let bestActiveCost = Infinity;
+        const trials = flexCandidates.length <= 8 ? 60 : 200;
+        for (let st = 0; st < trials; st++) {
+          const candidateActive = [...guaranteed, ...shuffleArray(flexCandidates).slice(0, neededFromFlex)];
+          let cost = 0;
+          for (let i = 0; i < candidateActive.length; i++) {
+            for (let j = i + 1; j < candidateActive.length; j++) {
+              cost += oppHist[candidateActive[i]][candidateActive[j]] || 0;
+            }
+          }
+          const avgFairShare =
+            candidateActive.reduce((s, id) => {
+              const roundsEligible = playCount[id] + restCount[id];
+              return s + (roundsEligible > 0 ? playCount[id] / roundsEligible : 1);
+            }, 0) / candidateActive.length;
+          cost += avgFairShare * 150;
+          if (cost < bestActiveCost) {
+            bestActiveCost = cost;
+            bestActive = candidateActive;
+          }
+        }
+        active = bestActive;
+      }
+
+      const activeSet = new Set(active);
+      teamIds.filter((id) => !activeSet.has(id)).forEach((id) => restCount[id]++);
+      active.forEach((id) => {
+        lastPlayed[id] = globalR;
+        skipDebt[id] = 0;
+      });
+      clumpEligible.forEach((id) => {
+        if (!activeSet.has(id)) skipDebt[id] = 1;
+      });
+    }
+
+    // Pair up the active teams into courts, minimizing repeat matchups.
+    let bestPairing = null;
+    let bestPairCost = Infinity;
+    const pairTrials = active.length <= 8 ? 60 : 200;
+    for (let t = 0; t < pairTrials; t++) {
+      const shuffled = shuffleArray(active);
+      const groups = [];
+      for (let g = 0; g < usableCourts; g++) {
+        groups.push(shuffled.slice(g * 2, g * 2 + 2));
+      }
+      let cost = 0;
+      groups.forEach(([a, b]) => {
+        if (a !== undefined && b !== undefined) cost += oppHist[a][b] || 0;
+      });
+      if (cost < bestPairCost) {
+        bestPairCost = cost;
+        bestPairing = groups;
+      }
+    }
+
+    if (numResting <= 0) {
+      active.forEach((id) => {
+        lastPlayed[id] = globalR;
+        playCount[id] = (playCount[id] || 0) + 1;
+      });
+    } else {
+      active.forEach((id) => {
+        playCount[id] = (playCount[id] || 0) + 1;
+      });
+    }
+
+    const courtsResult = bestPairing
+      .filter(([a, b]) => a !== undefined && b !== undefined)
+      .map(([a, b]) => {
+        oppHist[a][b] = (oppHist[a][b] || 0) + 1;
+        oppHist[b][a] = (oppHist[b][a] || 0) + 1;
+        return { team1: [...teamById[a].players], team2: [...teamById[b].players], score: null };
+      });
+
+    const restingTeams = teamIds.filter((id) => !active.includes(id));
+    const resting = restingTeams.flatMap((id) => teamById[id].players);
+
+    roundsData.push({ resting, courts: courtsResult });
+  }
+
+  return { roundsData, playCount, restCount, oppHist, usableCourts, lastPlayed, skipDebt };
+}
+
 // ---------------------------------------------------------------------------
 // STORAGE HELPERS
 // ---------------------------------------------------------------------------
@@ -1871,6 +2047,8 @@ function AmericanoPadel() {
   const [startTime, setStartTime] = useState("19:00");
   const [scoreFormat, setScoreFormat] = useState("points"); // points | tennis
   const [sportType, setSportType] = useState("padel"); // padel | tenis — purely informational, doesn't change scoring logic
+  const [gameFormat, setGameFormat] = useState("americano"); // americano | fixed_partner
+  const [fixedPairs, setFixedPairs] = useState([]); // [[playerIdA, playerIdB], ...] — only used when gameFormat === "fixed_partner"
   const [pointTarget, setPointTarget] = useState(21);
   const [tennisTarget, setTennisTarget] = useState(4); // race to N games
   const [ended, setEnded] = useState(false);
@@ -2304,6 +2482,8 @@ function AmericanoPadel() {
     setStartTime(current.startTime || "19:00");
     setScoreFormat(current.scoreFormat || "points");
     setSportType(current.sportType || "padel");
+    setGameFormat(current.gameFormat || "americano");
+    setFixedPairs(current.fixedPairs || []);
     setPointTarget(current.pointTarget ?? 21);
     setTennisTarget(current.tennisTarget ?? 4);
     setMaxParticipants(current.maxParticipants ?? 8);
@@ -2373,6 +2553,8 @@ function AmericanoPadel() {
           setScores(saved.scores || {});
           setScoreFormat(saved.scoreFormat || "points");
           setSportType(saved.sportType || "padel");
+          setGameFormat(saved.gameFormat || "americano");
+          setFixedPairs(saved.fixedPairs || []);
           setPointTarget(saved.pointTarget ?? 21);
           setTennisTarget(saved.tennisTarget ?? 4);
           setCourtCost(saved.courtCost ?? "");
@@ -2440,6 +2622,8 @@ function AmericanoPadel() {
         startTime,
         scoreFormat,
         sportType,
+        gameFormat,
+        fixedPairs,
         pointTarget,
         tennisTarget,
         ended,
@@ -2494,7 +2678,7 @@ function AmericanoPadel() {
       }
       return savePromise;
     },
-    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, loggedMatchKeys, courtStages, playDate, excludeFromStats, activityLog, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, sportType, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
+    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, loggedMatchKeys, courtStages, playDate, excludeFromStats, activityLog, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, sportType, gameFormat, fixedPairs, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
   );
 
   // Partner Synergy Index: whenever a specific match's score newly becomes
@@ -2623,6 +2807,14 @@ function AmericanoPadel() {
     setPlayers((p) => {
       const next = p.filter((x) => x.id !== id);
       persist({ players: next });
+      // If they were part of a fixed pair, that pair no longer makes sense
+      // — break it apart so the other half shows back up as "unpaired"
+      // instead of silently vanishing from the pairing UI.
+      setFixedPairs((pairs) => {
+        const stillValid = pairs.filter((pair) => !pair.includes(id));
+        if (stillValid.length !== pairs.length) persist({ fixedPairs: stillValid });
+        return stillValid;
+      });
       return next;
     });
 
@@ -2704,9 +2896,9 @@ function AmericanoPadel() {
     ) {
       return;
     }
-    const validStages = courtStages.filter((s) => s.rounds > 0);
+    const validStages = gameFormat === "fixed_partner" ? [] : courtStages.filter((s) => s.rounds > 0);
     const stagesTotal = validStages.reduce((sum, s) => sum + s.rounds, 0);
-    if (validStages.length > 0 && stagesTotal !== computedRounds) {
+    if (gameFormat !== "fixed_partner" && validStages.length > 0 && stagesTotal !== computedRounds) {
       alert(
         `Total ronde di tahapan lapangan (${stagesTotal}) belum sama dengan total ronde acara (${computedRounds}). Sesuaikan dulu di section "Lapangan Bertahap" sebelum generate.`
       );
@@ -2717,6 +2909,41 @@ function AmericanoPadel() {
     const ids = arrivedPlayers.map((p) => p.id);
     const map = {};
     arrivedPlayers.forEach((p) => (map[p.id] = p.name));
+
+    if (gameFormat === "fixed_partner") {
+      const pairedIds = new Set(fixedPairs.flat());
+      const unpaired = arrivedPlayers.filter((p) => !pairedIds.has(p.id));
+      if (unpaired.length > 0) {
+        alert(
+          `Masih ada ${unpaired.length} orang belum berpasangan: ${unpaired.map((p) => p.name).join(", ")}. Pasangin dulu semua sebelum generate.`
+        );
+        return;
+      }
+      const fixedTeams = fixedPairs.map(([a, b], i) => ({ teamId: `team_${i}_${a}_${b}`, players: [a, b] }));
+      const result = generateFixedPartnerSchedule(fixedTeams, courts, computedRounds);
+      setEngine(result);
+      setPlayerMap(map);
+      setPlayers(arrivedPlayers);
+      setCurrentRound(0);
+      setScores({});
+      setStatus("active");
+      setScreen("session");
+      persist({
+        status: "active",
+        players: arrivedPlayers,
+        engine: result,
+        playerMap: map,
+        currentRound: 0,
+        scores: {},
+        fixedPairs,
+        hostInvitations: [],
+      });
+      setHostInvitations([]);
+      logActivity(
+        `Generate jadwal awal — Fixed Partner (${fixedTeams.length} pasangan tetap, ${courts} lapangan, ${computedRounds} ronde)`
+      );
+      return;
+    }
 
     let result;
     if (validStages.length > 1) {
@@ -3087,6 +3314,57 @@ function AmericanoPadel() {
       return;
     }
 
+    if (gameFormat === "fixed_partner") {
+      const arrivedIds = new Set(activePlayers.map((p) => p.id));
+      const fixedTeams = fixedPairs
+        .map(([a, b], i) => ({ teamId: `team_${i}_${a}_${b}`, players: [a, b] }))
+        .filter((t) => arrivedIds.has(t.players[0]) && arrivedIds.has(t.players[1]));
+      // A fixed pair only makes sense as a whole — if one half isn't here,
+      // there's no substitute partner to slot in, so the whole team sits
+      // out until both are marked arrived again.
+      if (fixedTeams.length < 2) {
+        alert(
+          "Minimal 2 pasangan tetap (4 orang) yang sudah datang diperlukan supaya jadwal bisa disusun. Kalau salah satu anggota pasangan belum hadir, seluruh pasangan itu otomatis istirahat."
+        );
+        return;
+      }
+      const teamSeed = replayFixedPartnerSeed(lockedRounds, fixedTeams);
+      const freshPart = generateFixedPartnerSchedule(fixedTeams, newCourts, remainingRoundsCount, teamSeed, splitIdx);
+      const newRoundsData = [...lockedRounds, ...freshPart.roundsData];
+      const newEngine = {
+        roundsData: newRoundsData,
+        playCount: freshPart.playCount,
+        restCount: freshPart.restCount,
+        oppHist: freshPart.oppHist,
+        usableCourts: freshPart.usableCourts,
+        lastPlayed: freshPart.lastPlayed,
+        skipDebt: freshPart.skipDebt,
+      };
+      const newScores = {};
+      Object.keys(scores).forEach((key) => {
+        const rIdx = parseInt(key.split("-")[0], 10);
+        if (rIdx < splitIdx) newScores[key] = scores[key];
+      });
+      setPlayers(newPlayers);
+      setEngine(newEngine);
+      setScores(newScores);
+      const intendedIds = new Set(activePlayers.map((p) => p.id));
+      const saved = await persistAndVerify(
+        { players: newPlayers, engine: newEngine, scores: newScores, courts: newCourts },
+        (readBack) => {
+          const savedIds = new Set((readBack.players || []).map((p) => p.id));
+          return newPlayers.every((p) => savedIds.has(p.id)) && intendedIds.size >= 0;
+        }
+      );
+      if (!saved) {
+        alert(
+          "Perubahan jadwal (Fixed Partner) mungkin belum tersimpan karena masalah koneksi. Coba lagi — cek dulu apakah perubahan sudah benar-benar muncul sebelum melanjutkan."
+        );
+        return false;
+      }
+      return true;
+    }
+
     // Rebuild the fairness-history seed by replaying ONLY the locked rounds
     // (not the discarded future ones) against the active roster.
     const seed = replayRoundsIntoSeed(lockedRounds, activePlayers.map((p) => p.id));
@@ -3369,7 +3647,55 @@ function AmericanoPadel() {
     return seed;
   };
 
-  // HOST/CO-HOST: manually swap who's playing a specific not-yet-scored
+  // Fixed Partner counterpart to replayRoundsIntoSeed: rebuilds team-level
+  // history (which team has already faced which other team, how many
+  // rounds each team has played/rested) by replaying the locked rounds
+  // against a specific list of teams. Needed whenever a Fixed Partner
+  // event's remaining rounds get regenerated (attendance toggle, roster
+  // change) so the "who's faced who" memory carries forward correctly
+  // instead of resetting.
+  const replayFixedPartnerSeed = (roundsToReplay, fixedTeams) => {
+    const seed = { oppHist: {}, playCount: {}, restCount: {}, lastPlayed: {}, skipDebt: {} };
+    const teamOfPlayer = {}; // playerId -> teamId, for matching replayed rounds back to a team
+    fixedTeams.forEach((t) => {
+      seed.playCount[t.teamId] = 0;
+      seed.restCount[t.teamId] = 0;
+      seed.lastPlayed[t.teamId] = -1;
+      seed.skipDebt[t.teamId] = 0;
+      seed.oppHist[t.teamId] = {};
+      t.players.forEach((pid) => (teamOfPlayer[pid] = t.teamId));
+    });
+    roundsToReplay.forEach((rd, rIdx) => {
+      const playingTeamIds = new Set();
+      rd.courts.forEach(({ team1, team2 }) => {
+        const teamA = teamOfPlayer[team1[0]];
+        const teamB = teamOfPlayer[team2[0]];
+        if (!teamA || !teamB) return; // one side's team no longer exists in the current pairing — skip
+        playingTeamIds.add(teamA);
+        playingTeamIds.add(teamB);
+        if (seed.playCount[teamA] !== undefined) seed.playCount[teamA]++;
+        if (seed.playCount[teamB] !== undefined) seed.playCount[teamB]++;
+        if (seed.lastPlayed[teamA] !== undefined) seed.lastPlayed[teamA] = rIdx;
+        if (seed.lastPlayed[teamB] !== undefined) seed.lastPlayed[teamB] = rIdx;
+        if (seed.oppHist[teamA] && seed.oppHist[teamA][teamB] !== undefined) {
+          seed.oppHist[teamA][teamB]++;
+          seed.oppHist[teamB][teamA]++;
+        } else if (seed.oppHist[teamA]) {
+          seed.oppHist[teamA][teamB] = 1;
+          seed.oppHist[teamB] = seed.oppHist[teamB] || {};
+          seed.oppHist[teamB][teamA] = 1;
+        }
+      });
+      fixedTeams.forEach((t) => {
+        if (!playingTeamIds.has(t.teamId) && seed.restCount[t.teamId] !== undefined) {
+          seed.restCount[t.teamId]++;
+        }
+      });
+    });
+    return seed;
+  };
+
+
   // match — e.g. "put X in instead of Y this round". `swaps` is a list of
   // {outId, inId} pairs, where inId must currently be resting in that same
   // round. After applying the swap, `regenerateRest` decides what happens
@@ -3696,6 +4022,8 @@ function AmericanoPadel() {
     setStartTime("19:00");
     setScoreFormat("points");
     setSportType("padel");
+    setGameFormat("americano");
+    setFixedPairs([]);
     setPointTarget(21);
     setTennisTarget(4);
     setMaxParticipants(8);
@@ -3747,6 +4075,8 @@ function AmericanoPadel() {
     setStartTime(data.startTime || "19:00");
     setScoreFormat(data.scoreFormat || "points");
     setSportType(data.sportType || "padel");
+    setGameFormat(data.gameFormat || "americano");
+    setFixedPairs(data.fixedPairs || []);
     setPointTarget(data.pointTarget ?? 21);
     setTennisTarget(data.tennisTarget ?? 4);
     setMaxParticipants(data.maxParticipants ?? 8);
@@ -4287,6 +4617,8 @@ function AmericanoPadel() {
           setScoreFormat={setScoreFormat}
           sportType={sportType}
           setSportType={setSportType}
+          gameFormat={gameFormat}
+          setGameFormat={setGameFormat}
           pointTarget={pointTarget}
           setPointTarget={setPointTarget}
           tennisTarget={tennisTarget}
@@ -4353,6 +4685,9 @@ function AmericanoPadel() {
           onSavePlayDate={(newDate) => persist({ playDate: newDate })}
           excludeFromStats={excludeFromStats}
           onToggleExcludeFromStats={handleToggleExcludeFromStats}
+          gameFormat={gameFormat}
+          fixedPairs={fixedPairs}
+          setFixedPairs={setFixedPairs}
           onFinalize={handleFinalizeAndGenerate}
           onBackToLobby={handleBackToLobby}
           onDelete={() => handleDeleteSession(activeId)}
@@ -6166,6 +6501,7 @@ function SetupScreen(props) {
     startTime, setStartTime,
     scoreFormat, setScoreFormat, pointTarget, setPointTarget,
     sportType, setSportType,
+    gameFormat, setGameFormat,
     tennisTarget, setTennisTarget,
     maxParticipants, setMaxParticipants,
     visibility, setVisibility,
@@ -6235,6 +6571,23 @@ function SetupScreen(props) {
             </span>
           </ModeTab>
         </div>
+      </Section>
+
+      {/* GAME FORMAT */}
+      <Section icon={Users} title="Format Permainan">
+        <div className="flex gap-2 mb-2">
+          <ModeTab active={gameFormat === "americano"} onClick={() => setGameFormat("americano")}>
+            Americano
+          </ModeTab>
+          <ModeTab active={gameFormat === "fixed_partner"} onClick={() => setGameFormat("fixed_partner")}>
+            Fixed Partner
+          </ModeTab>
+        </div>
+        <p className="text-[11px] text-slate-500">
+          {gameFormat === "americano"
+            ? "Partner acak berganti tiap ronde — semua orang gantian main sama semua orang."
+            : "Partner tetap sama sepanjang acara (kamu pasangin nanti pas semua udah join di lobby) — yang berotasi cuma lawannya."}
+        </p>
       </Section>
 
       {/* SCORE FORMAT */}
@@ -6776,6 +7129,97 @@ function PreviewStat({ label, value }) {
 // WAITING ROOM (gather participants before generating the schedule)
 // ---------------------------------------------------------------------------
 
+// Tap-to-pair UI for Fixed Partner mode: tap a first name, then a second, to
+// lock them in as a permanent team. Tap a formed pair's X to break it back
+// apart. Deliberately simple (no drag-and-drop) so it works cleanly on
+// mobile touch.
+function FixedPairingBuilder({ players, fixedPairs, setFixedPairs }) {
+  const [selected, setSelected] = useState(null); // playerId waiting for its partner, or null
+
+  const pairedIds = new Set(fixedPairs.flat());
+  const unpaired = players.filter((p) => !pairedIds.has(p.id));
+
+  const nameOf = (id) => players.find((p) => p.id === id)?.name || "?";
+
+  const handleTap = (playerId) => {
+    if (selected === null) {
+      setSelected(playerId);
+    } else if (selected === playerId) {
+      setSelected(null); // tapped the same one again — deselect
+    } else {
+      setFixedPairs([...fixedPairs, [selected, playerId]]);
+      setSelected(null);
+    }
+  };
+
+  const unpair = (idx) => {
+    setFixedPairs(fixedPairs.filter((_, i) => i !== idx));
+  };
+
+  return (
+    <div>
+      {fixedPairs.length > 0 && (
+        <div className="space-y-2 mb-4">
+          {fixedPairs.map((pair, idx) => (
+            <div
+              key={idx}
+              className="flex items-center justify-between gap-2 rounded-xl border border-lime-400/40 bg-lime-400/5 px-4 py-2.5"
+            >
+              <span className="font-semibold text-slate-100 text-sm truncate">
+                {nameOf(pair[0])} &amp; {nameOf(pair[1])}
+              </span>
+              <button
+                onClick={() => unpair(idx)}
+                className="w-7 h-7 rounded-full bg-slate-800 border border-slate-700 text-slate-400 hover:text-red-400 flex items-center justify-center shrink-0"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {unpaired.length > 0 && (
+        <div>
+          {selected !== null && (
+            <p className="text-[11px] text-cyan-300 mb-2">
+              "{nameOf(selected)}" dipilih — tap 1 nama lagi buat jadiin pasangan.
+            </p>
+          )}
+          <div className="flex flex-wrap gap-2">
+            {unpaired.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => handleTap(p.id)}
+                className={`px-3.5 py-2 rounded-full text-sm font-semibold border transition-colors ${
+                  selected === p.id
+                    ? "bg-cyan-400 text-slate-950 border-cyan-400"
+                    : "bg-slate-900 text-slate-200 border-slate-700"
+                }`}
+              >
+                {p.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {unpaired.length === 0 && fixedPairs.length > 0 && (
+        <p className="text-[11px] text-lime-400">✓ Semua orang udah berpasangan.</p>
+      )}
+      {players.length === 0 && (
+        <p className="text-[11px] text-slate-500">Tambahin peserta dulu di atas sebelum pasangin.</p>
+      )}
+      {players.length > 0 && players.length % 2 !== 0 && (
+        <p className="text-[11px] text-amber-400 mt-2">
+          ⚠️ Jumlah peserta ganjil ({players.length} orang) — Fixed Partner butuh jumlah genap
+          supaya semua orang kebagian pasangan.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function WaitingRoomScreen(props) {
   const {
     eventName, activeId, isOwner, canManage, myAccountId,
@@ -6790,6 +7234,7 @@ function WaitingRoomScreen(props) {
     courtCost, setCourtCost, adminFee, setAdminFee, ballCost, setBallCost, onSaveCosts,
     playDate, setPlayDate, onSavePlayDate,
     excludeFromStats, onToggleExcludeFromStats,
+    gameFormat, fixedPairs, setFixedPairs,
     onFinalize, onBackToLobby, onDelete,
   } = props;
 
@@ -6807,7 +7252,12 @@ function WaitingRoomScreen(props) {
   const [showBulk, setShowBulk] = useState(false);
   const [avatarCache, setAvatarCache] = useState({}); // accountId -> avatarUrl | null
   const usableCourtsPreview = Math.min(courts, Math.floor(players.length / 4));
-  const canFinalize = players.length >= 4 && usableCourtsPreview >= 1;
+  const pairedIdsPreview = new Set(fixedPairs.flat());
+  const unpairedCount = players.length - pairedIdsPreview.size;
+  const fixedPartnerReady =
+    gameFormat !== "fixed_partner" ||
+    (players.length % 2 === 0 && unpairedCount === 0 && fixedPairs.length >= 2);
+  const canFinalize = players.length >= 4 && usableCourtsPreview >= 1 && fixedPartnerReady;
   const iAmApproved = !canManage && players.some((p) => p.accountId === myAccountId);
   const iAmPending = !canManage && !iAmApproved && pendingRequests.some((r) => r.accountId === myAccountId);
 
@@ -7199,7 +7649,7 @@ function WaitingRoomScreen(props) {
         </Section>
       )}
 
-      {canManage && (
+      {canManage && gameFormat !== "fixed_partner" && (
         <Section icon={Settings2} title="Lapangan Bertahap" subtitle="opsional">
           {courtStages.length === 0 ? (
             <>
@@ -7324,6 +7774,16 @@ function WaitingRoomScreen(props) {
               </div>
             </>
           )}
+        </Section>
+      )}
+
+      {gameFormat === "fixed_partner" && canManage && (
+        <Section icon={Users} title="Pasangan Tetap" subtitle="wajib diisi sebelum generate">
+          <p className="text-[11px] text-slate-500 mb-3">
+            Tap 2 nama buat jadiin 1 pasangan tetap. Partner ini nggak akan berubah sepanjang
+            acara — cuma lawannya yang bakal dirotasi tiap ronde.
+          </p>
+          <FixedPairingBuilder players={players} fixedPairs={fixedPairs} setFixedPairs={setFixedPairs} />
         </Section>
       )}
 
