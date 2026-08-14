@@ -9705,13 +9705,13 @@ function LeaderboardScreen({ eventName, leaderboard, players, gameFormat, fixedP
   const sorted = React.useMemo(() => {
     const arr = [...visibleLeaderboard];
     if (sortBy === "wins") {
-      arr.sort((x, y) => y.wins - x.wins || y.diff - x.diff || y.winPercent - x.winPercent || y.ppm - x.ppm);
+      arr.sort((x, y) => y.wins - x.wins || y.diff - x.diff || y.winPercent - x.winPercent || y.points - x.points);
     } else if (sortBy === "diff") {
-      arr.sort((x, y) => y.diff - x.diff || y.wins - x.wins || y.winPercent - x.winPercent || y.ppm - x.ppm);
+      arr.sort((x, y) => y.diff - x.diff || y.wins - x.wins || y.winPercent - x.winPercent || y.points - x.points);
     } else if (sortBy === "winPercent") {
       arr.sort((x, y) => y.winPercent - x.winPercent || y.wins - x.wins || y.diff - x.diff);
     } else {
-      arr.sort((x, y) => y.ppm - x.ppm || y.wins - x.wins || y.diff - x.diff);
+      arr.sort((x, y) => y.points - x.points || y.wins - x.wins || y.diff - x.diff);
     }
     return arr;
   }, [visibleLeaderboard, sortBy]);
@@ -9728,7 +9728,7 @@ function LeaderboardScreen({ eventName, leaderboard, players, gameFormat, fixedP
     { key: "wlt", sortKey: "wins", label: "W-L-T", render: (p) => `${p.wins}-${p.losses}-${p.ties}` },
     { key: "diff", sortKey: "diff", label: "+/-", render: (p) => (p.diff > 0 ? `+${p.diff}` : `${p.diff}`) },
     { key: "winPercent", sortKey: "winPercent", label: "Win%", render: (p) => `${Math.round(p.winPercent)}%` },
-    { key: "ppm", sortKey: "ppm", label: "PPM", render: (p) => p.ppm.toFixed(1) },
+    { key: "ppm", sortKey: "points", label: "P", render: (p) => p.points },
   ];
   const activeColKey = sortBy === "wins" ? "wlt" : sortBy;
   const columns = [
@@ -9761,7 +9761,7 @@ function LeaderboardScreen({ eventName, leaderboard, players, gameFormat, fixedP
             { key: "winPercent", label: "Win%" },
             { key: "wins", label: "W-L-T" },
             { key: "diff", label: "Selisih Poin" },
-            { key: "ppm", label: "PPM" },
+            { key: "ppm", label: "Total Poin" },
           ].map((opt) => (
             <button
               key={opt.key}
@@ -9863,7 +9863,7 @@ function LeaderboardScreen({ eventName, leaderboard, players, gameFormat, fixedP
             <div><span className="text-lime-300 font-semibold">W-L-T</span> — menang-kalah-seri</div>
             <div><span className="text-lime-300 font-semibold">+/-</span> — selisih poin (poin dapat − poin lawan)</div>
             <div><span className="text-lime-300 font-semibold">Win%</span> — persentase match dimenangkan</div>
-            <div><span className="text-lime-300 font-semibold">PPM</span> — rata-rata poin per match</div>
+            <div><span className="text-lime-300 font-semibold">P</span> — Total Poin: jumlah semua poin yang dihasilkan sepanjang acara</div>
           </div>
         )}
       </div>
@@ -10631,13 +10631,13 @@ function ViewOnlyApp({ sessionId }) {
   const sortedLeaderboard = React.useMemo(() => {
     const arr = [...visibleLeaderboard];
     if (lbSortBy === "wins") {
-      arr.sort((x, y) => y.wins - x.wins || y.diff - x.diff || y.winPercent - x.winPercent || y.ppm - x.ppm);
+      arr.sort((x, y) => y.wins - x.wins || y.diff - x.diff || y.winPercent - x.winPercent || y.points - x.points);
     } else if (lbSortBy === "diff") {
-      arr.sort((x, y) => y.diff - x.diff || y.wins - x.wins || y.winPercent - x.winPercent || y.ppm - x.ppm);
+      arr.sort((x, y) => y.diff - x.diff || y.wins - x.wins || y.winPercent - x.winPercent || y.points - x.points);
     } else if (lbSortBy === "winPercent") {
       arr.sort((x, y) => y.winPercent - x.winPercent || y.wins - x.wins || y.diff - x.diff);
     } else {
-      arr.sort((x, y) => y.ppm - x.ppm || y.wins - x.wins || y.diff - x.diff);
+      arr.sort((x, y) => y.points - x.points || y.wins - x.wins || y.diff - x.diff);
     }
     return arr;
   }, [visibleLeaderboard, lbSortBy]);
@@ -10991,7 +10991,7 @@ function ViewOnlyApp({ sessionId }) {
                 { key: "winPercent", label: "Win%" },
                 { key: "wins", label: "W-L-T" },
                 { key: "diff", label: "Selisih Poin" },
-                { key: "ppm", label: "PPM" },
+                { key: "ppm", label: "Total Poin" },
               ].map((opt) => (
                 <button
                   key={opt.key}
@@ -11047,7 +11047,7 @@ function ViewOnlyApp({ sessionId }) {
                           key={k}
                           className={`text-right pb-2 pl-1 whitespace-nowrap ${k === lbActiveCol ? "text-lime-300" : ""}`}
                         >
-                          {k === "wlt" ? "W-L-T" : k === "diff" ? "+/-" : k === "winPercent" ? "Win%" : "PPM"}
+                          {k === "wlt" ? "W-L-T" : k === "diff" ? "+/-" : k === "winPercent" ? "Win%" : "P"}
                         </th>
                       ))}
                   </tr>
@@ -11063,7 +11063,7 @@ function ViewOnlyApp({ sessionId }) {
                           : p.diff
                         : k === "winPercent"
                         ? `${Math.round(p.winPercent)}%`
-                        : p.ppm.toFixed(1);
+                        : p.points;
                     return (
                       <tr key={p.id} className={`border-t border-slate-800 ${lbRanks[i] === 1 ? "bg-lime-400/5" : ""}`}>
                         <td className={`py-2.5 text-center font-display text-base ${lbRanks[i] === 1 ? "text-lime-300" : "text-slate-500"}`}>
@@ -11097,7 +11097,7 @@ function ViewOnlyApp({ sessionId }) {
                 <div><span className="text-lime-300 font-semibold">W-L-T</span> — menang-kalah-seri</div>
                 <div><span className="text-lime-300 font-semibold">+/-</span> — selisih poin (poin dapat − poin lawan)</div>
                 <div><span className="text-lime-300 font-semibold">Win%</span> — persentase match dimenangkan</div>
-                <div><span className="text-lime-300 font-semibold">PPM</span> — rata-rata poin per match</div>
+                <div><span className="text-lime-300 font-semibold">P</span> — Total Poin: jumlah semua poin yang dihasilkan sepanjang acara</div>
               </div>
             )}
           </div>
