@@ -2116,7 +2116,8 @@ function buildTeamFairnessStats(engine, playerMap, scores, fixedPairs, currentRo
   teams.forEach((t) => (oppsOf[t.id] = {}));
 
   engine.roundsData.forEach((rd, rIdx) => {
-    if (rIdx <= currentRound) {
+    const isScored = rd.courts.every((_, cIdx) => isMatchScoreComplete(scores[`${rIdx}-${cIdx}`]));
+    if (isScored) {
       const playingTeamIds = new Set(
         rd.courts.flatMap((c) => [teamOfPlayer[c.team1[0]], teamOfPlayer[c.team2[0]]]).filter(Boolean)
       );
@@ -4631,7 +4632,7 @@ function AmericanoPadel() {
     });
     engine.roundsData.forEach((rd, rIdx) => {
       const isScored = rd.courts.every((_, cIdx) => isMatchScoreComplete(scores[`${rIdx}-${cIdx}`]));
-      if (rIdx <= currentRound) {
+      if (isScored) {
         const playingIds = new Set(rd.courts.flatMap((c) => [...c.team1, ...c.team2]));
         Object.keys(playerMap).forEach((id) => {
           if (playingIds.has(id)) playedSoFar[id] = (playedSoFar[id] || 0) + 1;
