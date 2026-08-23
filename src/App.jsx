@@ -74,12 +74,24 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
   });
 
   const roundsData = [];
+  // Silent, UI-invisible trace of the reasoning behind each round's
+  // selection — who was tied on wait, which tiers/flex pools were
+  // considered, what the winning "who plays" cost was, and (for the team
+  // split) the cost of every possible pairing, not just the one chosen.
+  // Exists purely so a real anomaly report (e.g. "X kept facing Y") can be
+  // diagnosed from the actual decision the algorithm made at the time,
+  // instead of an after-the-fact reconstruction that can't see randomized
+  // trial outcomes or mid-stream seed state. Flows through export only —
+  // never rendered in the UI.
+  const debugTrace = seed && seed.debugTrace ? [...seed.debugTrace] : [];
 
   for (let r = 0; r < numRounds; r++) {
     const globalR = r + roundOffset;
     const numResting = n - capacity;
     let resting = [];
     let active = [...playerIds];
+    const dbg = { round: globalR, waitTimes: {} };
+    playerIds.forEach((id) => (dbg.waitTimes[id] = globalR - lastPlayed[id]));
 
     if (numResting > 0) {
       // Pre-shuffle once, then sort by wait using a STABLE sort (guaranteed
@@ -111,6 +123,9 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
       const cutoffWait = globalR - lastPlayed[sorted[capacity - 1]];
       let guaranteed = sorted.filter((id) => globalR - lastPlayed[id] > cutoffWait);
       const tier0 = sorted.filter((id) => globalR - lastPlayed[id] === cutoffWait);
+      dbg.cutoffWait = cutoffWait;
+      dbg.guaranteedBeforeClump = [...guaranteed];
+      dbg.tier0 = [...tier0];
 
       // Clump-swap: when 3+ guaranteed players are all tied at the exact
       // same (highest) wait — the classic "everyone who rested last round
@@ -146,6 +161,9 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
       }
 
       const neededFromFlex = capacity - guaranteed.length;
+      dbg.clumpEligible = [...clumpEligible];
+      dbg.guaranteedAfterClump = [...guaranteed];
+      dbg.neededFromFlex = neededFromFlex;
 
       const cutoffIsNeverPlayedTier = tier0.some((id) => lastPlayed[id] === -1);
       let flexCandidates = tier0;
@@ -162,14 +180,17 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
         // many different partners and opponents each person sees.
         if (cutoffWait - 1 >= 2 || tier0.length <= neededFromFlex) {
           flexCandidates = [...tier0, ...tier1];
+          dbg.tier1Used = [...tier1];
         }
       }
       if (clumpEligible.length > 0) {
         flexCandidates = [...clumpEligible, ...flexCandidates];
       }
+      dbg.flexCandidates = [...flexCandidates];
 
       if (flexCandidates.length <= neededFromFlex) {
         active = [...guaranteed, ...flexCandidates];
+        dbg.activeSelection = "deterministic"; // no choice to make — everyone in flexCandidates was needed
       } else {
         let bestActive = null;
         let bestActiveCost = Infinity;
@@ -206,6 +227,8 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
           }
         }
         active = bestActive;
+        dbg.activeSelection = "trial";
+        dbg.activeCost = bestActiveCost;
       }
 
       const activeSet = new Set(active);
@@ -225,10 +248,14 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
       clumpEligible.forEach((id) => {
         if (!activeSet.has(id)) skipDebt[id] = 1;
       });
+    } else {
+      dbg.activeSelection = "everyone-plays"; // numResting <= 0
     }
+    dbg.activeChosen = [...active];
 
     let bestSplits = null;
     let bestCost = Infinity;
+    let bestSplitsDebug = null;
     const trials = active.length <= 8 ? 60 : active.length <= 16 ? 250 : 400;
 
     for (let t = 0; t < trials; t++) {
@@ -240,6 +267,7 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
 
       let cost = 0;
       const splits = [];
+      const groupsDebug = [];
       for (const grp of groups) {
         const [a, b, c, d] = grp;
         const options = [
@@ -249,16 +277,14 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
         ];
         let bestOpt = null;
         let bestOptCost = Infinity;
+        const optionsDebug = [];
         for (const opt of options) {
           const [p1, p2] = opt.t1;
           const [p3, p4] = opt.t2;
-          const c1 =
-            partner[p1][p2] * 10 +
-            partner[p3][p4] * 10 +
-            opp[p1][p3] +
-            opp[p1][p4] +
-            opp[p2][p3] +
-            opp[p2][p4];
+          const partnerCost = partner[p1][p2] * 10 + partner[p3][p4] * 10;
+          const oppCost = opp[p1][p3] + opp[p1][p4] + opp[p2][p3] + opp[p2][p4];
+          const c1 = partnerCost + oppCost;
+          optionsDebug.push({ t1: opt.t1, t2: opt.t2, partnerCost, oppCost, total: c1 });
           if (c1 < bestOptCost) {
             bestOptCost = c1;
             bestOpt = opt;
@@ -266,13 +292,16 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
         }
         cost += bestOptCost;
         splits.push(bestOpt);
+        groupsDebug.push({ group: grp, optionsConsidered: optionsDebug, chosen: bestOpt, chosenCost: bestOptCost });
       }
 
       if (cost < bestCost) {
         bestCost = cost;
         bestSplits = splits;
+        bestSplitsDebug = groupsDebug;
       }
     }
+    dbg.teamSplit = bestSplitsDebug;
 
     const courtsResult = (bestSplits || []).map((split) => ({
       team1: split.t1,
@@ -295,10 +324,11 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
       [a, b, c, d].forEach((id) => (playCount[id] += 1));
     });
 
+    debugTrace.push(dbg);
     roundsData.push({ resting, courts: courtsResult });
   }
 
-  return { roundsData, playCount, restCount, partner, opp, usableCourts, lastPlayed, skipDebt };
+  return { roundsData, playCount, restCount, partner, opp, usableCourts, lastPlayed, skipDebt, debugTrace };
 }
 
 // Fixed Partner mode: partners are fixed pairs decided by the host up front
@@ -2082,8 +2112,8 @@ function buildTeamFairnessStats(engine, playerMap, scores, fixedPairs, currentRo
   const playedSoFar = {};
   const wins = {};
   const losses = {};
-  const oppsOf = {};
-  teams.forEach((t) => (oppsOf[t.id] = new Set()));
+  const oppsOf = {}; // teamId -> { otherTeamId: { total, played } }
+  teams.forEach((t) => (oppsOf[t.id] = {}));
 
   engine.roundsData.forEach((rd, rIdx) => {
     if (rIdx <= currentRound) {
@@ -2097,9 +2127,13 @@ function buildTeamFairnessStats(engine, playerMap, scores, fixedPairs, currentRo
       const team2Id = teamOfPlayer[match.team2[0]];
       if (!team1Id || !team2Id) return;
       const matchScored = isMatchScoreComplete(scores[`${rIdx}-${cIdx}`]);
+      if (!oppsOf[team1Id][team2Id]) oppsOf[team1Id][team2Id] = { total: 0, played: 0 };
+      if (!oppsOf[team2Id][team1Id]) oppsOf[team2Id][team1Id] = { total: 0, played: 0 };
+      oppsOf[team1Id][team2Id].total += 1;
+      oppsOf[team2Id][team1Id].total += 1;
       if (matchScored) {
-        oppsOf[team1Id].add(team2Id);
-        oppsOf[team2Id].add(team1Id);
+        oppsOf[team1Id][team2Id].played += 1;
+        oppsOf[team2Id][team1Id].played += 1;
       }
       const s = scores[`${rIdx}-${cIdx}`];
       const ab = matchAB(s);
@@ -2111,18 +2145,27 @@ function buildTeamFairnessStats(engine, playerMap, scores, fixedPairs, currentRo
     });
   });
 
+  const teamNameById = {};
+  teams.forEach((t) => (teamNameById[t.id] = t.name));
+
   return teams
-    .map((t) => ({
-      id: t.id,
-      name: t.name,
-      matches: (engine.playCount && engine.playCount[t.id]) || 0,
-      playedSoFar: playedSoFar[t.id] || 0,
-      rests: (engine.restCount && engine.restCount[t.id]) || 0,
-      wins: wins[t.id] || 0,
-      losses: losses[t.id] || 0,
-      opps: oppsOf[t.id] ? oppsOf[t.id].size : 0,
-      role: null,
-    }))
+    .map((t) => {
+      const oppEntries = Object.entries(oppsOf[t.id] || {});
+      return {
+        id: t.id,
+        name: t.name,
+        matches: (engine.playCount && engine.playCount[t.id]) || 0,
+        playedSoFar: playedSoFar[t.id] || 0,
+        rests: (engine.restCount && engine.restCount[t.id]) || 0,
+        wins: wins[t.id] || 0,
+        losses: losses[t.id] || 0,
+        opps: oppEntries.length,
+        oppDetail: oppEntries
+          .map(([oid, c]) => ({ name: teamNameById[oid] || oid, played: c.played, total: c.total }))
+          .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name)),
+        role: null,
+      };
+    })
     .sort((a, b) => b.matches - a.matches);
 }
 
@@ -3172,6 +3215,7 @@ function AmericanoPadel() {
           restCount: part.restCount,
           lastPlayed: part.lastPlayed,
           skipDebt: part.skipDebt,
+          debugTrace: part.debugTrace,
         };
         lastPart = part;
       });
@@ -3184,6 +3228,7 @@ function AmericanoPadel() {
         usableCourts: lastPart.usableCourts,
         lastPlayed: lastPart.lastPlayed,
         skipDebt: lastPart.skipDebt,
+        debugTrace: lastPart.debugTrace,
       };
     } else {
       result = generateSchedule(ids, courts, computedRounds);
@@ -3374,6 +3419,7 @@ function AmericanoPadel() {
       restCount: engine.restCount,
       lastPlayed: engine.lastPlayed || {},
       skipDebt: engine.skipDebt || {},
+      debugTrace: engine.debugTrace || [],
     };
     const part = generateSchedule(ids, courts, n, seed, engine.roundsData.length);
     const newRoundsData = [...engine.roundsData, ...part.roundsData];
@@ -3386,6 +3432,7 @@ function AmericanoPadel() {
       usableCourts: part.usableCourts,
       lastPlayed: part.lastPlayed,
       skipDebt: part.skipDebt,
+      debugTrace: part.debugTrace,
     };
     const newRoundIdx = newRoundsData.length - 1;
     setEngine(newEngine);
@@ -3433,15 +3480,22 @@ function AmericanoPadel() {
         newScores[`${newR}-${cStr}`] = scores[key];
       });
       const rebuilt = replayRoundsIntoSeed(newRoundsData, activeIds);
-      newEngine = { ...engine, roundsData: newRoundsData, ...rebuilt };
+      // No new generation happened here — every remaining round kept its
+      // existing pairing — so just drop the deleted round's own debug
+      // entry and keep the rest as-is (their round numbers shift down,
+      // matching newRoundsData, but the reasoning recorded for each is
+      // still accurate to what actually happened).
+      const newDebugTrace = (engine.debugTrace || []).filter((_, i) => i !== roundIdx);
+      newEngine = { ...engine, roundsData: newRoundsData, ...rebuilt, debugTrace: newDebugTrace };
     } else {
       const lockedRounds = engine.roundsData.slice(0, roundIdx);
       const seed = replayRoundsIntoSeed(lockedRounds, activeIds);
+      seed.debugTrace = (engine.debugTrace || []).slice(0, roundIdx);
       const remainingCount = engine.roundsData.length - 1 - roundIdx;
       const freshPart =
         remainingCount > 0
           ? generateSchedule(activeIds, courts, remainingCount, seed, roundIdx)
-          : { roundsData: [], playCount: seed.playCount, restCount: seed.restCount, partner: seed.partner, opp: seed.opp, usableCourts: 0, lastPlayed: seed.lastPlayed, skipDebt: seed.skipDebt };
+          : { roundsData: [], playCount: seed.playCount, restCount: seed.restCount, partner: seed.partner, opp: seed.opp, usableCourts: 0, lastPlayed: seed.lastPlayed, skipDebt: seed.skipDebt, debugTrace: seed.debugTrace };
       newRoundsData = [...lockedRounds, ...freshPart.roundsData];
       newEngine = {
         roundsData: newRoundsData,
@@ -3452,6 +3506,7 @@ function AmericanoPadel() {
         usableCourts: freshPart.usableCourts,
         lastPlayed: freshPart.lastPlayed,
         skipDebt: freshPart.skipDebt,
+        debugTrace: freshPart.debugTrace,
       };
       newScores = {};
       Object.keys(scores).forEach((key) => {
@@ -3617,6 +3672,7 @@ function AmericanoPadel() {
     // Rebuild the fairness-history seed by replaying ONLY the locked rounds
     // (not the discarded future ones) against the active roster.
     const seed = replayRoundsIntoSeed(lockedRounds, activePlayers.map((p) => p.id));
+    seed.debugTrace = (engine.debugTrace || []).slice(0, splitIdx);
 
     // Anyone who has genuinely never played a single (locked/scored) round
     // yet starts with lastPlayed=-1 and zero partner/opponent history. That's
@@ -3732,6 +3788,7 @@ function AmericanoPadel() {
           restCount: part.restCount,
           lastPlayed: part.lastPlayed,
           skipDebt: part.skipDebt,
+          debugTrace: part.debugTrace,
         };
         lastPart = part;
       });
@@ -3750,6 +3807,7 @@ function AmericanoPadel() {
       usableCourts: freshPart.usableCourts,
       lastPlayed: freshPart.lastPlayed,
       skipDebt: freshPart.skipDebt,
+      debugTrace: freshPart.debugTrace,
     };
 
     // Keep scores for locked (already-complete) rounds; drop everything else
@@ -4048,6 +4106,7 @@ function AmericanoPadel() {
       const activePlayers = players.filter((p) => p.arrived !== false);
       const activeIds = activePlayers.map((p) => p.id);
       const seed = replayRoundsIntoSeed(lockedRounds, activeIds);
+      seed.debugTrace = (engine.debugTrace || []).slice(0, roundIdx);
       const remainingCount = engine.roundsData.length - (roundIdx + 1);
       const freshPart = generateSchedule(activeIds, courts, remainingCount, seed, roundIdx + 1);
       const newRoundsData = [...lockedRounds, ...freshPart.roundsData];
@@ -4060,6 +4119,7 @@ function AmericanoPadel() {
         usableCourts: freshPart.usableCourts,
         lastPlayed: freshPart.lastPlayed,
         skipDebt: freshPart.skipDebt,
+        debugTrace: freshPart.debugTrace,
       };
       const newScores = {};
       Object.keys(scores).forEach((key) => {
@@ -4563,11 +4623,11 @@ function AmericanoPadel() {
     const playedSoFar = {};
     const wins = {};
     const losses = {};
-    const partnersOf = {};
-    const oppsOf = {};
+    const partnersOf = {}; // id -> { otherId: { total, played } }
+    const oppsOf = {}; // id -> { otherId: { total, played } }
     currentRosterIds.forEach((id) => {
-      partnersOf[id] = new Set();
-      oppsOf[id] = new Set();
+      partnersOf[id] = {};
+      oppsOf[id] = {};
     });
     engine.roundsData.forEach((rd, rIdx) => {
       const isScored = rd.courts.every((_, cIdx) => isMatchScoreComplete(scores[`${rIdx}-${cIdx}`]));
@@ -4585,16 +4645,22 @@ function AmericanoPadel() {
             if (!partnersOf[id]) return; // no longer on the roster — no card to update
             const partnerId = team.find((x) => x !== id);
             // Someone still on the roster counts regardless of whether this
-            // round has been played yet (it's a real, committed pairing).
-            // Someone no longer on the roster only counts if the match
-            // genuinely happened — an unplayed pairing with someone who
-            // got removed before it was ever played isn't a real encounter.
+            // round has been played yet (it's a real, scheduled pairing —
+            // "total" reflects the whole schedule, "played" only what's
+            // actually happened so far). Someone no longer on the roster
+            // only counts at all if the match genuinely happened — an
+            // unplayed pairing with someone who got removed before it was
+            // ever played isn't a real encounter.
             if (currentRosterIds.has(partnerId) || matchScored) {
-              partnersOf[id].add(partnerId);
+              if (!partnersOf[id][partnerId]) partnersOf[id][partnerId] = { total: 0, played: 0 };
+              partnersOf[id][partnerId].total += 1;
+              if (matchScored) partnersOf[id][partnerId].played += 1;
             }
             other.forEach((oppId) => {
               if (currentRosterIds.has(oppId) || matchScored) {
-                oppsOf[id].add(oppId);
+                if (!oppsOf[id][oppId]) oppsOf[id][oppId] = { total: 0, played: 0 };
+                oppsOf[id][oppId].total += 1;
+                if (matchScored) oppsOf[id][oppId].played += 1;
               }
             });
           });
@@ -4615,8 +4681,10 @@ function AmericanoPadel() {
     const ids = players.map((p) => p.id); // same fix as leaderboard — attendance toggle shouldn't hide someone from stats
     return ids
       .map((id) => {
-        const partners = partnersOf[id] ? partnersOf[id].size : 0;
-        const opps = oppsOf[id] ? oppsOf[id].size : 0;
+        const partnerEntries = Object.entries(partnersOf[id] || {});
+        const oppEntries = Object.entries(oppsOf[id] || {});
+        const partners = partnerEntries.length;
+        const opps = oppEntries.length;
         const accId = idToAccountId[id];
         const role = accId && accId === ownerId ? "host" : accId && coHostIds.includes(accId) ? "cohost" : null;
         return {
@@ -4629,6 +4697,16 @@ function AmericanoPadel() {
           losses: losses[id] || 0,
           partners,
           opps,
+          // Detailed name+count breakdown, sorted by most total-scheduled
+          // first — shows "played/total" (e.g. "Ihsan 2/4": already
+          // partnered 2 times out of 4 times scheduled across the whole
+          // event, including rounds not yet played).
+          partnerDetail: partnerEntries
+            .map(([pid, c]) => ({ name: playerMap[pid] || pid, played: c.played, total: c.total }))
+            .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name)),
+          oppDetail: oppEntries
+            .map(([oid, c]) => ({ name: playerMap[oid] || oid, played: c.played, total: c.total }))
+            .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name)),
           role,
         };
       })
@@ -7263,6 +7341,50 @@ function buildSessionExport({
       oleh: a.who,
       aksi: a.message,
     })),
+    // Silent decision trace from the scheduling algorithm itself — not
+    // shown anywhere in the app UI. Exists so a real matchmaking anomaly
+    // (e.g. "these two keep facing each other") can be diagnosed from what
+    // the algorithm actually considered and why, instead of reconstructing
+    // it after the fact from just the final schedule. Player ids are
+    // translated to names here for readability.
+    algorithmDebug:
+      engine && engine.debugTrace
+        ? engine.debugTrace.map((d) => {
+            const names = (ids) => (ids || []).map((id) => playerMap[id] || id);
+            const nameOf = (id) => playerMap[id] || id;
+            const waitTimes = {};
+            Object.entries(d.waitTimes || {}).forEach(([id, wait]) => {
+              waitTimes[nameOf(id)] = wait;
+            });
+            return {
+              ronde: d.round + 1,
+              waktuTunggu: waitTimes,
+              cutoffWait: d.cutoffWait,
+              wajibMain: names(d.guaranteedBeforeClump),
+              tier0Seri: names(d.tier0),
+              clumpEligible: names(d.clumpEligible),
+              wajibMainSetelahClump: names(d.guaranteedAfterClump),
+              butuhDariFlex: d.neededFromFlex,
+              tier1Dipakai: d.tier1Used ? names(d.tier1Used) : null,
+              kandidatFlex: names(d.flexCandidates),
+              caraPilihAktif: d.activeSelection,
+              biayaAktifTerpilih: d.activeCost ?? null,
+              yangMain: names(d.activeChosen),
+              pembagianTim: (d.teamSplit || []).map((g) => ({
+                grup: names(g.group),
+                opsiDipertimbangkan: (g.optionsConsidered || []).map((o) => ({
+                  tim1: names(o.t1),
+                  tim2: names(o.t2),
+                  biayaPartner: o.partnerCost,
+                  biayaLawan: o.oppCost,
+                  totalBiaya: o.total,
+                })),
+                dipilih: g.chosen ? { tim1: names(g.chosen.t1), tim2: names(g.chosen.t2) } : null,
+                biayaDipilih: g.chosenCost,
+              })),
+            };
+          })
+        : [],
   };
 }
 
@@ -10483,18 +10605,38 @@ function StatsScreen({ eventName, stats, totalPlayers, gameFormat, hasSplitBill,
             </div>
             <div className={`grid ${isTeamMode ? "grid-cols-1" : "grid-cols-2"} gap-2 text-xs`}>
               {!isTeamMode && (
-                <div className="flex items-center justify-between bg-slate-950/60 rounded-lg px-3 py-1.5">
-                  <span className="text-slate-500">Partner unik</span>
-                  <span className="font-mono2 text-cyan-300">
-                    {p.partners}/{maxPossible}
-                  </span>
+                <div className="bg-slate-950/60 rounded-lg px-3 py-2">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-slate-500">Partner</span>
+                    <span className="font-mono2 text-cyan-300">{p.partners}/{maxPossible}</span>
+                  </div>
+                  {p.partnerDetail && p.partnerDetail.length > 0 && (
+                    <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
+                      {p.partnerDetail.map((d) => (
+                        <div key={d.name} className="flex items-center justify-between gap-1 text-[11px]">
+                          <span className="text-slate-300 truncate">{d.name}</span>
+                          <span className="text-slate-500 shrink-0">{d.played}/{d.total}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
-              <div className="flex items-center justify-between bg-slate-950/60 rounded-lg px-3 py-1.5">
-                <span className="text-slate-500">{isTeamMode ? "Lawan tim unik" : "Lawan unik"}</span>
-                <span className="font-mono2 text-cyan-300">
-                  {p.opps}/{maxPossible}
-                </span>
+              <div className="bg-slate-950/60 rounded-lg px-3 py-2">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-slate-500">{isTeamMode ? "Lawan tim" : "Lawan"}</span>
+                  <span className="font-mono2 text-cyan-300">{p.opps}/{maxPossible}</span>
+                </div>
+                {p.oppDetail && p.oppDetail.length > 0 && (
+                  <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
+                    {p.oppDetail.map((d) => (
+                      <div key={d.name} className="flex items-center justify-between gap-1 text-[11px]">
+                        <span className="text-slate-300 truncate">{d.name}</span>
+                        <span className="text-slate-500 shrink-0">{d.played}/{d.total}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>
