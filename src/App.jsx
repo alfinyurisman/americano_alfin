@@ -9869,13 +9869,11 @@ function LeaderboardScreen({ eventName, leaderboard, players, gameFormat, fixedP
           <ArrowLeft size={16} /> Lobby
         </button>
         {eventName && <div className="text-sm font-semibold text-slate-200 mb-1">{eventName}</div>}
-        <div className="flex items-center gap-2 mb-1">
-          <Trophy size={16} className="text-lime-300" />
-          <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
-            {ended ? "Hasil Akhir" : "Standing"}
-          </span>
-          {ended && <Chip tone="lime">Selesai</Chip>}
-        </div>
+        {ended && (
+          <div className="flex items-center gap-2 mb-1">
+            <Chip tone="lime">Selesai</Chip>
+          </div>
+        )}
         <h1 className="font-display text-5xl text-slate-50">KLASEMEN</h1>
         <p className="text-slate-500 text-sm mt-2">Tap salah satu tombol untuk urutkan.</p>
 
@@ -10069,12 +10067,6 @@ function SplitBillScreen({
           <ArrowLeft size={16} /> Lobby
         </button>
         {eventName && <div className="text-sm font-semibold text-slate-200 mb-1">{eventName}</div>}
-        <div className="flex items-center gap-2 mb-1">
-          <Wallet size={16} className="text-lime-300" />
-          <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
-            Bagi Biaya
-          </span>
-        </div>
         <h1 className="font-display text-5xl text-slate-50">SPLIT BILL</h1>
       </div>
 
@@ -10167,8 +10159,8 @@ function SplitBillScreen({
         </div>
 
         <div className="mt-4 rounded-2xl border border-lime-400/40 bg-lime-400/5 p-5 text-center">
-          <div className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">
-            Per orang (dibulatkan ke atas)
+          <div className="text-[11px] text-white uppercase tracking-wide mb-1">
+            Per orang
           </div>
           <div className="font-display text-5xl text-lime-300">{formatRupiah(perPerson)}</div>
         </div>
@@ -10418,12 +10410,6 @@ function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, e
           <ArrowLeft size={16} /> Lobby
         </button>
         {eventName && <div className="text-sm font-semibold text-slate-200 mb-1">{eventName}</div>}
-        <div className="flex items-center gap-2 mb-1">
-          <ClipboardList size={16} className="text-lime-300" />
-          <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
-            Match Log
-          </span>
-        </div>
         <h1 className="font-display text-5xl text-slate-50">REKAP MATCH</h1>
 
         {filterChips.length > 0 && (
@@ -10562,12 +10548,6 @@ function StatsScreen({ eventName, stats, totalPlayers, gameFormat, hasSplitBill,
           <ArrowLeft size={16} /> Lobby
         </button>
         {eventName && <div className="text-sm font-semibold text-slate-200 mb-1">{eventName}</div>}
-        <div className="flex items-center gap-2 mb-1">
-          <BarChart3 size={16} className="text-lime-300" />
-          <span className="text-xs font-semibold tracking-[0.2em] text-cyan-300 uppercase">
-            Bukti Keadilan
-          </span>
-        </div>
         <h1 className="font-display text-5xl text-slate-50">STATISTIK ROTASI</h1>
         <p className="text-slate-500 text-sm mt-2">
           Semakin merata angka "main" &amp; "istirahat", semakin adil rotasinya.
@@ -11355,8 +11335,8 @@ function ViewOnlyApp({ sessionId }) {
                   </div>
 
                   <div className="mt-4 rounded-2xl border border-lime-400/40 bg-lime-400/5 p-5 text-center">
-                    <div className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">
-                      Per orang (dibulatkan ke atas)
+                    <div className="text-[11px] text-white uppercase tracking-wide mb-1">
+                      Per orang
                     </div>
                     <div className="font-display text-5xl text-lime-300">{formatRupiah(perPerson)}</div>
                   </div>
