@@ -197,23 +197,28 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
       if (clumpEligible.length > 0) {
         flexCandidates = [...clumpEligible, ...flexCandidates];
       }
-      // Hard cap: nobody plays a 5th round in a row if there's ANY
+      // Hard cap: nobody plays too many rounds in a row if there's ANY
       // alternative — pull them out of the flex pool entirely (forcing a
       // rest this round) unless doing so would leave too few candidates to
       // fill the needed slots, in which case the cap has to give (this
       // should be extremely rare — it'd mean literally everyone eligible
       // has already hit the cap at once).
       //
-      // Scoped to single-court (capacity<=4) only, same as clump-swap:
-      // that's the only regime where this was ever actually a problem
-      // (5-6 players on 1 court — with more players, or more courts, the
-      // wait-time math alone already keeps everyone under 4 in a row).
-      // Testing showed applying it more broadly measurably hurt fairness
-      // in multi-court setups without fixing anything real there.
-      if (capacity <= 4) {
-        const overCapIds = flexCandidates.filter((id) => (consecutivePlays[id] || 0) >= 4);
+      // Deliberately a specific threshold PER player count, not a formula
+      // — a clean ratio-based rule (capacity/resting) looked appealing but
+      // falls apart in practice: it would demand a max streak of just 1 for
+      // 8 players, which directly contradicts the 8-player case being
+      // provably excellent (perfect fairness, 100% partner variety) with
+      // NO streak cap at all, via a completely different mechanism
+      // (tier0/tier1 widening — every player is an equally-valid candidate
+      // each round, not fixed into a rest-then-play rotation). Only 5 and 6
+      // players were shown to actually need this safety net; 7+ is left
+      // untouched since it was already validated fine without one.
+      const streakCap = n === 5 ? 4 : n === 6 ? 3 : null;
+      if (streakCap !== null && capacity <= 4) {
+        const overCapIds = flexCandidates.filter((id) => (consecutivePlays[id] || 0) >= streakCap);
         if (overCapIds.length > 0) {
-          const withinCap = flexCandidates.filter((id) => (consecutivePlays[id] || 0) < 4);
+          const withinCap = flexCandidates.filter((id) => (consecutivePlays[id] || 0) < streakCap);
           if (withinCap.length >= neededFromFlex) {
             flexCandidates = withinCap;
             dbg.consecutiveCapApplied = overCapIds;
