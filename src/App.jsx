@@ -57,12 +57,23 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
   // so nobody ever waits more than one extra round beyond their fair turn
   // because of this mechanism.
   const skipDebt = seed && seed.skipDebt ? { ...seed.skipDebt } : {};
+  // Tracks how many rounds in a row someone's played WITHOUT a rest.
+  // Matters most for small player counts relative to court capacity (5
+  // people on 1 court, especially) — there, every round after the first
+  // has just ONE strictly-guaranteed "most overdue" rester, while the
+  // other 4 are all tied on wait and freely competitive purely on variety
+  // cost. With nothing else bounding that competition, the same person can
+  // keep winning "who plays" round after round if it happens to be
+  // cost-optimal, occasionally stringing together 6-8 consecutive rounds
+  // with no break at all. Capped at 4 in a row below.
+  const consecutivePlays = seed && seed.consecutivePlays ? { ...seed.consecutivePlays } : {};
 
   playerIds.forEach((id) => {
     if (playCount[id] === undefined) playCount[id] = 0;
     if (restCount[id] === undefined) restCount[id] = 0;
     if (lastPlayed[id] === undefined) lastPlayed[id] = -1;
     if (skipDebt[id] === undefined) skipDebt[id] = 0;
+    if (consecutivePlays[id] === undefined) consecutivePlays[id] = 0;
     if (!partner[id]) partner[id] = {};
     if (!opp[id]) opp[id] = {};
     playerIds.forEach((o) => {
@@ -186,6 +197,29 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
       if (clumpEligible.length > 0) {
         flexCandidates = [...clumpEligible, ...flexCandidates];
       }
+      // Hard cap: nobody plays a 5th round in a row if there's ANY
+      // alternative — pull them out of the flex pool entirely (forcing a
+      // rest this round) unless doing so would leave too few candidates to
+      // fill the needed slots, in which case the cap has to give (this
+      // should be extremely rare — it'd mean literally everyone eligible
+      // has already hit the cap at once).
+      //
+      // Scoped to single-court (capacity<=4) only, same as clump-swap:
+      // that's the only regime where this was ever actually a problem
+      // (5-6 players on 1 court — with more players, or more courts, the
+      // wait-time math alone already keeps everyone under 4 in a row).
+      // Testing showed applying it more broadly measurably hurt fairness
+      // in multi-court setups without fixing anything real there.
+      if (capacity <= 4) {
+        const overCapIds = flexCandidates.filter((id) => (consecutivePlays[id] || 0) >= 4);
+        if (overCapIds.length > 0) {
+          const withinCap = flexCandidates.filter((id) => (consecutivePlays[id] || 0) < 4);
+          if (withinCap.length >= neededFromFlex) {
+            flexCandidates = withinCap;
+            dbg.consecutiveCapApplied = overCapIds;
+          }
+        }
+      }
       dbg.flexCandidates = [...flexCandidates];
 
       if (flexCandidates.length <= neededFromFlex) {
@@ -235,6 +269,7 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
       resting = playerIds.filter((id) => !activeSet.has(id));
       resting.forEach((id) => {
         restCount[id]++;
+        consecutivePlays[id] = 0;
       });
       active.forEach((id) => {
         lastPlayed[id] = globalR;
@@ -251,6 +286,9 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
     } else {
       dbg.activeSelection = "everyone-plays"; // numResting <= 0
     }
+    active.forEach((id) => {
+      consecutivePlays[id] = (consecutivePlays[id] || 0) + 1;
+    });
     dbg.activeChosen = [...active];
 
     let bestSplits = null;
@@ -328,7 +366,7 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
     roundsData.push({ resting, courts: courtsResult });
   }
 
-  return { roundsData, playCount, restCount, partner, opp, usableCourts, lastPlayed, skipDebt, debugTrace };
+  return { roundsData, playCount, restCount, partner, opp, usableCourts, lastPlayed, skipDebt, debugTrace, consecutivePlays };
 }
 
 // Fixed Partner mode: partners are fixed pairs decided by the host up front
@@ -3216,6 +3254,7 @@ function AmericanoPadel() {
           restCount: part.restCount,
           lastPlayed: part.lastPlayed,
           skipDebt: part.skipDebt,
+          consecutivePlays: part.consecutivePlays,
           debugTrace: part.debugTrace,
         };
         lastPart = part;
@@ -3229,6 +3268,7 @@ function AmericanoPadel() {
         usableCourts: lastPart.usableCourts,
         lastPlayed: lastPart.lastPlayed,
         skipDebt: lastPart.skipDebt,
+        consecutivePlays: lastPart.consecutivePlays,
         debugTrace: lastPart.debugTrace,
       };
     } else {
@@ -3433,6 +3473,7 @@ function AmericanoPadel() {
       usableCourts: part.usableCourts,
       lastPlayed: part.lastPlayed,
       skipDebt: part.skipDebt,
+      consecutivePlays: part.consecutivePlays,
       debugTrace: part.debugTrace,
     };
     const newRoundIdx = newRoundsData.length - 1;
@@ -3496,7 +3537,7 @@ function AmericanoPadel() {
       const freshPart =
         remainingCount > 0
           ? generateSchedule(activeIds, courts, remainingCount, seed, roundIdx)
-          : { roundsData: [], playCount: seed.playCount, restCount: seed.restCount, partner: seed.partner, opp: seed.opp, usableCourts: 0, lastPlayed: seed.lastPlayed, skipDebt: seed.skipDebt, debugTrace: seed.debugTrace };
+          : { roundsData: [], playCount: seed.playCount, restCount: seed.restCount, partner: seed.partner, opp: seed.opp, usableCourts: 0, lastPlayed: seed.lastPlayed, skipDebt: seed.skipDebt, debugTrace: seed.debugTrace, consecutivePlays: seed.consecutivePlays };
       newRoundsData = [...lockedRounds, ...freshPart.roundsData];
       newEngine = {
         roundsData: newRoundsData,
@@ -3507,6 +3548,7 @@ function AmericanoPadel() {
         usableCourts: freshPart.usableCourts,
         lastPlayed: freshPart.lastPlayed,
         skipDebt: freshPart.skipDebt,
+      consecutivePlays: freshPart.consecutivePlays,
         debugTrace: freshPart.debugTrace,
       };
       newScores = {};
@@ -3644,6 +3686,7 @@ function AmericanoPadel() {
         usableCourts: freshPart.usableCourts,
         lastPlayed: freshPart.lastPlayed,
         skipDebt: freshPart.skipDebt,
+      consecutivePlays: freshPart.consecutivePlays,
       };
       const newScores = {};
       Object.keys(scores).forEach((key) => {
@@ -3789,6 +3832,7 @@ function AmericanoPadel() {
           restCount: part.restCount,
           lastPlayed: part.lastPlayed,
           skipDebt: part.skipDebt,
+          consecutivePlays: part.consecutivePlays,
           debugTrace: part.debugTrace,
         };
         lastPart = part;
@@ -3808,6 +3852,7 @@ function AmericanoPadel() {
       usableCourts: freshPart.usableCourts,
       lastPlayed: freshPart.lastPlayed,
       skipDebt: freshPart.skipDebt,
+      consecutivePlays: freshPart.consecutivePlays,
       debugTrace: freshPart.debugTrace,
     };
 
@@ -4120,6 +4165,7 @@ function AmericanoPadel() {
         usableCourts: freshPart.usableCourts,
         lastPlayed: freshPart.lastPlayed,
         skipDebt: freshPart.skipDebt,
+      consecutivePlays: freshPart.consecutivePlays,
         debugTrace: freshPart.debugTrace,
       };
       const newScores = {};
