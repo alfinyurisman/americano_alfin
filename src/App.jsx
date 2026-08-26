@@ -8349,19 +8349,19 @@ function SessionScreen(props) {
           )}
         </div>
         {eventName && (
-          <div className="text-sm font-semibold text-slate-200 mb-1 truncate">{eventName}</div>
+          <div className="text-sm font-semibold text-lime-300 mb-1 truncate">{eventName}</div>
         )}
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-lg font-bold tracking-[0.1em] text-lime-300 uppercase">
-            Ronde {currentRound + 1} / {totalRounds}
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <span className="font-display text-3xl text-slate-50">
+            RONDE {currentRound + 1} / {totalRounds}
           </span>
-        </div>
-        <div className="mb-3 flex flex-wrap items-center gap-2">
-          <Chip tone="amber">
-            <Trophy size={11} />
-            {scoreFormat === "tennis" ? `Race to ${tennisTarget} game` : `Target ${pointTarget} poin`}
-          </Chip>
-          {ended && <Chip tone="lime">Acara selesai</Chip>}
+          <div className="flex flex-wrap items-center gap-2">
+            <Chip tone="amber">
+              <Trophy size={11} />
+              {scoreFormat === "tennis" ? `Race to ${tennisTarget} game` : `${pointTarget} Poin`}
+            </Chip>
+            {ended && <Chip tone="lime">Acara selesai</Chip>}
+          </div>
           {hasSplitBill && (
             <button
               onClick={() => onNav("splitbill")}
