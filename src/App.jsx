@@ -551,6 +551,510 @@ function generateFixedPartnerSchedule(fixedTeams, courtsInput, numRounds, seed, 
 }
 
 // ---------------------------------------------------------------------------
+// MEXICANO — performance-based, single-round-batch matchmaking
+// ---------------------------------------------------------------------------
+//
+// Fundamentally different from Americano/Fixed Partner: those plan the whole
+// schedule upfront via simulation. Mexicano can't — round N+1's grouping
+// depends on round N's ACTUAL scored results (current standings), which
+// don't exist until the score is genuinely submitted. So this generates
+// exactly ONE round (a "batch" of however many matches are needed to get
+// everyone through at least once) at a time, called fresh right after the
+// previous round's score is fully complete.
+//
+// Design, agreed and tested extensively via simulation:
+// 1. WHO plays: identical wait-time fairness to Americano for the base
+//    roster — ranking never decides who gets to play, only who partners
+//    with / faces whom.
+// 2. A "round" is a full batch of ceil(n/4) matches — big enough that
+//    everyone gets at least one match. If n isn't a multiple of 4, some
+//    players get a second ("extra") match within the SAME round to fill
+//    the last slot; the ranking stays locked for the whole batch, only
+//    updating once every match in it is scored.
+// 3. Once a ranking snapshot exists, active players are grouped into courts
+//    IN RANK ORDER (top 4 -> court 1, next 4 -> court 2, ...). Whichever
+//    slice is short a player "borrows" one, chosen by (a) fewest total
+//    matches so far, then (b) longest wait, then (c) nearest rank as a
+//    last-resort tiebreak.
+// 4. CRITICAL fairness fix found during testing: who gets an extra
+//    (second) match each round batch must be decided PURELY by fewest
+//    total matches so far — never by rank position. An earlier version let
+//    whoever was ranked at the extreme end of the current snapshot always
+//    be the one "short a player," which created a self-reinforcing bias:
+//    fewer total matches meant a smaller sample for their win rate, which
+//    kept them ranked at that same extreme, which kept them from ever
+//    getting the extra that would let them catch up. Verified via
+//    simulation to compound over time (a 5-player group's play-count gap
+//    grew past 5 over 80 rounds) rather than settle down on its own.
+//    Fairness decides who plays extra; ranking only decides who partners/
+//    faces whom among however many show up.
+// 5. Within each group of 4, the freshest (least-repeated) partner/
+//    opponent split is tried first; genuine ties are broken RANDOMLY —
+//    never a fixed "#1+#4 vs #2+#3" convention, since always defaulting to
+//    that (rather than evaluating fresh options first) was explicitly
+//    identified as wrong.
+function generateMexicanoRoundBatch(playerIds, courtsInput, seed) {
+  const n = playerIds.length;
+  const matchesNeeded = Math.ceil(n / 4);
+  const usableCourts = Math.max(1, Math.min(courtsInput, matchesNeeded));
+
+  const lastPlayed = { ...(seed?.lastPlayed || {}) };
+  const playCount = { ...(seed?.playCount || {}) };
+  const restCount = { ...(seed?.restCount || {}) };
+  const partner = {}, opp = {};
+  playerIds.forEach((id) => {
+    if (playCount[id] === undefined) playCount[id] = 0;
+    if (restCount[id] === undefined) restCount[id] = 0;
+    if (lastPlayed[id] === undefined) lastPlayed[id] = -1;
+    partner[id] = { ...(seed?.partner?.[id] || {}) };
+    opp[id] = { ...(seed?.opp?.[id] || {}) };
+  });
+  const rankingSnapshot = seed?.rankingSnapshot ? [...seed.rankingSnapshot] : null;
+  const roundNum = seed?.roundNum ?? 0;
+
+  // --- STEP 1: WHO gets an extra (second) match this round -- decided
+  // PURELY by fairness (fewest total plays so far), completely independent
+  // of ranking. This separation is critical: an earlier version let
+  // ranking position decide who's "short a player" each round, which
+  // created a real, compounding unfairness bug — whoever was ranked lowest
+  // kept getting stuck with fewer total matches (no extra), which meant a
+  // smaller sample size for their win rate, which kept them ranked lowest,
+  // in a self-reinforcing loop that got WORSE over many rounds (verified:
+  // 5-player groups drifted to a play-count gap of 5+ over 80 rounds before
+  // this fix). Fairness must decide who plays extra; ranking only decides
+  // who partners/faces whom among however many show up.
+  const extraNeeded = matchesNeeded * 4 - n;
+  let active2x = [];
+  if (extraNeeded > 0) {
+    const sortedByFairness = [...playerIds].sort((x, y) => {
+      if (playCount[x] !== playCount[y]) return playCount[x] - playCount[y];
+      return lastPlayed[x] - lastPlayed[y];
+    });
+    active2x = sortedByFairness.slice(0, extraNeeded);
+  }
+
+  // --- STEP 2: grouping for competitive balance -- ranking decides order ---
+  const ordered = rankingSnapshot ? [...rankingSnapshot] : shuffleArray(playerIds);
+  if (rankingSnapshot) {
+    // Someone in the roster but not yet in the ranking snapshot (joined
+    // mid-event, after the last lock) would otherwise silently vanish from
+    // every round from here on — append them rather than drop them.
+    playerIds.forEach((id) => {
+      if (!ordered.includes(id)) ordered.push(id);
+    });
+  }
+
+  const slots = [...ordered, ...active2x];
+  let groups = [];
+  for (let g = 0; g < matchesNeeded; g++) {
+    groups.push(slots.slice(g * 4, g * 4 + 4));
+  }
+
+  // --- STEP 3: resolve any self-collision (someone's fairness-earned
+  // extra slot landing in the SAME group as their primary slot, which can
+  // happen since extras are chosen without regard to rank position) by
+  // swapping with someone from another group who isn't already doubled up
+  // and isn't already in the colliding group.
+  for (let gi = 0; gi < groups.length; gi++) {
+    const grp = groups[gi];
+    const seen = new Set();
+    for (let i = 0; i < grp.length; i++) {
+      if (seen.has(grp[i])) {
+        for (let gj = 0; gj < groups.length; gj++) {
+          if (gj === gi) continue;
+          let swapped = false;
+          for (let j = 0; j < groups[gj].length; j++) {
+            const candidate = groups[gj][j];
+            if (candidate !== grp[i] && !grp.includes(candidate) && groups[gj].filter((x) => x === grp[i]).length === 0) {
+              const temp = groups[gi][i];
+              groups[gi][i] = candidate;
+              groups[gj][j] = temp;
+              swapped = true;
+              break;
+            }
+          }
+          if (swapped) break;
+        }
+      }
+      seen.add(grp[i]);
+    }
+  }
+
+  const playedThisRound = {};
+  playerIds.forEach((id) => (playedThisRound[id] = 0));
+
+  const matches = groups.map((grp) => {
+    const [a, b, c, d] = grp;
+    const options = [
+      { t1: [a, b], t2: [c, d] },
+      { t1: [a, c], t2: [b, d] },
+      { t1: [a, d], t2: [b, c] },
+    ];
+    const costed = options.map((opt) => {
+      const [p1, p2] = opt.t1, [p3, p4] = opt.t2;
+      const cost =
+        (partner[p1][p2] || 0) * 10 +
+        (partner[p3][p4] || 0) * 10 +
+        (opp[p1][p3] || 0) +
+        (opp[p1][p4] || 0) +
+        (opp[p2][p3] || 0) +
+        (opp[p2][p4] || 0);
+      return { opt, cost };
+    });
+    const minCost = Math.min(...costed.map((c) => c.cost));
+    const tied = costed.filter((c) => c.cost === minCost);
+    const chosen = tied.length === 1 ? tied[0].opt : tied[Math.floor(Math.random() * tied.length)].opt;
+
+    const [t1a, t1b] = chosen.t1, [t2a, t2b] = chosen.t2;
+    partner[t1a][t1b] = (partner[t1a][t1b] || 0) + 1;
+    partner[t1b][t1a] = (partner[t1b][t1a] || 0) + 1;
+    partner[t2a][t2b] = (partner[t2a][t2b] || 0) + 1;
+    partner[t2b][t2a] = (partner[t2b][t2a] || 0) + 1;
+    [t1a, t1b].forEach((x) =>
+      [t2a, t2b].forEach((y) => {
+        opp[x][y] = (opp[x][y] || 0) + 1;
+        opp[y][x] = (opp[y][x] || 0) + 1;
+      })
+    );
+    grp.forEach((id) => {
+      playedThisRound[id]++;
+      lastPlayed[id] = roundNum;
+      playCount[id]++;
+    });
+
+    return { team1: chosen.t1, team2: chosen.t2 };
+  });
+
+  playerIds.forEach((id) => {
+    if (playedThisRound[id] === 0) restCount[id]++;
+  });
+
+  return {
+    matches,
+    groups,
+    playedThisRound,
+    lastPlayed,
+    playCount,
+    restCount,
+    partner,
+    opp,
+    usableCourts,
+    matchesNeeded,
+  };
+}
+
+// Fixed-Team counterpart: same round-batch/ranking-lock structure, but the
+// "unit" being ranked, grouped, and matched is a whole (already-fixed) team
+// rather than an individual — so there's no re-pairing step within a group
+// of 4 people, just deciding which of the (up to) two teams in each rank
+// group face each other, prioritizing opponent freshness with random
+// tie-break, same as the individual version's partner+opponent logic
+// simplified to opponent-only.
+function generateMexicanoFixedTeamRoundBatch(teams, courtsInput, seed) {
+  // teams: [{ id, players: [idA, idB] }, ...]
+  const n = teams.length;
+  const matchesNeeded = Math.ceil(n / 2);
+  const usableCourts = Math.max(1, Math.min(courtsInput, matchesNeeded));
+
+  const lastPlayed = { ...(seed?.lastPlayed || {}) };
+  const playCount = { ...(seed?.playCount || {}) };
+  const restCount = { ...(seed?.restCount || {}) };
+  const opp = {};
+  teams.forEach((t) => {
+    if (playCount[t.id] === undefined) playCount[t.id] = 0;
+    if (restCount[t.id] === undefined) restCount[t.id] = 0;
+    if (lastPlayed[t.id] === undefined) lastPlayed[t.id] = -1;
+    opp[t.id] = { ...(seed?.opp?.[t.id] || {}) };
+  });
+  const rankingSnapshot = seed?.rankingSnapshot ? [...seed.rankingSnapshot] : null;
+  const roundNum = seed?.roundNum ?? 0;
+  const teamIds = teams.map((t) => t.id);
+  const teamById = Object.fromEntries(teams.map((t) => [t.id, t]));
+
+  // Same fairness-first fix as the individual/rotating version: who gets
+  // the extra match is decided purely by fewest total matches so far,
+  // never by rank position — letting rank decide that created a
+  // compounding fairness bug (whoever ranked at the extreme end never got
+  // to provide the "extra", so they never caught up).
+  const extraNeeded = matchesNeeded * 2 - n;
+  let active2x = [];
+  if (extraNeeded > 0) {
+    const sortedByFairness = [...teamIds].sort((x, y) => {
+      if (playCount[x] !== playCount[y]) return playCount[x] - playCount[y];
+      return lastPlayed[x] - lastPlayed[y];
+    });
+    active2x = sortedByFairness.slice(0, extraNeeded);
+  }
+
+  const ordered = rankingSnapshot ? [...rankingSnapshot] : shuffleArray(teamIds);
+  if (rankingSnapshot) {
+    teamIds.forEach((id) => {
+      if (!ordered.includes(id)) ordered.push(id);
+    });
+  }
+
+  const slots = [...ordered, ...active2x];
+  let groups = [];
+  for (let g = 0; g < matchesNeeded; g++) {
+    groups.push(slots.slice(g * 2, g * 2 + 2));
+  }
+
+  // Resolve any self-collision the same way as the individual version.
+  for (let gi = 0; gi < groups.length; gi++) {
+    const grp = groups[gi];
+    const seen = new Set();
+    for (let i = 0; i < grp.length; i++) {
+      if (seen.has(grp[i])) {
+        for (let gj = 0; gj < groups.length; gj++) {
+          if (gj === gi) continue;
+          let swapped = false;
+          for (let j = 0; j < groups[gj].length; j++) {
+            const candidate = groups[gj][j];
+            if (candidate !== grp[i] && !grp.includes(candidate) && groups[gj].filter((x) => x === grp[i]).length === 0) {
+              const temp = groups[gi][i];
+              groups[gi][i] = candidate;
+              groups[gj][j] = temp;
+              swapped = true;
+              break;
+            }
+          }
+          if (swapped) break;
+        }
+      }
+      seen.add(grp[i]);
+    }
+  }
+
+  const playedThisRound = {};
+  teamIds.forEach((id) => (playedThisRound[id] = 0));
+
+  const matches = groups.map(([team1Id, team2Id]) => {
+    opp[team1Id][team2Id] = (opp[team1Id][team2Id] || 0) + 1;
+    opp[team2Id][team1Id] = (opp[team2Id][team1Id] || 0) + 1;
+    [team1Id, team2Id].forEach((id) => {
+      playedThisRound[id]++;
+      lastPlayed[id] = roundNum;
+      playCount[id]++;
+    });
+    return { team1: teamById[team1Id].players, team2: teamById[team2Id].players, team1Id, team2Id };
+  });
+
+  teamIds.forEach((id) => {
+    if (playedThisRound[id] === 0) restCount[id]++;
+  });
+
+  return {
+    matches,
+    groups,
+    playedThisRound,
+    lastPlayed,
+    playCount,
+    restCount,
+    opp,
+    usableCourts,
+    matchesNeeded,
+  };
+}
+
+// Ranking philosophy matches the app's normal Klasemen: Win% first, then
+// point differential, then total points as a final tiebreak — NOT just raw
+// cumulative points. This matters specifically for players/teams added
+// mid-event: someone brand new has 0 matches (win% treated as 0, diff 0),
+// which can genuinely rank ABOVE an existing player who's 0% win rate with
+// a NEGATIVE point differential — new blood isn't assumed worse than a
+// proven loser, just unproven.
+function lockNewMexicanoRanking(unitIds, matches, scores, seed) {
+  const wins = { ...(seed.wins || {}) };
+  const losses = { ...(seed.losses || {}) };
+  const ties = { ...(seed.ties || {}) };
+  const matchesPlayed = { ...(seed.matchesPlayed || {}) };
+  const diff = { ...(seed.diff || {}) };
+  const cumulativePoints = { ...(seed.cumulativePoints || {}) };
+  unitIds.forEach((id) => {
+    if (wins[id] === undefined) wins[id] = 0;
+    if (losses[id] === undefined) losses[id] = 0;
+    if (ties[id] === undefined) ties[id] = 0;
+    if (matchesPlayed[id] === undefined) matchesPlayed[id] = 0;
+    if (diff[id] === undefined) diff[id] = 0;
+    if (cumulativePoints[id] === undefined) cumulativePoints[id] = 0;
+  });
+
+  matches.forEach((match, i) => {
+    const ab = matchAB(scores[i]);
+    if (!ab) return;
+    // team1/team2 disini bisa array pemain (rotating) ATAU array pemain dari
+    // 1 tim tetap (fixed) -- caller yang nentuin apakah unitIds itu id
+    // pemain atau id tim; utk fixed, caller pass team1Id/team2Id lewat match.
+    const team1Ids = match.team1Id ? [match.team1Id] : match.team1;
+    const team2Ids = match.team2Id ? [match.team2Id] : match.team2;
+    team1Ids.forEach((id) => {
+      cumulativePoints[id] += ab.a;
+      diff[id] += ab.a - ab.b;
+      matchesPlayed[id] += 1;
+    });
+    team2Ids.forEach((id) => {
+      cumulativePoints[id] += ab.b;
+      diff[id] += ab.b - ab.a;
+      matchesPlayed[id] += 1;
+    });
+    if (ab.a > ab.b) {
+      team1Ids.forEach((id) => (wins[id] += 1));
+      team2Ids.forEach((id) => (losses[id] += 1));
+    } else if (ab.b > ab.a) {
+      team2Ids.forEach((id) => (wins[id] += 1));
+      team1Ids.forEach((id) => (losses[id] += 1));
+    } else {
+      team1Ids.forEach((id) => (ties[id] += 1));
+      team2Ids.forEach((id) => (ties[id] += 1));
+    }
+  });
+
+  const winPercentOf = (id) => (matchesPlayed[id] > 0 ? wins[id] / matchesPlayed[id] : 0);
+  const rankingSnapshot = [...unitIds].sort((x, y) => {
+    const wpX = winPercentOf(x), wpY = winPercentOf(y);
+    if (wpX !== wpY) return wpY - wpX;
+    if (diff[x] !== diff[y]) return diff[y] - diff[x];
+    return cumulativePoints[y] - cumulativePoints[x];
+  });
+
+  return { wins, losses, ties, matchesPlayed, diff, cumulativePoints, rankingSnapshot };
+}
+
+// Handles mid-round roster changes (Kelola Pertandingan / Kedatangan Pemain)
+// for Mexicano specifically: whatever's already scored in the CURRENT round
+// is locked and untouched — you can't retroactively un-play a match. Only
+// the not-yet-scored matches get rebuilt, using whoever's left in the
+// active roster once already-committed players (from the scored matches)
+// are set aside. The count of remaining matches can genuinely grow or
+// shrink from what it was before, since it's simply ceil(remaining pool /
+// 4) — not pinned to the original unscored count.
+//
+// Rejects (returns {rejected: true, reason}) rather than producing a
+// broken round if either: the new total active roster drops below the
+// minimum for even one court (4 players), or — a subtler case — enough of
+// the remaining pool is already "used up" by players who happen to also be
+// committed to an already-scored match this round (can happen when
+// someone's extra-match appearance was in the scored match) that fewer
+// than 4 people are left for the unscored portion.
+function regenerateMexicanoCurrentRound(activePlayerIds, courtsInput, currentRoundCourts, scoresForRound, seed) {
+  const scoredIdx = [], unscoredIdx = [];
+  currentRoundCourts.forEach((c, i) => {
+    (isMatchScoreComplete(scoresForRound[i]) ? scoredIdx : unscoredIdx).push(i);
+  });
+  if (unscoredIdx.length === 0) return { unchanged: true };
+
+  if (activePlayerIds.length < 4) {
+    return { rejected: true, reason: `Minimal 4 pemain aktif diperlukan. Sekarang cuma ${activePlayerIds.length}.` };
+  }
+
+  const committed = new Set();
+  scoredIdx.forEach((i) => {
+    const m = currentRoundCourts[i];
+    [...m.team1, ...m.team2].forEach((id) => committed.add(id));
+  });
+  const remainingPool = activePlayerIds.filter((id) => !committed.has(id));
+
+  if (remainingPool.length < 4) {
+    return {
+      rejected: true,
+      reason: `Cuma tersisa ${remainingPool.length} pemain buat sisa match ronde ini (minimal 4 dibutuhkan) — sebagian pemain aktif sekarang udah "kepake" di match yang sudah diskor duluan. Tunggu ronde berikutnya buat perubahan ini berlaku.`,
+    };
+  }
+
+  const n = remainingPool.length;
+  const newMatchesNeeded = Math.ceil(n / 4);
+  const partner = {}, opp = {};
+  const playCount = { ...(seed.playCount || {}) };
+  const lastPlayed = { ...(seed.lastPlayed || {}) };
+  remainingPool.forEach((id) => {
+    partner[id] = { ...(seed.partner?.[id] || {}) };
+    opp[id] = { ...(seed.opp?.[id] || {}) };
+    if (playCount[id] === undefined) playCount[id] = 0;
+    if (lastPlayed[id] === undefined) lastPlayed[id] = -1;
+  });
+
+  // Same fairness-first separation as generateMexicanoRoundBatch: who gets
+  // the extra slot among the remaining pool is decided by fewest total
+  // matches so far, never by rank position.
+  const extraNeeded = newMatchesNeeded * 4 - n;
+  let active2x = [];
+  if (extraNeeded > 0) {
+    const sortedByFairness = [...remainingPool].sort((x, y) => {
+      if (playCount[x] !== playCount[y]) return playCount[x] - playCount[y];
+      return lastPlayed[x] - lastPlayed[y];
+    });
+    active2x = sortedByFairness.slice(0, extraNeeded);
+  }
+
+  const rankingSnapshot = seed.rankingSnapshot ? seed.rankingSnapshot.filter((id) => remainingPool.includes(id)) : null;
+  if (rankingSnapshot) {
+    remainingPool.forEach((id) => {
+      if (!rankingSnapshot.includes(id)) rankingSnapshot.push(id);
+    });
+  }
+  const ordered = rankingSnapshot || remainingPool;
+
+  const slots = [...ordered, ...active2x];
+  let groups = [];
+  for (let g = 0; g < newMatchesNeeded; g++) {
+    groups.push(slots.slice(g * 4, g * 4 + 4));
+  }
+
+  // Resolve any self-collision the same way as generateMexicanoRoundBatch.
+  for (let gi = 0; gi < groups.length; gi++) {
+    const grp = groups[gi];
+    const seen = new Set();
+    for (let i = 0; i < grp.length; i++) {
+      if (seen.has(grp[i])) {
+        for (let gj = 0; gj < groups.length; gj++) {
+          if (gj === gi) continue;
+          let swapped = false;
+          for (let j = 0; j < groups[gj].length; j++) {
+            const candidate = groups[gj][j];
+            if (candidate !== grp[i] && !grp.includes(candidate) && groups[gj].filter((x) => x === grp[i]).length === 0) {
+              const temp = groups[gi][i];
+              groups[gi][i] = candidate;
+              groups[gj][j] = temp;
+              swapped = true;
+              break;
+            }
+          }
+          if (swapped) break;
+        }
+      }
+      seen.add(grp[i]);
+    }
+  }
+
+  const newMatches = groups.map((grp) => {
+    const [a, b, c, d] = grp;
+    const options = [
+      { t1: [a, b], t2: [c, d] },
+      { t1: [a, c], t2: [b, d] },
+      { t1: [a, d], t2: [b, c] },
+    ];
+    const costed = options.map((opt) => {
+      const [p1, p2] = opt.t1, [p3, p4] = opt.t2;
+      const cost =
+        (partner[p1][p2] || 0) * 10 +
+        (partner[p3][p4] || 0) * 10 +
+        (opp[p1][p3] || 0) +
+        (opp[p1][p4] || 0) +
+        (opp[p2][p3] || 0) +
+        (opp[p2][p4] || 0);
+      return { opt, cost };
+    });
+    const min = Math.min(...costed.map((c) => c.cost));
+    const tied = costed.filter((c) => c.cost === min);
+    const chosen = tied[Math.floor(Math.random() * tied.length)].opt;
+    return { team1: chosen.t1, team2: chosen.t2 };
+  });
+
+  const rebuiltCourts = scoredIdx.map((i) => currentRoundCourts[i]).concat(newMatches);
+  return { courts: rebuiltCourts, scoredCount: scoredIdx.length, newUnscoredCount: newMatches.length };
+}
+
+// ---------------------------------------------------------------------------
 // STORAGE HELPERS
 // ---------------------------------------------------------------------------
 
@@ -1196,6 +1700,23 @@ function forgetLogin() {
 
 function uid() {
   return Math.random().toString(36).slice(2, 10);
+}
+
+// Old saved events used a single gameFormat value ("americano" | "fixed_partner")
+// to mean what's now two independent choices: gameFormat ("americano" |
+// "mexicano") and teamFormat ("rotating" | "fixed"). This translates
+// whatever's in a loaded snapshot into the new shape so old events keep
+// displaying and behaving exactly as before, without a migration step the
+// person has to notice or run.
+function resolveGameAndTeamFormat(saved) {
+  if (!saved) return { gameFormat: "americano", teamFormat: "rotating" };
+  if (saved.gameFormat === "fixed_partner") {
+    return { gameFormat: "americano", teamFormat: "fixed" };
+  }
+  return {
+    gameFormat: saved.gameFormat || "americano",
+    teamFormat: saved.teamFormat || "rotating",
+  };
 }
 
 function fmtClock(mins) {
@@ -2273,8 +2794,9 @@ function AmericanoPadel() {
   const [startTime, setStartTime] = useState("19:00");
   const [scoreFormat, setScoreFormat] = useState("points"); // points | tennis
   const [sportType, setSportType] = useState("padel"); // padel | tenis — purely informational, doesn't change scoring logic
-  const [gameFormat, setGameFormat] = useState("americano"); // americano | fixed_partner
-  const [fixedPairs, setFixedPairs] = useState([]); // [[playerIdA, playerIdB], ...] — only used when gameFormat === "fixed_partner"
+  const [gameFormat, setGameFormat] = useState("americano"); // americano | mexicano
+  const [teamFormat, setTeamFormat] = useState("rotating"); // rotating | fixed
+  const [fixedPairs, setFixedPairs] = useState([]); // [[playerIdA, playerIdB], ...] — only used when teamFormat === "fixed"
   const [pointTarget, setPointTarget] = useState(21);
   const [tennisTarget, setTennisTarget] = useState(4); // race to N games
   const [ended, setEnded] = useState(false);
@@ -2320,7 +2842,8 @@ function AmericanoPadel() {
           updatedAt: data.updatedAt || entry.updatedAt,
           playDate: data.playDate || entry.playDate || null,
           sportType: data.sportType || entry.sportType || "padel",
-          gameFormat: data.gameFormat || entry.gameFormat || "americano",
+          gameFormat: resolveGameAndTeamFormat(data.gameFormat ? data : entry).gameFormat,
+          teamFormat: resolveGameAndTeamFormat(data.gameFormat ? data : entry).teamFormat,
           scoreFormat: data.scoreFormat || entry.scoreFormat || "points",
           tennisTarget: data.tennisTarget || entry.tennisTarget || 4,
         };
@@ -2687,6 +3210,7 @@ function AmericanoPadel() {
           playDate: current.playDate || null,
           sportType: current.sportType || "padel",
           gameFormat: current.gameFormat || "americano",
+          teamFormat: current.teamFormat || (current.gameFormat === "fixed_partner" ? "fixed" : "rotating"),
           scoreFormat: current.scoreFormat || "points",
           tennisTarget: current.tennisTarget || 4,
         };
@@ -2710,7 +3234,11 @@ function AmericanoPadel() {
     setStartTime(current.startTime || "19:00");
     setScoreFormat(current.scoreFormat || "points");
     setSportType(current.sportType || "padel");
-    setGameFormat(current.gameFormat || "americano");
+    {
+      const { gameFormat: gf, teamFormat: tf } = resolveGameAndTeamFormat(current);
+      setGameFormat(gf);
+      setTeamFormat(tf);
+    }
     setFixedPairs(current.fixedPairs || []);
     setPointTarget(current.pointTarget ?? 21);
     setTennisTarget(current.tennisTarget ?? 4);
@@ -2781,7 +3309,11 @@ function AmericanoPadel() {
           setScores(saved.scores || {});
           setScoreFormat(saved.scoreFormat || "points");
           setSportType(saved.sportType || "padel");
-          setGameFormat(saved.gameFormat || "americano");
+          {
+            const { gameFormat: gf, teamFormat: tf } = resolveGameAndTeamFormat(saved);
+            setGameFormat(gf);
+            setTeamFormat(tf);
+          }
           setFixedPairs(saved.fixedPairs || []);
           setPointTarget(saved.pointTarget ?? 21);
           setTennisTarget(saved.tennisTarget ?? 4);
@@ -2851,6 +3383,7 @@ function AmericanoPadel() {
         scoreFormat,
         sportType,
         gameFormat,
+        teamFormat,
         fixedPairs,
         pointTarget,
         tennisTarget,
@@ -2880,6 +3413,7 @@ function AmericanoPadel() {
         ownerUsername: snapshot.ownerUsername || "",
         sportType: snapshot.sportType || "padel",
         gameFormat: snapshot.gameFormat || "americano",
+        teamFormat: snapshot.teamFormat || "rotating",
         scoreFormat: snapshot.scoreFormat || "points",
         tennisTarget: snapshot.tennisTarget || 4,
         role: "owner",
@@ -2907,7 +3441,7 @@ function AmericanoPadel() {
       }
       return savePromise;
     },
-    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, loggedMatchKeys, courtStages, playDate, excludeFromStats, activityLog, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, sportType, gameFormat, fixedPairs, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
+    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, loggedMatchKeys, courtStages, playDate, excludeFromStats, activityLog, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, sportType, gameFormat, teamFormat, fixedPairs, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
   );
 
   // Partner Synergy Index: whenever a specific match's score newly becomes
@@ -3177,6 +3711,114 @@ function AmericanoPadel() {
     persist({ hostPlaying: next, players: newPlayers });
   };
 
+  // MEXICANO auto-continuation: unlike Americano/Fixed Partner (which plan
+  // every round upfront), Mexicano can only decide round N+1 once round N's
+  // ACTUAL results are in — there's no "next round" sitting in roundsData
+  // waiting to be revealed, it doesn't exist yet. So this watches scores
+  // and, the moment every match in the latest round is complete, computes
+  // the new ranking from real results and generates the next round batch
+  // automatically. isGeneratingNextMexicanoRound guards against firing
+  // twice for the same completion (effects can re-run before state settles).
+  const isGeneratingNextMexicanoRound = useRef(false);
+  useEffect(() => {
+    if (!engine?.mexicano || ended || !canManage) return;
+    const latestRoundIdx = engine.roundsData.length - 1;
+    const latestRound = engine.roundsData[latestRoundIdx];
+    if (!latestRound) return;
+    const allScored = latestRound.courts.every((_, cIdx) =>
+      isMatchScoreComplete(scores[`${latestRoundIdx}-${cIdx}`])
+    );
+    if (!allScored || isGeneratingNextMexicanoRound.current) return;
+
+    isGeneratingNextMexicanoRound.current = true;
+    const scoreEntries = latestRound.courts.map((_, cIdx) => scores[`${latestRoundIdx}-${cIdx}`]);
+
+    if (engine.mexicanoUnit === "team") {
+      const unitIds = engine.fixedTeams.map((t) => t.id);
+      const locked = lockNewMexicanoRanking(unitIds, latestRound.courts, scoreEntries, {
+        wins: engine.mexicanoWins,
+        losses: engine.mexicanoLosses,
+        ties: engine.mexicanoTies,
+        matchesPlayed: engine.mexicanoMatchesPlayed,
+        diff: engine.mexicanoDiff,
+        cumulativePoints: engine.cumulativePoints,
+      });
+      const gen = generateMexicanoFixedTeamRoundBatch(engine.fixedTeams, courts, {
+        ...engine,
+        rankingSnapshot: locked.rankingSnapshot,
+        roundNum: (engine.mexicanoRoundNum ?? 0) + 1,
+      });
+      const playingIds = new Set(gen.matches.flatMap((m) => [...m.team1, ...m.team2]));
+      const resting = players.map((p) => p.id).filter((id) => !playingIds.has(id));
+      const newEngine = {
+        ...engine,
+        roundsData: [...engine.roundsData, { resting, courts: gen.matches }],
+        lastPlayed: gen.lastPlayed,
+        playCount: gen.playCount,
+        restCount: gen.restCount,
+        opp: gen.opp,
+        usableCourts: gen.usableCourts,
+        rankingSnapshot: locked.rankingSnapshot,
+        cumulativePoints: locked.cumulativePoints,
+        mexicanoWins: locked.wins,
+        mexicanoLosses: locked.losses,
+        mexicanoTies: locked.ties,
+        mexicanoMatchesPlayed: locked.matchesPlayed,
+        mexicanoDiff: locked.diff,
+        mexicanoRoundNum: (engine.mexicanoRoundNum ?? 0) + 1,
+      };
+      setEngine(newEngine);
+      setCurrentRound(latestRoundIdx + 1);
+      persist({ engine: newEngine, currentRound: latestRoundIdx + 1 });
+      logActivity(`Ronde ${latestRoundIdx + 2} digenerate otomatis (Mexicano, klasemen diperbarui)`);
+    } else {
+      const ids = players.map((p) => p.id);
+      const locked = lockNewMexicanoRanking(ids, latestRound.courts, scoreEntries, {
+        wins: engine.mexicanoWins,
+        losses: engine.mexicanoLosses,
+        ties: engine.mexicanoTies,
+        matchesPlayed: engine.mexicanoMatchesPlayed,
+        diff: engine.mexicanoDiff,
+        cumulativePoints: engine.cumulativePoints,
+      });
+      const gen = generateMexicanoRoundBatch(ids, courts, {
+        ...engine,
+        rankingSnapshot: locked.rankingSnapshot,
+        roundNum: (engine.mexicanoRoundNum ?? 0) + 1,
+      });
+      const playingIds = new Set(gen.matches.flatMap((m) => [...m.team1, ...m.team2]));
+      const resting = ids.filter((id) => !playingIds.has(id));
+      const newEngine = {
+        ...engine,
+        roundsData: [...engine.roundsData, { resting, courts: gen.matches }],
+        lastPlayed: gen.lastPlayed,
+        playCount: gen.playCount,
+        restCount: gen.restCount,
+        partner: gen.partner,
+        opp: gen.opp,
+        usableCourts: gen.usableCourts,
+        rankingSnapshot: locked.rankingSnapshot,
+        cumulativePoints: locked.cumulativePoints,
+        mexicanoWins: locked.wins,
+        mexicanoLosses: locked.losses,
+        mexicanoTies: locked.ties,
+        mexicanoMatchesPlayed: locked.matchesPlayed,
+        mexicanoDiff: locked.diff,
+        mexicanoRoundNum: (engine.mexicanoRoundNum ?? 0) + 1,
+      };
+      setEngine(newEngine);
+      setCurrentRound(latestRoundIdx + 1);
+      persist({ engine: newEngine, currentRound: latestRoundIdx + 1 });
+      logActivity(`Ronde ${latestRoundIdx + 2} digenerate otomatis (Mexicano, klasemen diperbarui)`);
+    }
+    // Allow the next completion to trigger again once this update has
+    // flowed through — a short delay rather than clearing immediately
+    // avoids a race against React's own state-update batching.
+    setTimeout(() => {
+      isGeneratingNextMexicanoRound.current = false;
+    }, 500);
+  }, [scores, engine, ended, canManage, courts, players]);
+
   // PHASE B — once participants are settled (manual names and/or people who
   // joined via invite link and got approved), the host locks it in and the
   // schedule is built.
@@ -3189,9 +3831,9 @@ function AmericanoPadel() {
     ) {
       return;
     }
-    const validStages = gameFormat === "fixed_partner" ? [] : courtStages.filter((s) => s.rounds > 0);
+    const validStages = teamFormat === "fixed" || gameFormat === "mexicano" ? [] : courtStages.filter((s) => s.rounds > 0);
     const stagesTotal = validStages.reduce((sum, s) => sum + s.rounds, 0);
-    if (gameFormat !== "fixed_partner" && validStages.length > 0 && stagesTotal !== computedRounds) {
+    if (gameFormat === "americano" && teamFormat !== "fixed" && validStages.length > 0 && stagesTotal !== computedRounds) {
       alert(
         `Total ronde di tahapan lapangan (${stagesTotal}) belum sama dengan total ronde acara (${computedRounds}). Sesuaikan dulu di section "Lapangan Bertahap" sebelum generate.`
       );
@@ -3203,7 +3845,97 @@ function AmericanoPadel() {
     const map = {};
     arrivedPlayers.forEach((p) => (map[p.id] = p.name));
 
-    if (gameFormat === "fixed_partner") {
+    if (gameFormat === "mexicano") {
+      if (teamFormat === "fixed") {
+        const pairedIds = new Set(fixedPairs.flat());
+        const unpaired = arrivedPlayers.filter((p) => !pairedIds.has(p.id));
+        if (unpaired.length > 0) {
+          alert(
+            `Masih ada ${unpaired.length} orang belum berpasangan: ${unpaired.map((p) => p.name).join(", ")}. Pasangin dulu semua sebelum generate.`
+          );
+          return;
+        }
+        const fixedTeams = fixedPairs.map(([a, b], i) => ({ id: `team_${i}_${a}_${b}`, players: [a, b] }));
+        const gen = generateMexicanoFixedTeamRoundBatch(fixedTeams, courts, { roundNum: 0 });
+        const playingIds = new Set(gen.matches.flatMap((m) => [...m.team1, ...m.team2]));
+        const resting = arrivedPlayers.map((p) => p.id).filter((id) => !playingIds.has(id));
+        const result = {
+          roundsData: [{ resting, courts: gen.matches }],
+          mexicano: true,
+          mexicanoUnit: "team",
+          fixedTeams,
+          lastPlayed: gen.lastPlayed,
+          playCount: gen.playCount,
+          restCount: gen.restCount,
+            opp: gen.opp,
+          usableCourts: gen.usableCourts,
+          rankingSnapshot: null,
+          cumulativePoints: {},
+          mexicanoRoundNum: 0,
+        };
+        setEngine(result);
+        setPlayerMap(map);
+        setPlayers(arrivedPlayers);
+        setCurrentRound(0);
+        setScores({});
+        setStatus("active");
+        setScreen("session");
+        persist({
+          status: "active",
+          players: arrivedPlayers,
+          engine: result,
+          playerMap: map,
+          currentRound: 0,
+          scores: {},
+          fixedPairs,
+          hostInvitations: [],
+        });
+        setHostInvitations([]);
+        logActivity(
+          `Generate Ronde 1 — Mexicano Fixed Partner (${fixedTeams.length} pasangan tetap, ${courts} lapangan)`
+        );
+        return;
+      }
+
+      const gen = generateMexicanoRoundBatch(ids, courts, { roundNum: 0 });
+      const playingIds = new Set(gen.matches.flatMap((m) => [...m.team1, ...m.team2]));
+      const resting = ids.filter((id) => !playingIds.has(id));
+      const result = {
+        roundsData: [{ resting, courts: gen.matches }],
+        mexicano: true,
+        mexicanoUnit: "player",
+        lastPlayed: gen.lastPlayed,
+        playCount: gen.playCount,
+        restCount: gen.restCount,
+        partner: gen.partner,
+        opp: gen.opp,
+        usableCourts: gen.usableCourts,
+        rankingSnapshot: null,
+        cumulativePoints: {},
+        mexicanoRoundNum: 0,
+      };
+      setEngine(result);
+      setPlayerMap(map);
+      setPlayers(arrivedPlayers);
+      setCurrentRound(0);
+      setScores({});
+      setStatus("active");
+      setScreen("session");
+      persist({
+        status: "active",
+        players: arrivedPlayers,
+        engine: result,
+        playerMap: map,
+        currentRound: 0,
+        scores: {},
+        hostInvitations: [],
+      });
+      setHostInvitations([]);
+      logActivity(`Generate Ronde 1 — Mexicano (${ids.length} pemain, ${courts} lapangan)`);
+      return;
+    }
+
+    if (teamFormat === "fixed") {
       const pairedIds = new Set(fixedPairs.flat());
       const unpaired = arrivedPlayers.filter((p) => !pairedIds.has(p.id));
       if (unpaired.length > 0) {
@@ -3365,7 +4097,7 @@ function AmericanoPadel() {
     const newRoundsData = [...engine.roundsData, newRound];
     const newRoundIdx = newRoundsData.length - 1;
 
-    if (gameFormat === "fixed_partner") {
+    if (teamFormat === "fixed") {
       // Team-based engine shape: history is tracked per TEAM (oppHist), not
       // per player pair (partner/opp) — find which fixed team each side
       // corresponds to and update that team's play count / rest count /
@@ -3630,6 +4362,107 @@ function AmericanoPadel() {
   };
 
   const handleAdjustScheduleInner = async (newPlayers, newCourtsInput) => {
+    if (engine?.mexicano) {
+      const newCourts = newCourtsInput || courts;
+
+      if (engine.mexicanoUnit === "team") {
+        alert(
+          "Kelola Pertandingan & Kedatangan Pemain belum bisa dipakai buat Mexicano Fixed Partner — tim yang sudah tetap nggak bisa ditambah/dikurangi orangnya di tengah acara. Hapus & buat ulang acara kalau perlu ubah susunan tim."
+        );
+        return;
+      }
+
+      const oldActiveIds = new Set(players.filter((p) => p.arrived !== false).map((p) => p.id));
+      const newActivePlayers = newPlayers.filter((p) => p.arrived !== false);
+      const newActiveIds = new Set(newActivePlayers.map((p) => p.id));
+      const removedIds = [...oldActiveIds].filter((id) => !newActiveIds.has(id));
+
+      const latestRoundIdx = engine.roundsData.length - 1;
+      const latestRound = engine.roundsData[latestRoundIdx];
+      const scoresForRound = latestRound.courts.map((_, cIdx) => scores[`${latestRoundIdx}-${cIdx}`]);
+
+      // Removal and addition are treated differently on purpose:
+      //
+      // - REMOVING someone can't wait — if they're marked not-arrived (or
+      //   deleted) while still slotted into an unscored match this round,
+      //   forcing that match to go ahead with someone who isn't there
+      //   doesn't make sense. So removal always regenerates whatever's not
+      //   yet scored in the CURRENT batch immediately, regardless of
+      //   whether the batch has already started (some matches scored) or
+      //   not — it just never touches matches already played.
+      //
+      // - ADDING someone new is not urgent the same way, and folding them
+      //   into a batch that's potentially already mid-play is exactly the
+      //   kind of disruption removal doesn't have to risk. So a pure
+      //   addition (no removal alongside it) always waits for the next
+      //   round-batch, which naturally picks up the updated roster once it
+      //   generates — never regenerating the current one just for this.
+      if (removedIds.length === 0) {
+        setPlayers(newPlayers);
+        setCourts(newCourts);
+        persist({ players: newPlayers, courts: newCourts });
+        logActivity(`Update roster (Mexicano) — berlaku mulai ronde berikutnya (klasemen dikunci baru)`);
+        return;
+      }
+
+      // There's a removal (possibly alongside an addition too) — regenerate
+      // the unscored part of THIS batch now, but using only (old active -
+      // removed). Anyone newly added at the same time still waits for the
+      // next round, same as a pure addition would — mixing "remove now" and
+      // "add now" in one edit would make the batch's total size unstable
+      // in a way that's harder to reason about than just keeping addition
+      // consistently deferred.
+      const currentBatchIds = [...oldActiveIds].filter((id) => !removedIds.includes(id));
+      const result = regenerateMexicanoCurrentRound(currentBatchIds, newCourts, latestRound.courts, scoresForRound, engine);
+
+      if (result.rejected) {
+        alert(result.reason);
+        return;
+      }
+
+      if (result.unchanged) {
+        // Ronde ini udah lengkap semua skornya -- nggak ada yang perlu
+        // disesuaikan lagi di ronde SEKARANG. Roster baru (termasuk yg
+        // dikeluarkan) berlaku otomatis mulai ronde berikutnya.
+        setPlayers(newPlayers);
+        setCourts(newCourts);
+        persist({ players: newPlayers, courts: newCourts });
+        logActivity(
+          `Update roster (Mexicano) — berlaku mulai ronde berikutnya (ronde ${latestRoundIdx + 1} sudah lengkap skornya)`
+        );
+        return;
+      }
+
+      const newRoundsData = [...engine.roundsData];
+      newRoundsData[latestRoundIdx] = { ...latestRound, courts: result.courts };
+      const newEngine = { ...engine, roundsData: newRoundsData };
+
+      // Skor yg posisinya mungkin bergeser (jumlah match sisa bisa berubah)
+      // -- match yg SUDAH diskor selalu ditaruh di depan array baru
+      // (lihat regenerateMexicanoCurrentRound), jadi skornya tetap valid;
+      // sisanya (yg baru disusun ulang) dikosongkan.
+      const newScores = {};
+      Object.keys(scores).forEach((key) => {
+        const [rStr, cStr] = key.split("-");
+        const r = parseInt(rStr, 10);
+        if (r !== latestRoundIdx) {
+          newScores[key] = scores[key];
+          return;
+        }
+        const cIdx = parseInt(cStr, 10);
+        if (cIdx < result.scoredCount) newScores[key] = scores[key];
+      });
+
+      setEngine(newEngine);
+      setPlayers(newPlayers);
+      setCourts(newCourts);
+      setScores(newScores);
+      persist({ engine: newEngine, players: newPlayers, courts: newCourts, scores: newScores });
+      logActivity(
+        `Sesuaikan Ronde ${latestRoundIdx + 1} (Mexicano) — ${removedIds.length} pemain dikeluarkan, ${result.scoredCount} match yang sudah diskor tetap, ${result.newUnscoredCount} match sisanya disusun ulang`
+      );
+      return;
+    }
     const newCourts = newCourtsInput || courts;
 
     let splitIdx = engine.roundsData.length;
@@ -3666,7 +4499,7 @@ function AmericanoPadel() {
       return;
     }
 
-    if (gameFormat === "fixed_partner") {
+    if (teamFormat === "fixed") {
       const arrivedIds = new Set(activePlayers.map((p) => p.id));
       const fixedTeams = fixedPairs
         .map(([a, b], i) => ({ teamId: `team_${i}_${a}_${b}`, players: [a, b] }))
@@ -4436,7 +5269,11 @@ function AmericanoPadel() {
     setStartTime(data.startTime || "19:00");
     setScoreFormat(data.scoreFormat || "points");
     setSportType(data.sportType || "padel");
-    setGameFormat(data.gameFormat || "americano");
+    {
+      const { gameFormat: gf, teamFormat: tf } = resolveGameAndTeamFormat(data);
+      setGameFormat(gf);
+      setTeamFormat(tf);
+    }
     setFixedPairs(data.fixedPairs || []);
     setPointTarget(data.pointTarget ?? 21);
     setTennisTarget(data.tennisTarget ?? 4);
@@ -4651,7 +5488,7 @@ function AmericanoPadel() {
 
   const leaderboard = React.useMemo(
     () =>
-      gameFormat === "fixed_partner"
+      teamFormat === "fixed"
         ? buildTeamLeaderboard(engine, playerMap, scores, fixedPairs)
         : buildLeaderboard(
             engine,
@@ -4664,7 +5501,7 @@ function AmericanoPadel() {
 
   const fairnessStats = React.useMemo(() => {
     if (!engine) return [];
-    if (gameFormat === "fixed_partner") {
+    if (teamFormat === "fixed") {
       return buildTeamFairnessStats(engine, playerMap, scores, fixedPairs, currentRound);
     }
     const idToAccountId = {};
@@ -5002,6 +5839,7 @@ function AmericanoPadel() {
           sportType={sportType}
           setSportType={setSportType}
           gameFormat={gameFormat}
+          teamFormat={teamFormat}
           setGameFormat={setGameFormat}
           pointTarget={pointTarget}
           setPointTarget={setPointTarget}
@@ -5070,6 +5908,7 @@ function AmericanoPadel() {
           excludeFromStats={excludeFromStats}
           onToggleExcludeFromStats={handleToggleExcludeFromStats}
           gameFormat={gameFormat}
+          teamFormat={teamFormat}
           fixedPairs={fixedPairs}
           setFixedPairs={setFixedPairs}
           onFinalize={handleFinalizeAndGenerate}
@@ -5113,6 +5952,7 @@ function AmericanoPadel() {
           onToggleArrival={handleToggleArrival}
           courts={courts}
           gameFormat={gameFormat}
+          teamFormat={teamFormat}
           fixedPairs={fixedPairs}
           onNav={setScreen}
           onShare={handleShare}
@@ -5128,6 +5968,7 @@ function AmericanoPadel() {
           leaderboard={leaderboard}
           players={players}
           gameFormat={gameFormat}
+          teamFormat={teamFormat}
           fixedPairs={fixedPairs}
           ended={ended}
           hasSplitBill={hasSplitBill}
@@ -5174,6 +6015,7 @@ function AmericanoPadel() {
           activityLog={activityLog}
           players={players}
           gameFormat={gameFormat}
+          teamFormat={teamFormat}
           fixedPairs={fixedPairs}
           ended={ended}
           hasSplitBill={hasSplitBill}
@@ -5193,6 +6035,7 @@ function AmericanoPadel() {
           stats={fairnessStats}
           totalPlayers={players.length}
           gameFormat={gameFormat}
+          teamFormat={teamFormat}
           hasSplitBill={hasSplitBill}
           canManage={canManage}
           isOwner={sessionRole === "owner"}
@@ -5842,7 +6685,10 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
                           : "Total Poin"}
                       </span>
                       <span className="text-[8.5px] text-cyan-300 text-center leading-tight whitespace-nowrap">
-                        {ev.gameFormat === "fixed_partner" ? "Fixed Partner" : "Americano"}
+                        {ev.gameFormat === "mexicano" ? "Mexicano" : "Americano"}
+                      </span>
+                      <span className="text-[8.5px] text-cyan-300 text-center leading-tight whitespace-nowrap">
+                        {ev.teamFormat === "fixed" ? "Fixed" : "Rotating"}
                       </span>
                     </div>
                   </div>
@@ -6975,13 +7821,30 @@ function SetupScreen(props) {
           <ModeTab active={gameFormat === "americano"} onClick={() => setGameFormat("americano")}>
             Americano
           </ModeTab>
-          <ModeTab active={gameFormat === "fixed_partner"} onClick={() => setGameFormat("fixed_partner")}>
-            Fixed Partner
+          <ModeTab active={gameFormat === "mexicano"} onClick={() => setGameFormat("mexicano")}>
+            Mexicano
           </ModeTab>
         </div>
         <p className="text-[11px] text-slate-500">
           {gameFormat === "americano"
-            ? "Partner acak berganti tiap ronde — semua orang gantian main sama semua orang."
+            ? "Rotasi berdasarkan waktu tunggu & variasi — semua orang gantian main sama semua orang secara merata."
+            : "Rotasi berdasarkan peringkat — tim yang levelnya deket dikelompokkan biar pertandingan tetap seru. Ronde berikutnya baru muncul setelah skor ronde sekarang lengkap diisi."}
+        </p>
+      </Section>
+
+      {/* TEAM FORMAT */}
+      <Section icon={Users} title="Format Tim">
+        <div className="flex gap-2 mb-2">
+          <ModeTab active={teamFormat === "rotating"} onClick={() => setTeamFormat("rotating")}>
+            Rotating
+          </ModeTab>
+          <ModeTab active={teamFormat === "fixed"} onClick={() => setTeamFormat("fixed")}>
+            Fixed Partner
+          </ModeTab>
+        </div>
+        <p className="text-[11px] text-slate-500">
+          {teamFormat === "rotating"
+            ? "Partner berganti tiap ronde."
             : "Partner tetap sama sepanjang acara (kamu pasangin nanti pas semua udah join di lobby) — yang berotasi cuma lawannya."}
         </p>
       </Section>
@@ -7683,7 +8546,7 @@ function WaitingRoomScreen(props) {
     courtCost, setCourtCost, adminFee, setAdminFee, ballCost, setBallCost, onSaveCosts,
     playDate, setPlayDate, onSavePlayDate,
     excludeFromStats, onToggleExcludeFromStats,
-    gameFormat, fixedPairs, setFixedPairs,
+    gameFormat, teamFormat, fixedPairs, setFixedPairs,
     onFinalize, onBackToLobby, onDelete,
   } = props;
 
@@ -8226,7 +9089,7 @@ function WaitingRoomScreen(props) {
         </Section>
       )}
 
-      {gameFormat === "fixed_partner" && canManage && (
+      {teamFormat === "fixed" && canManage && (
         <Section icon={Users} title="Pasangan Tetap" subtitle="wajib diisi sebelum generate">
           <p className="text-[11px] text-slate-500 mb-3">
             Tap 2 nama buat jadiin 1 pasangan tetap. Partner ini nggak akan berubah sepanjang
@@ -8275,7 +9138,7 @@ function SessionScreen(props) {
     incrementTennisPoint, resetTennisMatch, setTennisGamesDirect,
     ended, hasSplitBill, onEndEvent, onReshuffle, allMatchesScored, players, onAddManualMatch, onAddAutoRound, onDeleteRound,
     friends, onAdjustSchedule, courts, onToggleArrival, onEditMatchPlayers,
-    gameFormat, fixedPairs,
+    gameFormat, teamFormat, fixedPairs,
     onNav, onShare, onCopyViewLink, onBackToLobby, onDelete,
   } = props;
 
@@ -8353,7 +9216,7 @@ function SessionScreen(props) {
         )}
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <span className="font-display text-3xl text-slate-50">
-            RONDE {currentRound + 1} / {totalRounds}
+            {engine?.mexicano ? `RONDE ${currentRound + 1}` : `RONDE ${currentRound + 1} / ${totalRounds}`}
           </span>
           <div className="flex flex-wrap items-center gap-2">
             <Chip tone="amber">
@@ -8371,8 +9234,30 @@ function SessionScreen(props) {
             </button>
           )}
         </div>
+        {engine?.mexicano && (
+          <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/5 px-3 py-2.5 mb-3">
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <Lock size={11} className="text-cyan-300" />
+              <span className="text-[10px] font-semibold tracking-wide text-cyan-300 uppercase">
+                {engine.rankingSnapshot ? "Klasemen terkunci ronde ini" : "Ronde acak — belum ada klasemen"}
+              </span>
+            </div>
+            {engine.rankingSnapshot && (
+              <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-300">
+                {engine.rankingSnapshot.map((id, i) => (
+                  <span key={id}>
+                    <span className="text-slate-500">{i + 1}.</span>{" "}
+                    {engine.mexicanoUnit === "team"
+                      ? engine.fixedTeams.find((t) => t.id === id)?.players.map((p) => playerMap[p]).join(" & ")
+                      : playerMap[id]}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-2 mb-3">
-          {canManage && (
+          {canManage && !engine?.mexicano && (
             <button
               onClick={() => setShowAddMatch(true)}
               className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-950 bg-cyan-300 rounded-full px-3 py-1.5"
@@ -8380,7 +9265,7 @@ function SessionScreen(props) {
               <Plus size={12} /> Tambah Match Manual
             </button>
           )}
-          {canManage && (
+          {canManage && !engine?.mexicano && (
             <button
               onClick={() => setShowAddAutoRound(true)}
               className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-950 bg-teal-300 rounded-full px-3 py-1.5"
@@ -8388,7 +9273,7 @@ function SessionScreen(props) {
               <Shuffle size={12} /> Tambah Ronde Otomatis
             </button>
           )}
-          {isOwner && (
+          {isOwner && (!engine?.mexicano || engine?.mexicanoUnit !== "team") && (
             <button
               onClick={() => setShowManagePlayers(true)}
               className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-950 bg-lime-300 rounded-full px-3 py-1.5"
@@ -8396,7 +9281,7 @@ function SessionScreen(props) {
               <Users size={12} /> Kelola Pertandingan
             </button>
           )}
-          {isOwner && (
+          {isOwner && (!engine?.mexicano || engine?.mexicanoUnit !== "team") && (
             <button
               onClick={() => setShowAttendance(true)}
               className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-950 bg-amber-300 rounded-full px-3 py-1.5"
@@ -8405,19 +9290,23 @@ function SessionScreen(props) {
             </button>
           )}
         </div>
-        <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden mb-3">
-          <div
-            className="h-full bg-lime-300 rounded-full transition-all"
-            style={{ width: `${pct * 100}%` }}
-          />
-        </div>
-        <button
-          onClick={() => setViewMode((v) => (v === "single" ? "all" : "single"))}
-          className="flex items-center gap-1.5 text-xs font-semibold text-cyan-300"
-        >
-          <ListOrdered size={14} />
-          {viewMode === "single" ? "Lihat semua ronde" : "Kembali ke tampilan ronde"}
-        </button>
+        {!engine?.mexicano && (
+          <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden mb-3">
+            <div
+              className="h-full bg-lime-300 rounded-full transition-all"
+              style={{ width: `${pct * 100}%` }}
+            />
+          </div>
+        )}
+        {!engine?.mexicano && (
+          <button
+            onClick={() => setViewMode((v) => (v === "single" ? "all" : "single"))}
+            className="flex items-center gap-1.5 text-xs font-semibold text-cyan-300"
+          >
+            <ListOrdered size={14} />
+            {viewMode === "single" ? "Lihat semua ronde" : "Kembali ke tampilan ronde"}
+          </button>
+        )}
       </div>
 
       {viewMode === "all" ? (
@@ -8554,6 +9443,7 @@ function SessionScreen(props) {
         <AddMatchModal
           players={players}
           gameFormat={gameFormat}
+          teamFormat={teamFormat}
           fixedPairs={fixedPairs}
           playerMap={playerMap}
           onConfirm={(team1Ids, team2Ids) => {
@@ -8572,6 +9462,7 @@ function SessionScreen(props) {
           scores={scores}
           courts={courts}
           gameFormat={gameFormat}
+          teamFormat={teamFormat}
           onConfirm={async (newPlayers, newCourts) => {
             await onAdjustSchedule(newPlayers, newCourts);
             setShowManagePlayers(false);
@@ -8654,7 +9545,7 @@ function SessionScreen(props) {
           <PrimaryButton onClick={onCopyViewLink} icon={Link2} className="w-full">
             Salin link pemantau (view only)
           </PrimaryButton>
-          {isOwner && (
+          {isOwner && !engine?.mexicano && (
             <button
               onClick={async () => {
                 if (reshuffling) return;
@@ -8926,10 +9817,10 @@ function ScoreModal({ roundLabel, team1, team2, s, target, mode = "points", onPi
 // Lets host/co-host manually pick who plays in an extra bonus match — 2
 // players tap-assigned to "Tim Kiri", 2 to "Tim Kanan". A player can only be
 // on one side at a time.
-function AddMatchModal({ players, gameFormat, fixedPairs, playerMap, onConfirm, onClose }) {
+function AddMatchModal({ players, gameFormat, teamFormat, fixedPairs, playerMap, onConfirm, onClose }) {
   const [team1, setTeam1] = useState([]);
   const [team2, setTeam2] = useState([]);
-  const isFixedPartner = gameFormat === "fixed_partner";
+  const isFixedPartner = teamFormat === "fixed";
 
   const teams = React.useMemo(
     () => (fixedPairs || []).map((pair, i) => ({ ids: pair, name: pair.map((id) => playerMap?.[id] || id).join(" & ") })),
@@ -9101,12 +9992,12 @@ function AddMatchModal({ players, gameFormat, fixedPairs, playerMap, onConfirm, 
 // Lets host/co-host add or remove players mid-match, then re-generate the
 // remaining (not-yet-scored) rounds for the new roster — already-completed
 // rounds are left untouched.
-function ManagePlayersModal({ players, friends, engine, scores, courts, gameFormat, onConfirm, onClose }) {
+function ManagePlayersModal({ players, friends, engine, scores, courts, gameFormat, teamFormat, onConfirm, onClose }) {
   const [roster, setRoster] = useState(players);
   const [nameInput, setNameInput] = useState("");
   const [courtsValue, setCourtsValue] = useState(courts);
   const [saving, setSaving] = useState(false);
-  const isFixedPartner = gameFormat === "fixed_partner";
+  const isFixedPartner = teamFormat === "fixed";
 
   const lockedCount = React.useMemo(() => {
     if (!engine) return 0;
@@ -9853,7 +10744,7 @@ function TennisScoreTracker({ s, target, onPoint, onReset, readOnly }) {
 // LEADERBOARD / STANDINGS SCREEN
 // ---------------------------------------------------------------------------
 
-function LeaderboardScreen({ eventName, leaderboard, players, gameFormat, fixedPairs, ended, hasSplitBill, onNav, onBackToLobby }) {
+function LeaderboardScreen({ eventName, leaderboard, players, gameFormat, teamFormat, fixedPairs, ended, hasSplitBill, onNav, onBackToLobby }) {
   const [sortBy, setSortBy] = useState("winPercent"); // wins | diff | winPercent | ppm
   const [showNotArrived, setShowNotArrived] = useState(true);
 
@@ -10369,11 +11260,11 @@ function SplitBillScreen({
 // RECAP SCREEN (all scored matches, for monitoring rotation fairness)
 // ---------------------------------------------------------------------------
 
-function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, engine, playerMap, scores, scoreFormat, pointTarget, tennisTarget, activityLog, players, gameFormat, fixedPairs, ended, hasSplitBill, canManage, isOwner, currentUser, excludeFromStats, onToggleExcludeFromStats, onNav, onBackToLobby }) {
+function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, engine, playerMap, scores, scoreFormat, pointTarget, tennisTarget, activityLog, players, gameFormat, teamFormat, fixedPairs, ended, hasSplitBill, canManage, isOwner, currentUser, excludeFromStats, onToggleExcludeFromStats, onNav, onBackToLobby }) {
   const [filterId, setFilterId] = useState("all");
 
   const teamNameByPlayer = React.useMemo(
-    () => (gameFormat === "fixed_partner" ? buildTeamNameByPlayer(fixedPairs, playerMap) : null),
+    () => (teamFormat === "fixed" ? buildTeamNameByPlayer(fixedPairs, playerMap) : null),
     [gameFormat, fixedPairs, playerMap]
   );
 
@@ -10584,8 +11475,8 @@ function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, e
 // STATS SCREEN (fairness proof)
 // ---------------------------------------------------------------------------
 
-function StatsScreen({ eventName, stats, totalPlayers, gameFormat, hasSplitBill, canManage, isOwner, excludeFromStats, onToggleExcludeFromStats, onNav, onBackToLobby }) {
-  const isTeamMode = gameFormat === "fixed_partner";
+function StatsScreen({ eventName, stats, totalPlayers, gameFormat, teamFormat, hasSplitBill, canManage, isOwner, excludeFromStats, onToggleExcludeFromStats, onNav, onBackToLobby }) {
+  const isTeamMode = teamFormat === "fixed";
   const maxPossible = isTeamMode
     ? Math.max(0, Math.floor(totalPlayers / 2) - 1)
     : Math.max(0, totalPlayers - 1);
@@ -10704,6 +11595,11 @@ function ViewOnlyApp({ sessionId }) {
     window.scrollTo(0, 0);
   }, [tab]);
 
+  // Same migration as the main app: old events saved gameFormat="fixed_partner"
+  // instead of the current teamFormat="fixed" — resolve it once here so every
+  // check below reads correctly regardless of which shape the data is in.
+  const resolvedTeamFormat = React.useMemo(() => resolveGameAndTeamFormat(data).teamFormat, [data]);
+
   // Only relevant while the event is still in its waiting room (no engine
   // yet) — fetches profile photos for anyone in the roster who has an
   // account, same as the host's own Waiting Room screen does.
@@ -10786,7 +11682,7 @@ function ViewOnlyApp({ sessionId }) {
   const leaderboard = React.useMemo(
     () =>
       data?.engine
-        ? data.gameFormat === "fixed_partner"
+        ? resolvedTeamFormat === "fixed"
           ? buildTeamLeaderboard(data.engine, data.playerMap, data.scores, data.fixedPairs)
           : buildLeaderboard(data.engine, data.playerMap, data.scores, (data.players || []).map((p) => p.id))
         : [],
@@ -10824,7 +11720,7 @@ function ViewOnlyApp({ sessionId }) {
   const recapRows = React.useMemo(() => {
     if (!data?.engine) return [];
     const teamNameByPlayer =
-      data.gameFormat === "fixed_partner" ? buildTeamNameByPlayer(data.fixedPairs, data.playerMap) : null;
+      resolvedTeamFormat === "fixed" ? buildTeamNameByPlayer(data.fixedPairs, data.playerMap) : null;
     const list = [];
     data.engine.roundsData.forEach((rd, rIdx) => {
       rd.courts.forEach((match, cIdx) => {
