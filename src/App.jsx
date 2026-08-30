@@ -3711,113 +3711,6 @@ function AmericanoPadel() {
     persist({ hostPlaying: next, players: newPlayers });
   };
 
-  // MEXICANO auto-continuation: unlike Americano/Fixed Partner (which plan
-  // every round upfront), Mexicano can only decide round N+1 once round N's
-  // ACTUAL results are in — there's no "next round" sitting in roundsData
-  // waiting to be revealed, it doesn't exist yet. So this watches scores
-  // and, the moment every match in the latest round is complete, computes
-  // the new ranking from real results and generates the next round batch
-  // automatically. isGeneratingNextMexicanoRound guards against firing
-  // twice for the same completion (effects can re-run before state settles).
-  const isGeneratingNextMexicanoRound = useRef(false);
-  useEffect(() => {
-    if (!engine?.mexicano || ended || !canManage) return;
-    const latestRoundIdx = engine.roundsData.length - 1;
-    const latestRound = engine.roundsData[latestRoundIdx];
-    if (!latestRound) return;
-    const allScored = latestRound.courts.every((_, cIdx) =>
-      isMatchScoreComplete(scores[`${latestRoundIdx}-${cIdx}`])
-    );
-    if (!allScored || isGeneratingNextMexicanoRound.current) return;
-
-    isGeneratingNextMexicanoRound.current = true;
-    const scoreEntries = latestRound.courts.map((_, cIdx) => scores[`${latestRoundIdx}-${cIdx}`]);
-
-    if (engine.mexicanoUnit === "team") {
-      const unitIds = engine.fixedTeams.map((t) => t.id);
-      const locked = lockNewMexicanoRanking(unitIds, latestRound.courts, scoreEntries, {
-        wins: engine.mexicanoWins,
-        losses: engine.mexicanoLosses,
-        ties: engine.mexicanoTies,
-        matchesPlayed: engine.mexicanoMatchesPlayed,
-        diff: engine.mexicanoDiff,
-        cumulativePoints: engine.cumulativePoints,
-      });
-      const gen = generateMexicanoFixedTeamRoundBatch(engine.fixedTeams, courts, {
-        ...engine,
-        rankingSnapshot: locked.rankingSnapshot,
-        roundNum: (engine.mexicanoRoundNum ?? 0) + 1,
-      });
-      const playingIds = new Set(gen.matches.flatMap((m) => [...m.team1, ...m.team2]));
-      const resting = players.map((p) => p.id).filter((id) => !playingIds.has(id));
-      const newEngine = {
-        ...engine,
-        roundsData: [...engine.roundsData, { resting, courts: gen.matches }],
-        lastPlayed: gen.lastPlayed,
-        playCount: gen.playCount,
-        restCount: gen.restCount,
-        opp: gen.opp,
-        usableCourts: gen.usableCourts,
-        rankingSnapshot: locked.rankingSnapshot,
-        cumulativePoints: locked.cumulativePoints,
-        mexicanoWins: locked.wins,
-        mexicanoLosses: locked.losses,
-        mexicanoTies: locked.ties,
-        mexicanoMatchesPlayed: locked.matchesPlayed,
-        mexicanoDiff: locked.diff,
-        mexicanoRoundNum: (engine.mexicanoRoundNum ?? 0) + 1,
-      };
-      setEngine(newEngine);
-      setCurrentRound(latestRoundIdx + 1);
-      persist({ engine: newEngine, currentRound: latestRoundIdx + 1 });
-      logActivity(`Ronde ${latestRoundIdx + 2} digenerate otomatis (Mexicano, klasemen diperbarui)`);
-    } else {
-      const ids = players.map((p) => p.id);
-      const locked = lockNewMexicanoRanking(ids, latestRound.courts, scoreEntries, {
-        wins: engine.mexicanoWins,
-        losses: engine.mexicanoLosses,
-        ties: engine.mexicanoTies,
-        matchesPlayed: engine.mexicanoMatchesPlayed,
-        diff: engine.mexicanoDiff,
-        cumulativePoints: engine.cumulativePoints,
-      });
-      const gen = generateMexicanoRoundBatch(ids, courts, {
-        ...engine,
-        rankingSnapshot: locked.rankingSnapshot,
-        roundNum: (engine.mexicanoRoundNum ?? 0) + 1,
-      });
-      const playingIds = new Set(gen.matches.flatMap((m) => [...m.team1, ...m.team2]));
-      const resting = ids.filter((id) => !playingIds.has(id));
-      const newEngine = {
-        ...engine,
-        roundsData: [...engine.roundsData, { resting, courts: gen.matches }],
-        lastPlayed: gen.lastPlayed,
-        playCount: gen.playCount,
-        restCount: gen.restCount,
-        partner: gen.partner,
-        opp: gen.opp,
-        usableCourts: gen.usableCourts,
-        rankingSnapshot: locked.rankingSnapshot,
-        cumulativePoints: locked.cumulativePoints,
-        mexicanoWins: locked.wins,
-        mexicanoLosses: locked.losses,
-        mexicanoTies: locked.ties,
-        mexicanoMatchesPlayed: locked.matchesPlayed,
-        mexicanoDiff: locked.diff,
-        mexicanoRoundNum: (engine.mexicanoRoundNum ?? 0) + 1,
-      };
-      setEngine(newEngine);
-      setCurrentRound(latestRoundIdx + 1);
-      persist({ engine: newEngine, currentRound: latestRoundIdx + 1 });
-      logActivity(`Ronde ${latestRoundIdx + 2} digenerate otomatis (Mexicano, klasemen diperbarui)`);
-    }
-    // Allow the next completion to trigger again once this update has
-    // flowed through — a short delay rather than clearing immediately
-    // avoids a race against React's own state-update batching.
-    setTimeout(() => {
-      isGeneratingNextMexicanoRound.current = false;
-    }, 500);
-  }, [scores, engine, ended, canManage, courts, players]);
 
   // PHASE B — once participants are settled (manual names and/or people who
   // joined via invite link and got approved), the host locks it in and the
@@ -5658,6 +5551,114 @@ function AmericanoPadel() {
 
   const isCoHost = coHostIds.includes(currentUser.accountId);
   const canManage = sessionRole === "owner" || isCoHost;
+
+  // MEXICANO auto-continuation: unlike Americano/Fixed Partner (which plan
+  // every round upfront), Mexicano can only decide round N+1 once round N's
+  // ACTUAL results are in — there's no "next round" sitting in roundsData
+  // waiting to be revealed, it doesn't exist yet. So this watches scores
+  // and, the moment every match in the latest round is complete, computes
+  // the new ranking from real results and generates the next round batch
+  // automatically. isGeneratingNextMexicanoRound guards against firing
+  // twice for the same completion (effects can re-run before state settles).
+  const isGeneratingNextMexicanoRound = useRef(false);
+  useEffect(() => {
+    if (!engine?.mexicano || ended || !canManage) return;
+    const latestRoundIdx = engine.roundsData.length - 1;
+    const latestRound = engine.roundsData[latestRoundIdx];
+    if (!latestRound) return;
+    const allScored = latestRound.courts.every((_, cIdx) =>
+      isMatchScoreComplete(scores[`${latestRoundIdx}-${cIdx}`])
+    );
+    if (!allScored || isGeneratingNextMexicanoRound.current) return;
+
+    isGeneratingNextMexicanoRound.current = true;
+    const scoreEntries = latestRound.courts.map((_, cIdx) => scores[`${latestRoundIdx}-${cIdx}`]);
+
+    if (engine.mexicanoUnit === "team") {
+      const unitIds = engine.fixedTeams.map((t) => t.id);
+      const locked = lockNewMexicanoRanking(unitIds, latestRound.courts, scoreEntries, {
+        wins: engine.mexicanoWins,
+        losses: engine.mexicanoLosses,
+        ties: engine.mexicanoTies,
+        matchesPlayed: engine.mexicanoMatchesPlayed,
+        diff: engine.mexicanoDiff,
+        cumulativePoints: engine.cumulativePoints,
+      });
+      const gen = generateMexicanoFixedTeamRoundBatch(engine.fixedTeams, courts, {
+        ...engine,
+        rankingSnapshot: locked.rankingSnapshot,
+        roundNum: (engine.mexicanoRoundNum ?? 0) + 1,
+      });
+      const playingIds = new Set(gen.matches.flatMap((m) => [...m.team1, ...m.team2]));
+      const resting = players.map((p) => p.id).filter((id) => !playingIds.has(id));
+      const newEngine = {
+        ...engine,
+        roundsData: [...engine.roundsData, { resting, courts: gen.matches }],
+        lastPlayed: gen.lastPlayed,
+        playCount: gen.playCount,
+        restCount: gen.restCount,
+        opp: gen.opp,
+        usableCourts: gen.usableCourts,
+        rankingSnapshot: locked.rankingSnapshot,
+        cumulativePoints: locked.cumulativePoints,
+        mexicanoWins: locked.wins,
+        mexicanoLosses: locked.losses,
+        mexicanoTies: locked.ties,
+        mexicanoMatchesPlayed: locked.matchesPlayed,
+        mexicanoDiff: locked.diff,
+        mexicanoRoundNum: (engine.mexicanoRoundNum ?? 0) + 1,
+      };
+      setEngine(newEngine);
+      setCurrentRound(latestRoundIdx + 1);
+      persist({ engine: newEngine, currentRound: latestRoundIdx + 1 });
+      logActivity(`Ronde ${latestRoundIdx + 2} digenerate otomatis (Mexicano, klasemen diperbarui)`);
+    } else {
+      const ids = players.map((p) => p.id);
+      const locked = lockNewMexicanoRanking(ids, latestRound.courts, scoreEntries, {
+        wins: engine.mexicanoWins,
+        losses: engine.mexicanoLosses,
+        ties: engine.mexicanoTies,
+        matchesPlayed: engine.mexicanoMatchesPlayed,
+        diff: engine.mexicanoDiff,
+        cumulativePoints: engine.cumulativePoints,
+      });
+      const gen = generateMexicanoRoundBatch(ids, courts, {
+        ...engine,
+        rankingSnapshot: locked.rankingSnapshot,
+        roundNum: (engine.mexicanoRoundNum ?? 0) + 1,
+      });
+      const playingIds = new Set(gen.matches.flatMap((m) => [...m.team1, ...m.team2]));
+      const resting = ids.filter((id) => !playingIds.has(id));
+      const newEngine = {
+        ...engine,
+        roundsData: [...engine.roundsData, { resting, courts: gen.matches }],
+        lastPlayed: gen.lastPlayed,
+        playCount: gen.playCount,
+        restCount: gen.restCount,
+        partner: gen.partner,
+        opp: gen.opp,
+        usableCourts: gen.usableCourts,
+        rankingSnapshot: locked.rankingSnapshot,
+        cumulativePoints: locked.cumulativePoints,
+        mexicanoWins: locked.wins,
+        mexicanoLosses: locked.losses,
+        mexicanoTies: locked.ties,
+        mexicanoMatchesPlayed: locked.matchesPlayed,
+        mexicanoDiff: locked.diff,
+        mexicanoRoundNum: (engine.mexicanoRoundNum ?? 0) + 1,
+      };
+      setEngine(newEngine);
+      setCurrentRound(latestRoundIdx + 1);
+      persist({ engine: newEngine, currentRound: latestRoundIdx + 1 });
+      logActivity(`Ronde ${latestRoundIdx + 2} digenerate otomatis (Mexicano, klasemen diperbarui)`);
+    }
+    // Allow the next completion to trigger again once this update has
+    // flowed through — a short delay rather than clearing immediately
+    // avoids a race against React's own state-update batching.
+    setTimeout(() => {
+      isGeneratingNextMexicanoRound.current = false;
+    }, 500);
+  }, [scores, engine, ended, canManage, courts, players]);
   const hasSplitBill = (Number(courtCost) || 0) + (Number(adminFee) || 0) + (Number(ballCost) || 0) > 0;
   const allMatchesScored =
     !!engine &&
