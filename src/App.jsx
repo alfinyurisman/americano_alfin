@@ -5851,6 +5851,7 @@ function AmericanoPadel() {
           gameFormat={gameFormat}
           teamFormat={teamFormat}
           setGameFormat={setGameFormat}
+          setTeamFormat={setTeamFormat}
           pointTarget={pointTarget}
           setPointTarget={setPointTarget}
           tennisTarget={tennisTarget}
@@ -7752,6 +7753,7 @@ function SetupScreen(props) {
     scoreFormat, setScoreFormat, pointTarget, setPointTarget,
     sportType, setSportType,
     gameFormat, setGameFormat,
+    teamFormat, setTeamFormat,
     tennisTarget, setTennisTarget,
     maxParticipants, setMaxParticipants,
     visibility, setVisibility,
