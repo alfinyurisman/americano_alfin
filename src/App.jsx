@@ -5,7 +5,7 @@ import {
   ArrowLeft, Trash2, CalendarDays, ChevronRightCircle, ClipboardList, Link2, Eye, ListOrdered,
   LogOut, Lock, UserCircle2, Shield, Wallet, Handshake, TrendingUp, TrendingDown,
   Pencil,
-  Flame, Star, Zap, Target, Camera, MapPin, Swords, Award,
+  Flame, Star, Zap, Target, Camera, MapPin, Swords, Award, UsersRound,
 } from "lucide-react";
 import tennisIconWhite from "./assets/tennis-icon-white.png";
 import padelIconWhite from "./assets/padel-icon-white.png";
@@ -7806,7 +7806,7 @@ function SetupScreen(props) {
       </Section>
 
       {/* SPORT TYPE */}
-      <Section icon={Trophy} title="Jenis Olahraga">
+      <Section icon={Swords} title="Jenis Olahraga">
         <div className="flex gap-2">
           <ModeTab active={sportType === "padel"} onClick={() => setSportType("padel")}>
             <span className="inline-flex items-center gap-2">
@@ -7828,7 +7828,7 @@ function SetupScreen(props) {
       </Section>
 
       {/* GAME FORMAT */}
-      <Section icon={Users} title="Format Permainan">
+      <Section icon={Shuffle} title="Format Permainan">
         <div className="flex gap-2 mb-2">
           <ModeTab active={gameFormat === "americano"} onClick={() => setGameFormat("americano")}>
             Americano
@@ -7845,7 +7845,7 @@ function SetupScreen(props) {
       </Section>
 
       {/* TEAM FORMAT */}
-      <Section icon={Users} title="Format Tim">
+      <Section icon={UsersRound} title="Format Tim">
         <div className="flex gap-2 mb-2">
           <ModeTab active={teamFormat === "rotating"} onClick={() => setTeamFormat("rotating")}>
             Rotating
@@ -7862,7 +7862,7 @@ function SetupScreen(props) {
       </Section>
 
       {/* SCORE FORMAT */}
-      <Section icon={Trophy} title="Format Skor" subtitle="opsional">
+      <Section icon={Target} title="Format Skor" subtitle="opsional">
         {sportType === "tenis" ? (
           <div className="mb-4">
             <div className="w-full py-2.5 rounded-xl text-sm font-semibold text-center bg-lime-300 text-slate-950">
