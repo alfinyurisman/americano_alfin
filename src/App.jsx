@@ -2824,6 +2824,7 @@ function AmericanoPadel() {
   // automatically. isGeneratingNextMexicanoRound guards against firing
   // twice for the same completion (effects can re-run before state settles).
   const isGeneratingNextMexicanoRound = useRef(false);
+  const [mexicanoTransitioning, setMexicanoTransitioning] = useState(false);
   useEffect(() => {
     if (!engine?.mexicano || ended || !canManageForMexicanoEffect) return;
     const latestRoundIdx = engine.roundsData.length - 1;
@@ -2835,6 +2836,7 @@ function AmericanoPadel() {
     if (!allScored || isGeneratingNextMexicanoRound.current) return;
 
     isGeneratingNextMexicanoRound.current = true;
+    setMexicanoTransitioning(true);
     const scoreEntries = latestRound.courts.map((_, cIdx) => scores[`${latestRoundIdx}-${cIdx}`]);
 
     if (engine.mexicanoUnit === "team") {
@@ -2873,9 +2875,15 @@ function AmericanoPadel() {
         mexicanoRoundNum: (engine.mexicanoRoundNum ?? 0) + 1,
       };
       setEngine(newEngine);
-      setCurrentRound(latestRoundIdx + 1);
       persist({ engine: newEngine, currentRound: latestRoundIdx + 1 });
       logActivity(`Ronde ${latestRoundIdx + 2} digenerate otomatis (Mexicano, klasemen diperbarui)`);
+      // Sedikit jeda sebelum benar-benar pindah tampilan ke ronde baru --
+      // biar kelihatan ada transisi "loading" singkat, bukan langsung
+      // ganti tiba-tiba (blink) begitu skor terakhir diisi.
+      setTimeout(() => {
+        setCurrentRound(latestRoundIdx + 1);
+        setMexicanoTransitioning(false);
+      }, 700);
     } else {
       const ids = players.map((p) => p.id);
       const locked = lockNewMexicanoRanking(ids, latestRound.courts, scoreEntries, {
@@ -2913,16 +2921,21 @@ function AmericanoPadel() {
         mexicanoRoundNum: (engine.mexicanoRoundNum ?? 0) + 1,
       };
       setEngine(newEngine);
-      setCurrentRound(latestRoundIdx + 1);
       persist({ engine: newEngine, currentRound: latestRoundIdx + 1 });
       logActivity(`Ronde ${latestRoundIdx + 2} digenerate otomatis (Mexicano, klasemen diperbarui)`);
+      setTimeout(() => {
+        setCurrentRound(latestRoundIdx + 1);
+        setMexicanoTransitioning(false);
+      }, 700);
     }
     // Allow the next completion to trigger again once this update has
     // flowed through — a short delay rather than clearing immediately
-    // avoids a race against React's own state-update batching.
+    // avoids a race against React's own state-update batching. Kept
+    // slightly longer than the 700ms round-switch delay above so the
+    // guard doesn't clear mid-transition.
     setTimeout(() => {
       isGeneratingNextMexicanoRound.current = false;
-    }, 500);
+    }, 800);
   }, [scores, engine, ended, canManageForMexicanoEffect, courts, players]);
 
   const clearJoinParam = () => {
@@ -6014,6 +6027,7 @@ function AmericanoPadel() {
           isOwner={sessionRole === "owner"}
           canManage={canManage}
           engine={engine}
+          mexicanoTransitioning={mexicanoTransitioning}
           playerMap={playerMap}
           currentRound={currentRound}
           goRound={goRound}
@@ -9225,7 +9239,7 @@ function WaitingRoomScreen(props) {
 
 function SessionScreen(props) {
   const {
-    eventName, isOwner, canManage, engine, playerMap, currentRound, goRound, goToRound,
+    eventName, isOwner, canManage, engine, mexicanoTransitioning, playerMap, currentRound, goRound, goToRound,
     scores, setScore, setPointsPair, resetPointsScore, scoreFormat, pointTarget, tennisTarget,
     incrementTennisPoint, resetTennisMatch, setTennisGamesDirect,
     ended, hasSplitBill, onEndEvent, onReshuffle, allMatchesScored, players, onAddManualMatch, onAddAutoRound, onDeleteRound,
@@ -9433,7 +9447,14 @@ function SessionScreen(props) {
 
       {/* COURTS */}
       <div className="px-6 pt-6 space-y-5">
-        {round.courts.map((match, cIdx) => {
+        {mexicanoTransitioning && (
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/40 py-16 flex flex-col items-center justify-center gap-3">
+            <div className="w-6 h-6 border-2 border-lime-300/30 border-t-lime-300 rounded-full animate-spin" />
+            <span className="text-xs font-semibold text-slate-400">Menyiapkan ronde berikutnya…</span>
+          </div>
+        )}
+        {!mexicanoTransitioning &&
+        round.courts.map((match, cIdx) => {
           const key = `${currentRound}-${cIdx}`;
           const s = scores[key] || {};
           const winner = winnerOf(s);
