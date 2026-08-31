@@ -2863,6 +2863,7 @@ function AmericanoPadel() {
         opp: gen.opp,
         usableCourts: gen.usableCourts,
         rankingSnapshot: locked.rankingSnapshot,
+        rankingSnapshotByRound: [...(engine.rankingSnapshotByRound || []), locked.rankingSnapshot],
         cumulativePoints: locked.cumulativePoints,
         mexicanoWins: locked.wins,
         mexicanoLosses: locked.losses,
@@ -2902,6 +2903,7 @@ function AmericanoPadel() {
         opp: gen.opp,
         usableCourts: gen.usableCourts,
         rankingSnapshot: locked.rankingSnapshot,
+        rankingSnapshotByRound: [...(engine.rankingSnapshotByRound || []), locked.rankingSnapshot],
         cumulativePoints: locked.cumulativePoints,
         mexicanoWins: locked.wins,
         mexicanoLosses: locked.losses,
@@ -3879,6 +3881,7 @@ function AmericanoPadel() {
             opp: gen.opp,
           usableCourts: gen.usableCourts,
           rankingSnapshot: null,
+          rankingSnapshotByRound: [null],
           cumulativePoints: {},
           mexicanoRoundNum: 0,
         };
@@ -3920,6 +3923,7 @@ function AmericanoPadel() {
         opp: gen.opp,
         usableCourts: gen.usableCourts,
         rankingSnapshot: null,
+        rankingSnapshotByRound: [null],
         cumulativePoints: {},
         mexicanoRoundNum: 0,
       };
@@ -4389,44 +4393,43 @@ function AmericanoPadel() {
       const latestRoundIdx = engine.roundsData.length - 1;
       const latestRound = engine.roundsData[latestRoundIdx];
       const scoresForRound = latestRound.courts.map((_, cIdx) => scores[`${latestRoundIdx}-${cIdx}`]);
+      const scoredCountBefore = latestRound.courts.filter((_, cIdx) =>
+        isMatchScoreComplete(scoresForRound[cIdx])
+      ).length;
 
-      // Removal and addition are treated differently on purpose:
-      //
-      // - REMOVING someone can't wait — if they're marked not-arrived (or
-      //   deleted) while still slotted into an unscored match this round,
-      //   forcing that match to go ahead with someone who isn't there
-      //   doesn't make sense. So removal always regenerates whatever's not
-      //   yet scored in the CURRENT batch immediately, regardless of
-      //   whether the batch has already started (some matches scored) or
-      //   not — it just never touches matches already played.
-      //
-      // - ADDING someone new is not urgent the same way, and folding them
-      //   into a batch that's potentially already mid-play is exactly the
-      //   kind of disruption removal doesn't have to risk. So a pure
-      //   addition (no removal alongside it) always waits for the next
-      //   round-batch, which naturally picks up the updated roster once it
-      //   generates — never regenerating the current one just for this.
       const newMap = {};
       newPlayers.forEach((p) => (newMap[p.id] = p.name));
 
-      if (removedIds.length === 0) {
+      // Whether an addition gets folded into THIS batch immediately depends
+      // on whether the batch has genuinely started yet:
+      //
+      // - If NOTHING in the current batch has been scored, nothing is "in
+      //   progress" that a new person joining could disrupt — so any change
+      //   (add, remove, or both) regenerates the whole batch right now using
+      //   the complete new roster.
+      //
+      // - Once at least one match has been scored, the batch is underway.
+      //   Removal still can't wait — forcing someone who isn't there to
+      //   keep playing an unscored match makes no sense — so it still
+      //   regenerates immediately, but only using (old active - removed),
+      //   NOT folding in anyone newly added at the same time. A pure
+      //   addition at this point always waits for the next round-batch
+      //   instead, rather than disrupting matches already underway.
+      const batchAlreadyStarted = scoredCountBefore > 0;
+      const regenIds = batchAlreadyStarted ? [...oldActiveIds].filter((id) => !removedIds.includes(id)) : [...newActiveIds];
+
+      if (batchAlreadyStarted && removedIds.length === 0) {
         setPlayers(newPlayers);
         setPlayerMap(newMap);
         setCourts(newCourts);
         persist({ players: newPlayers, playerMap: newMap, courts: newCourts });
-        logActivity(`Update roster (Mexicano) — berlaku mulai ronde berikutnya (klasemen dikunci baru)`);
+        logActivity(
+          `Update roster (Mexicano) — ronde ${latestRoundIdx + 1} udah mulai (${scoredCountBefore} match sudah diskor), jadi perubahan ini baru berlaku mulai ronde berikutnya`
+        );
         return;
       }
 
-      // There's a removal (possibly alongside an addition too) — regenerate
-      // the unscored part of THIS batch now, but using only (old active -
-      // removed). Anyone newly added at the same time still waits for the
-      // next round, same as a pure addition would — mixing "remove now" and
-      // "add now" in one edit would make the batch's total size unstable
-      // in a way that's harder to reason about than just keeping addition
-      // consistently deferred.
-      const currentBatchIds = [...oldActiveIds].filter((id) => !removedIds.includes(id));
-      const result = regenerateMexicanoCurrentRound(currentBatchIds, newCourts, latestRound.courts, scoresForRound, engine);
+      const result = regenerateMexicanoCurrentRound(regenIds, newCourts, latestRound.courts, scoresForRound, engine);
 
       if (result.rejected) {
         alert(result.reason);
@@ -4474,7 +4477,9 @@ function AmericanoPadel() {
       setScores(newScores);
       persist({ engine: newEngine, players: newPlayers, playerMap: newMap, courts: newCourts, scores: newScores });
       logActivity(
-        `Sesuaikan Ronde ${latestRoundIdx + 1} (Mexicano) — ${removedIds.length} pemain dikeluarkan, ${result.scoredCount} match yang sudah diskor tetap, ${result.newUnscoredCount} match sisanya disusun ulang`
+        batchAlreadyStarted
+          ? `Sesuaikan Ronde ${latestRoundIdx + 1} (Mexicano) — ${removedIds.length} pemain dikeluarkan, ${result.scoredCount} match yang sudah diskor tetap, ${result.newUnscoredCount} match sisanya disusun ulang`
+          : `Susun ulang Ronde ${latestRoundIdx + 1} (Mexicano) — belum ada match yang diskor, jadi seluruh ${result.newUnscoredCount} match disusun ulang pakai roster terbaru`
       );
       return;
     }
@@ -9321,28 +9326,41 @@ function SessionScreen(props) {
             </button>
           )}
         </div>
-        {engine?.mexicano && (
-          <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/5 px-3 py-2.5 mb-3">
-            <div className="flex items-center gap-1.5 mb-1.5">
-              <Lock size={11} className="text-cyan-300" />
-              <span className="text-[10px] font-semibold tracking-wide text-cyan-300 uppercase">
-                {engine.rankingSnapshot ? "Klasemen terkunci ronde ini" : "Ronde acak — belum ada klasemen"}
-              </span>
-            </div>
-            {engine.rankingSnapshot && (
-              <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-300">
-                {engine.rankingSnapshot.map((id, i) => (
-                  <span key={id}>
-                    <span className="text-slate-500">{i + 1}.</span>{" "}
-                    {engine.mexicanoUnit === "team"
-                      ? engine.fixedTeams.find((t) => t.id === id)?.players.map((p) => playerMap[p]).join(" & ")
-                      : playerMap[id]}
-                  </span>
-                ))}
+        {engine?.mexicano && (() => {
+          // Look up whatever ranking was ACTUALLY locked in for the round
+          // being viewed right now (currentRound) — not just whatever the
+          // latest one happens to be. Older events saved before this
+          // per-round history existed only have the single latest
+          // `rankingSnapshot` field; for those, fall back to it so past
+          // exports don't just show nothing.
+          const viewedRanking = engine.rankingSnapshotByRound
+            ? engine.rankingSnapshotByRound[currentRound]
+            : currentRound === engine.roundsData.length - 1
+            ? engine.rankingSnapshot
+            : undefined;
+          return (
+            <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/5 px-3 py-2.5 mb-3">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <Lock size={11} className="text-cyan-300" />
+                <span className="text-[10px] font-semibold tracking-wide text-cyan-300 uppercase">
+                  {viewedRanking ? `Klasemen terkunci Ronde ${currentRound + 1}` : "Ronde acak — belum ada klasemen"}
+                </span>
               </div>
-            )}
-          </div>
-        )}
+              {viewedRanking && (
+                <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-300">
+                  {viewedRanking.map((id, i) => (
+                    <span key={id}>
+                      <span className="text-slate-500">{i + 1}.</span>{" "}
+                      {engine.mexicanoUnit === "team"
+                        ? engine.fixedTeams.find((t) => t.id === id)?.players.map((p) => playerMap[p]).join(" & ")
+                        : playerMap[id]}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })()}
         <div className="flex flex-wrap items-center gap-2 mb-3">
           {canManage && !engine?.mexicano && (
             <button
