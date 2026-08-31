@@ -4406,10 +4406,14 @@ function AmericanoPadel() {
       //   addition (no removal alongside it) always waits for the next
       //   round-batch, which naturally picks up the updated roster once it
       //   generates — never regenerating the current one just for this.
+      const newMap = {};
+      newPlayers.forEach((p) => (newMap[p.id] = p.name));
+
       if (removedIds.length === 0) {
         setPlayers(newPlayers);
+        setPlayerMap(newMap);
         setCourts(newCourts);
-        persist({ players: newPlayers, courts: newCourts });
+        persist({ players: newPlayers, playerMap: newMap, courts: newCourts });
         logActivity(`Update roster (Mexicano) — berlaku mulai ronde berikutnya (klasemen dikunci baru)`);
         return;
       }
@@ -4434,8 +4438,9 @@ function AmericanoPadel() {
         // disesuaikan lagi di ronde SEKARANG. Roster baru (termasuk yg
         // dikeluarkan) berlaku otomatis mulai ronde berikutnya.
         setPlayers(newPlayers);
+        setPlayerMap(newMap);
         setCourts(newCourts);
-        persist({ players: newPlayers, courts: newCourts });
+        persist({ players: newPlayers, playerMap: newMap, courts: newCourts });
         logActivity(
           `Update roster (Mexicano) — berlaku mulai ronde berikutnya (ronde ${latestRoundIdx + 1} sudah lengkap skornya)`
         );
@@ -4464,9 +4469,10 @@ function AmericanoPadel() {
 
       setEngine(newEngine);
       setPlayers(newPlayers);
+      setPlayerMap(newMap);
       setCourts(newCourts);
       setScores(newScores);
-      persist({ engine: newEngine, players: newPlayers, courts: newCourts, scores: newScores });
+      persist({ engine: newEngine, players: newPlayers, playerMap: newMap, courts: newCourts, scores: newScores });
       logActivity(
         `Sesuaikan Ronde ${latestRoundIdx + 1} (Mexicano) — ${removedIds.length} pemain dikeluarkan, ${result.scoredCount} match yang sudah diskor tetap, ${result.newUnscoredCount} match sisanya disusun ulang`
       );
@@ -5252,9 +5258,15 @@ function AmericanoPadel() {
       ? hostInvitations.filter((i) => i.accountId !== req.accountId)
       : hostInvitations;
     setPlayers(newPlayers);
+    if (!alreadyPlayer) setPlayerMap((prev) => ({ ...prev, [req.id]: req.name }));
     setPendingRequests(newPending);
     setHostInvitations(newInvitations);
-    persist({ players: newPlayers, pendingRequests: newPending, hostInvitations: newInvitations });
+    persist({
+      players: newPlayers,
+      ...(alreadyPlayer ? {} : { playerMap: { ...playerMap, [req.id]: req.name } }),
+      pendingRequests: newPending,
+      hostInvitations: newInvitations,
+    });
   };
 
   const handleRejectRequest = (reqId) => {
