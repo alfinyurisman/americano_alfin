@@ -6690,7 +6690,7 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
                       ) : (
                         <PadelRacketIcon size={44} className="text-lime-300" />
                       )}
-                      <span className="text-[8.5px] text-white text-center leading-tight whitespace-nowrap">
+                      <span className="text-[8.5px] text-lime-300 text-center leading-tight whitespace-nowrap">
                         {ev.scoreFormat === "tennis"
                           ? `Race to ${ev.tennisTarget || 4}`
                           : "Total Poin"}
@@ -10822,7 +10822,7 @@ function LeaderboardScreen({ eventName, leaderboard, players, gameFormat, teamFo
         >
           <ArrowLeft size={16} /> Lobby
         </button>
-        {eventName && <div className="text-sm font-semibold text-slate-200 mb-1">{eventName}</div>}
+        {eventName && <div className="text-sm font-semibold text-lime-300 mb-1">{eventName}</div>}
         {ended && (
           <div className="flex items-center gap-2 mb-1">
             <Chip tone="lime">Selesai</Chip>
@@ -11020,7 +11020,7 @@ function SplitBillScreen({
         >
           <ArrowLeft size={16} /> Lobby
         </button>
-        {eventName && <div className="text-sm font-semibold text-slate-200 mb-1">{eventName}</div>}
+        {eventName && <div className="text-sm font-semibold text-lime-300 mb-1">{eventName}</div>}
         <h1 className="font-display text-5xl text-slate-50">SPLIT BILL</h1>
       </div>
 
@@ -11363,7 +11363,7 @@ function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, e
         >
           <ArrowLeft size={16} /> Lobby
         </button>
-        {eventName && <div className="text-sm font-semibold text-slate-200 mb-1">{eventName}</div>}
+        {eventName && <div className="text-sm font-semibold text-lime-300 mb-1">{eventName}</div>}
         <h1 className="font-display text-5xl text-slate-50">REKAP MATCH</h1>
 
         {filterChips.length > 0 && (
@@ -11501,7 +11501,7 @@ function StatsScreen({ eventName, stats, totalPlayers, gameFormat, teamFormat, h
         >
           <ArrowLeft size={16} /> Lobby
         </button>
-        {eventName && <div className="text-sm font-semibold text-slate-200 mb-1">{eventName}</div>}
+        {eventName && <div className="text-sm font-semibold text-lime-300 mb-1">{eventName}</div>}
         <h1 className="font-display text-5xl text-slate-50">STATISTIK ROTASI</h1>
         <p className="text-slate-500 text-sm mt-2">
           Semakin merata angka "main" &amp; "istirahat", semakin adil rotasinya.
