@@ -4973,6 +4973,69 @@ function AmericanoPadel() {
       });
     };
 
+    if (engine?.mexicano) {
+      if (engine.mexicanoUnit === "team") return; // Fixed team belum didukung
+      const oldAppear = {};
+      rd.courts.forEach((c) => [...c.team1, ...c.team2].forEach((id) => (oldAppear[id] = (oldAppear[id] || 0) + 1)));
+      const newAppear = {};
+      newCourts.forEach((c) => [...c.team1, ...c.team2].forEach((id) => (newAppear[id] = (newAppear[id] || 0) + 1)));
+      const newPlayCount = { ...(engine.playCount || {}) };
+      new Set([...Object.keys(oldAppear), ...Object.keys(newAppear)]).forEach((id) => {
+        const delta = (newAppear[id] || 0) - (oldAppear[id] || 0);
+        if (delta !== 0) newPlayCount[id] = (newPlayCount[id] || 0) + delta;
+      });
+
+      // Cuma court yg BERUBAH yg perlu disesuaikan pairing-nya -- court lain
+      // pairing-nya sama persis, ga perlu diutak-atik.
+      const newPartner = {};
+      Object.keys(engine.partner || {}).forEach((k) => (newPartner[k] = { ...engine.partner[k] }));
+      const newOpp = {};
+      Object.keys(engine.opp || {}).forEach((k) => (newOpp[k] = { ...engine.opp[k] }));
+      const ensure = (obj, id) => { if (!obj[id]) obj[id] = {}; };
+
+      const changedIdx = [courtIdx, ...(otherCourtChanges?.map((oc) => oc.courtIdx) || [])];
+      changedIdx.forEach((cIdx) => {
+        const old = rd.courts[cIdx];
+        const neu = newCourts[cIdx];
+        const [oa, ob] = old.team1, [oc, od] = old.team2;
+        [oa, ob, oc, od].forEach((id) => { ensure(newPartner, id); ensure(newOpp, id); });
+        newPartner[oa][ob] = (newPartner[oa][ob] || 0) - 1;
+        newPartner[ob][oa] = (newPartner[ob][oa] || 0) - 1;
+        newPartner[oc][od] = (newPartner[oc][od] || 0) - 1;
+        newPartner[od][oc] = (newPartner[od][oc] || 0) - 1;
+        [oa, ob].forEach((x) => [oc, od].forEach((y) => {
+          newOpp[x][y] = (newOpp[x][y] || 0) - 1;
+          newOpp[y][x] = (newOpp[y][x] || 0) - 1;
+        }));
+
+        const [na, nb] = neu.team1, [nc, nd] = neu.team2;
+        [na, nb, nc, nd].forEach((id) => { ensure(newPartner, id); ensure(newOpp, id); });
+        newPartner[na][nb] = (newPartner[na][nb] || 0) + 1;
+        newPartner[nb][na] = (newPartner[nb][na] || 0) + 1;
+        newPartner[nc][nd] = (newPartner[nc][nd] || 0) + 1;
+        newPartner[nd][nc] = (newPartner[nd][nc] || 0) + 1;
+        [na, nb].forEach((x) => [nc, nd].forEach((y) => {
+          newOpp[x][y] = (newOpp[x][y] || 0) + 1;
+          newOpp[y][x] = (newOpp[y][x] || 0) + 1;
+        }));
+      });
+
+      const newRoundsDataMex = engine.roundsData.map((r, i) => (i === roundIdx ? editedRound : r));
+      const newEngineMex = { ...engine, roundsData: newRoundsDataMex, playCount: newPlayCount, partner: newPartner, opp: newOpp };
+      setEngine(newEngineMex);
+      const savedMex = await persistAndVerify({ engine: newEngineMex }, verifyEdit);
+      if (!savedMex) {
+        alert(
+          "Perubahan pemain kelihatannya BELUM tersimpan ke server (koneksi mungkin bermasalah). Coba lakukan lagi, dan pastikan koneksi internet stabil sebelum pindah layar."
+        );
+        return;
+      }
+      logActivity(
+        `Edit pemain Ronde ${roundIdx + 1} Match ${courtIdx + 1} (Mexicano): ${changedDesc} — catatan main & partner/lawan disesuaikan buat ronde berikutnya`
+      );
+      return;
+    }
+
     if (!regenerateRest) {
       const newRoundsData = engine.roundsData.map((r, i) => (i === roundIdx ? editedRound : r));
       const activeIds = players.filter((p) => p.arrived !== false).map((p) => p.id);
@@ -9353,9 +9416,9 @@ function SessionScreen(props) {
             <div key={cIdx} className="rounded-2xl border border-slate-800 overflow-hidden bg-slate-900/40">
               <div className="px-4 py-2 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
                 <span className="text-xs font-bold tracking-widest text-slate-400 uppercase">
-                  Lapangan {cIdx + 1}
+                  {engine?.mexicano ? `Match ${cIdx + 1}` : `Lapangan ${cIdx + 1}`}
                 </span>
-                {isOwner && cIdx === 0 && (
+                {isOwner && cIdx === 0 && !engine?.mexicano && (
                   <button
                     onClick={() => setShowDeleteRoundConfirm(true)}
                     className="text-slate-600 hover:text-red-400"
@@ -9397,7 +9460,7 @@ function SessionScreen(props) {
                 />
               )}
 
-              {canManage && !isMatchScoreComplete(s) && (
+              {canManage && !isMatchScoreComplete(s) && (!engine?.mexicano || engine?.mexicanoUnit !== "team") && (
                 <button
                   onClick={() => setEditingCourtIdx(cIdx)}
                   className="w-full flex items-center justify-center gap-1.5 py-2 text-xs font-semibold text-slate-400 border-t border-slate-800"
@@ -9425,7 +9488,7 @@ function SessionScreen(props) {
       {/* SCORE MODAL (points format) */}
       {scoreModal !== null && scoreFormat === "points" && (
         <ScoreModal
-          roundLabel={`Ronde ${currentRound + 1} – Lapangan ${scoreModal + 1}`}
+          roundLabel={`Ronde ${currentRound + 1} – ${engine?.mexicano ? "Match" : "Lapangan"} ${scoreModal + 1}`}
           team1={round.courts[scoreModal].team1.map((id) => playerMap[id])}
           team2={round.courts[scoreModal].team2.map((id) => playerMap[id])}
           s={scores[`${currentRound}-${scoreModal}`] || {}}
@@ -9439,7 +9502,7 @@ function SessionScreen(props) {
 
       {scoreModal !== null && scoreFormat === "tennis" && (
         <ScoreModal
-          roundLabel={`Ronde ${currentRound + 1} – Lapangan ${scoreModal + 1}`}
+          roundLabel={`Ronde ${currentRound + 1} – ${engine?.mexicano ? "Match" : "Lapangan"} ${scoreModal + 1}`}
           team1={round.courts[scoreModal].team1.map((id) => playerMap[id])}
           team2={round.courts[scoreModal].team2.map((id) => playerMap[id])}
           s={scores[`${currentRound}-${scoreModal}`] || {}}
@@ -11437,7 +11500,7 @@ function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, e
           <div key={r.id} className="rounded-2xl border border-slate-800 bg-slate-900/40 overflow-hidden">
             <div className="px-4 py-2 bg-slate-900 border-b border-slate-800">
               <span className="text-xs font-bold tracking-widest text-slate-400 uppercase">
-                Ronde {r.round} · Lapangan {r.court}
+                Ronde {r.round} · {engine?.mexicano ? `Match ${r.court}` : `Lapangan ${r.court}`}
               </span>
             </div>
             <div className="px-4 py-3 space-y-1.5">
@@ -11999,7 +12062,7 @@ function ViewOnlyApp({ sessionId }) {
                   <div key={cIdx} className="rounded-2xl border border-slate-800 overflow-hidden bg-slate-900/40">
                     <div className="px-4 py-2 bg-slate-900 border-b border-slate-800">
                       <span className="text-xs font-bold tracking-widest text-slate-400 uppercase">
-                        Lapangan {cIdx + 1}
+                        {data.engine?.mexicano ? `Match ${cIdx + 1}` : `Lapangan ${cIdx + 1}`}
                       </span>
                     </div>
                     <div className="grid grid-cols-[1fr_auto_1fr] items-stretch">
@@ -12225,7 +12288,7 @@ function ViewOnlyApp({ sessionId }) {
                 <div key={r.id} className="rounded-2xl border border-slate-800 bg-slate-900/40 overflow-hidden">
                   <div className="px-4 py-2 bg-slate-900 border-b border-slate-800">
                     <span className="text-xs font-bold tracking-widest text-slate-400 uppercase">
-                      Ronde {r.round} · Lapangan {r.court}
+                      Ronde {r.round} · {data.engine?.mexicano ? `Match ${r.court}` : `Lapangan ${r.court}`}
                     </span>
                   </div>
                   <div className="px-4 py-3 space-y-1.5">
