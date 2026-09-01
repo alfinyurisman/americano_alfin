@@ -8704,6 +8704,7 @@ function WaitingRoomScreen(props) {
 
   const [showBulk, setShowBulk] = useState(false);
   const [avatarCache, setAvatarCache] = useState({}); // accountId -> avatarUrl | null
+  const [nameCache, setNameCache] = useState({}); // accountId -> current displayName | null
   const usableCourtsPreview = Math.min(courts, Math.floor(players.length / 4));
   const pairedIdsPreview = new Set(fixedPairs.flat());
   const unpairedCount = players.length - pairedIdsPreview.size;
@@ -8725,10 +8726,14 @@ function WaitingRoomScreen(props) {
       const entries = await Promise.all(
         [...ids].map(async (id) => {
           const acc = await getUserAccount(id);
-          return [id, acc?.avatarUrl || null];
+          return { id, avatarUrl: acc?.avatarUrl || null, name: acc ? acc.displayName || acc.username : null };
         })
       );
-      setAvatarCache((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
+      setAvatarCache((prev) => ({
+        ...prev,
+        ...Object.fromEntries(entries.map((e) => [e.id, e.avatarUrl])),
+      }));
+      setNameCache((prev) => ({ ...prev, ...Object.fromEntries(entries.map((e) => [e.id, e.name])) }));
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [players, pendingRequests, hostInvitations]);
@@ -8981,6 +8986,7 @@ function WaitingRoomScreen(props) {
                 p.accountId &&
                 p.accountId !== myAccountId &&
                 !isAlreadyFriend;
+              const liveName = (p.accountId && nameCache[p.accountId]) || p.name;
               return (
                 <div
                   key={p.id}
@@ -9010,7 +9016,7 @@ function WaitingRoomScreen(props) {
                   )}
                   <div className="relative">
                     <Avatar
-                      name={p.name}
+                      name={liveName}
                       avatarUrl={p.accountId ? avatarCache[p.accountId] : null}
                       size={56}
                     />
@@ -9027,7 +9033,7 @@ function WaitingRoomScreen(props) {
                     )}
                   </div>
                   <span className="text-[11px] font-semibold text-slate-100 text-center leading-snug break-words">
-                    {p.name}
+                    {liveName}
                   </span>
                   {isThisCoHost && <Chip tone="cyan">co-host</Chip>}
                 </div>
@@ -11742,6 +11748,7 @@ function ViewOnlyApp({ sessionId }) {
   const [currentRound, setCurrentRound] = useState(0);
   const [recapFilter, setRecapFilter] = useState("all");
   const [avatarCache, setAvatarCache] = useState({}); // accountId -> avatarUrl | null (for the waiting-room player list)
+  const [nameCache, setNameCache] = useState({}); // accountId -> current displayName | null
   const initializedRound = useRef(false);
   const lastAppliedRef = useRef(0);
 
@@ -11769,10 +11776,14 @@ function ViewOnlyApp({ sessionId }) {
       const entries = await Promise.all(
         [...ids].map(async (id) => {
           const acc = await getUserAccount(id);
-          return [id, acc?.avatarUrl || null];
+          return { id, avatarUrl: acc?.avatarUrl || null, name: acc ? acc.displayName || acc.username : null };
         })
       );
-      setAvatarCache((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
+      setAvatarCache((prev) => ({
+        ...prev,
+        ...Object.fromEntries(entries.map((e) => [e.id, e.avatarUrl])),
+      }));
+      setNameCache((prev) => ({ ...prev, ...Object.fromEntries(entries.map((e) => [e.id, e.name])) }));
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.players, data?.pendingRequests, data?.engine]);
@@ -12028,22 +12039,25 @@ function ViewOnlyApp({ sessionId }) {
             <p className="text-slate-600 text-sm">Belum ada yang gabung.</p>
           ) : (
             <div className="space-y-2">
-              {(data.players || []).map((p) => (
+              {(data.players || []).map((p) => {
+                const liveName = (p.accountId && nameCache[p.accountId]) || p.name;
+                return (
                 <div
                   key={p.id}
                   className="flex items-center gap-2.5 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3"
                 >
                   <Avatar
-                    name={p.name}
+                    name={liveName}
                     avatarUrl={p.accountId ? avatarCache[p.accountId] : null}
                     size={36}
                   />
-                  <span className="font-semibold text-slate-100 truncate flex-1">{p.name}</span>
+                  <span className="font-semibold text-slate-100 truncate flex-1">{liveName}</span>
                   {p.accountId === data.ownerId && <Chip tone="cyan">host</Chip>}
                   {data.coHostIds?.includes(p.accountId) && <Chip tone="cyan">co-host</Chip>}
                   {p.arrived === false && <Chip tone="slate">belum hadir</Chip>}
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
