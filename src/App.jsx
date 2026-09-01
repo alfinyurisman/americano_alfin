@@ -4485,7 +4485,21 @@ function AmericanoPadel() {
     }
     const newCourts = newCourtsInput || courts;
 
-    let splitIdx = engine.roundsData.length;
+    // Find the split point between "locked, never touch" and "safe to
+    // regenerate" rounds. This is NOT simply "the first unscored round" —
+    // scoring doesn't always happen strictly in order (a host can skip a
+    // round and come back to it later), so an earlier round can still be
+    // unscored while LATER rounds already have real results in them.
+    // Basing the split on the first gap would silently wipe those later
+    // rounds' scores the moment a roster change tried to regenerate
+    // "everything after the gap" — confirmed via an exported event log
+    // where rounds 3–7 had been scored, round 2 hadn't yet, and adjusting
+    // the roster at that point discarded rounds 3–7's results entirely.
+    // Using the LAST scored round instead guarantees nothing with a real
+    // score ever gets regenerated — any earlier gap just stays frozen in
+    // its original matchup (still editable by hand) rather than being
+    // silently overwritten.
+    let splitIdx = 0;
     for (let rIdx = 0; rIdx < engine.roundsData.length; rIdx++) {
       const rd = engine.roundsData[rIdx];
       const allScored = rd.courts.every((_, cIdx) => {
@@ -4494,10 +4508,7 @@ function AmericanoPadel() {
         if (s.format === "tennis") return (s.gamesA || 0) > 0 || (s.gamesB || 0) > 0;
         return s.a !== undefined && s.a !== "" && s.b !== undefined && s.b !== "";
       });
-      if (!allScored) {
-        splitIdx = rIdx;
-        break;
-      }
+      if (allScored) splitIdx = rIdx + 1;
     }
 
     const lockedRounds = engine.roundsData.slice(0, splitIdx);
