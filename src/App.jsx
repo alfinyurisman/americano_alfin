@@ -1670,15 +1670,28 @@ async function purgeOldDeletedMatches() {
   return remaining;
 }
 
+// "Remember me" used to live ONLY in localStorage — which mobile browsers
+// (especially iOS Safari's Intelligent Tracking Prevention) can silently
+// clear after roughly a week of the site not being opened as a top-level
+// page. For an app people open every few days rather than daily, that
+// looks exactly like an unexplained "auto logout" — the person's DATA is
+// fine (that lives in window.storage, which is far more durable), but the
+// "who's logged in" marker vanished from the browser. So this now mirrors
+// the same info into window.storage as a backup: localStorage stays the
+// fast synchronous path for the callers that need one, and the boot-time
+// check additionally falls back to window.storage if localStorage comes
+// up empty, before concluding the person really needs to log in again.
+const REMEMBER_STORAGE_KEY = "remember-login";
+
 function rememberLogin(account) {
+  const payload = { accountId: account.accountId, username: account.username };
   try {
-    localStorage.setItem(
-      REMEMBER_KEY,
-      JSON.stringify({ accountId: account.accountId, username: account.username })
-    );
+    localStorage.setItem(REMEMBER_KEY, JSON.stringify(payload));
   } catch (e) {
     /* no-op */
   }
+  // Fire-and-forget — this is a resilience backup, not on the critical path.
+  window.storage?.set(REMEMBER_STORAGE_KEY, JSON.stringify(payload), false)?.catch(() => {});
 }
 
 function loadRememberedLogin() {
@@ -1690,12 +1703,37 @@ function loadRememberedLogin() {
   }
 }
 
+// Only used at boot, where an async fallback is affordable — if localStorage
+// lost the marker, check the durable backup before giving up.
+async function loadRememberedLoginWithFallback() {
+  const fromLocal = loadRememberedLogin();
+  if (fromLocal) return fromLocal;
+  try {
+    const res = await window.storage?.get(REMEMBER_STORAGE_KEY, false);
+    if (res?.value) {
+      const parsed = JSON.parse(res.value);
+      // Re-seed localStorage so subsequent (synchronous) checks this
+      // session don't need to fall back again.
+      try {
+        localStorage.setItem(REMEMBER_KEY, res.value);
+      } catch (e) {
+        /* no-op */
+      }
+      return parsed;
+    }
+  } catch (e) {
+    /* no-op */
+  }
+  return null;
+}
+
 function forgetLogin() {
   try {
     localStorage.removeItem(REMEMBER_KEY);
   } catch (e) {
     /* no-op */
   }
+  window.storage?.delete(REMEMBER_STORAGE_KEY, false)?.catch(() => {});
 }
 
 function uid() {
@@ -2977,7 +3015,7 @@ function AmericanoPadel() {
   // If the URL carries an invite (?join=<id>), process it right after login.
   useEffect(() => {
     (async () => {
-      const remembered = loadRememberedLogin();
+      const remembered = await loadRememberedLoginWithFallback();
       if (remembered) {
         const fresh = await getUserAccount(remembered.accountId);
         const me = fresh
