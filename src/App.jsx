@@ -2821,6 +2821,18 @@ function AmericanoPadel() {
 
   // Setup state
   const [players, setPlayers] = useState([]); // [{id, name, accountId?}]
+  // Mirrors `players` synchronously via the ref below. Handlers that read
+  // `players` directly from closure can be racy if triggered again before
+  // React has finished flushing the PREVIOUS update into a new render
+  // (observed via an activity log: rapid attendance toggles on different
+  // people, where a later toggle's `newPlayers = players.map(...)` was
+  // built from a `players` snapshot that hadn't picked up the immediately
+  // prior toggle yet, silently reverting it). Reading playersRef.current
+  // instead guarantees the freshest value regardless of render timing.
+  const playersRef = useRef([]);
+  useEffect(() => {
+    playersRef.current = players;
+  }, [players]);
   const [nameInput, setNameInput] = useState("");
   const [bulkInput, setBulkInput] = useState("");
   const [courts, setCourts] = useState(2);
@@ -4104,6 +4116,71 @@ function AmericanoPadel() {
   // attendance can be mixed freely as two ways to reach the same result.
   const handleReshuffleMatches = async () => {
     if (!engine) return;
+
+    if (engine?.mexicano) {
+      if (engine.mexicanoUnit === "team") {
+        alert("Reshuffle belum bisa dipakai buat Mexicano Fixed Partner — tim yang sudah tetap nggak berubah susunannya.");
+        return;
+      }
+      const latestRoundIdx = engine.roundsData.length - 1;
+      const latestRound = engine.roundsData[latestRoundIdx];
+      const scoresForRound = latestRound.courts.map((_, cIdx) => scores[`${latestRoundIdx}-${cIdx}`]);
+      const allScoredMex = latestRound.courts.every((_, cIdx) => isMatchScoreComplete(scoresForRound[cIdx]));
+      if (allScoredMex) {
+        alert("Ronde ini sudah lengkap diisi skor semua — tidak ada lagi yang bisa di-reshuffle. Ronde berikutnya akan otomatis digenerate.");
+        return;
+      }
+      if (
+        !window.confirm(
+          "Acak ulang match yang BELUM diisi skor di ronde ini pakai roster yang sama? Match yang sudah diskor tetap disimpan apa adanya."
+        )
+      )
+        return;
+      try {
+        const activeIds = playersRef.current.filter((p) => p.arrived !== false).map((p) => p.id);
+        // Same regeneration engine used for roster changes, but called with
+        // the CURRENT roster unchanged — its only job here is to produce a
+        // fresh pairing arrangement for whatever's still unscored.
+        const result = regenerateMexicanoCurrentRound(activeIds, courts, latestRound.courts, scoresForRound, engine);
+        if (result.rejected) {
+          alert(result.reason);
+          return;
+        }
+        if (result.unchanged) {
+          alert("Ronde ini sudah lengkap diisi skor semua — tidak ada lagi yang bisa di-reshuffle.");
+          return;
+        }
+        const newRoundsData = [...engine.roundsData];
+        newRoundsData[latestRoundIdx] = { ...latestRound, courts: result.courts };
+        const newEngine = { ...engine, roundsData: newRoundsData };
+        const newScores = {};
+        Object.keys(scores).forEach((key) => {
+          const [rStr, cStr] = key.split("-");
+          const r = parseInt(rStr, 10);
+          if (r !== latestRoundIdx) {
+            newScores[key] = scores[key];
+            return;
+          }
+          const cIdx = parseInt(cStr, 10);
+          if (cIdx < result.scoredCount) newScores[key] = scores[key];
+        });
+        setEngine(newEngine);
+        setScores(newScores);
+        persist({ engine: newEngine, scores: newScores });
+        logActivity(
+          `Reshuffle Ronde ${latestRoundIdx + 1} (Mexicano) — ${result.scoredCount} match yang sudah diskor tetap, ${result.newUnscoredCount} match sisanya diacak ulang`
+        );
+      } catch (e) {
+        console.error("handleReshuffleMatches (Mexicano) failed:", e);
+        alert(
+          "Gagal reshuffle: " +
+            (e?.message || "terjadi kesalahan tak terduga") +
+            "\n\nJadwal belum diubah, coba lagi atau kirim screenshot pesan ini."
+        );
+      }
+      return;
+    }
+
     const allScored = engine.roundsData.every((rd, rIdx) =>
       rd.courts.every((_, cIdx) => isMatchScoreComplete(scores[`${rIdx}-${cIdx}`]))
     );
@@ -4387,12 +4464,12 @@ function AmericanoPadel() {
       // whether a roster change was a same-person attendance flip or an
       // actual add/remove (which resets that person's history, since a
       // freshly-added entry always gets a brand-new id).
-      const oldIds = new Set(players.map((p) => p.id));
+      const oldIds = new Set(playersRef.current.map((p) => p.id));
       const newIds = new Set(newPlayers.map((p) => p.id));
       const added = newPlayers
         .filter((p) => !oldIds.has(p.id))
         .map((p) => `${p.name}${p.accountId ? "" : " [guest]"}`);
-      const removed = players.filter((p) => !newIds.has(p.id)).map((p) => p.name);
+      const removed = playersRef.current.filter((p) => !newIds.has(p.id)).map((p) => p.name);
       const saved = await handleAdjustScheduleInner(newPlayers, newCourts);
       const activeCount = newPlayers.filter((p) => p.arrived !== false).length;
       const parts = [`${activeCount} pemain aktif dari ${newPlayers.length} total`];
@@ -4423,7 +4500,7 @@ function AmericanoPadel() {
         return;
       }
 
-      const oldActiveIds = new Set(players.filter((p) => p.arrived !== false).map((p) => p.id));
+      const oldActiveIds = new Set(playersRef.current.filter((p) => p.arrived !== false).map((p) => p.id));
       const newActivePlayers = newPlayers.filter((p) => p.arrived !== false);
       const newActiveIds = new Set(newActivePlayers.map((p) => p.id));
       const removedIds = [...oldActiveIds].filter((id) => !newActiveIds.has(id));
@@ -5164,10 +5241,11 @@ function AmericanoPadel() {
   // them back into) upcoming rounds, preserving already-scored history and
   // fairness tracking either way.
   const handleToggleArrival = async (playerId) => {
-    const target = players.find((p) => p.id === playerId);
+    const currentPlayers = playersRef.current;
+    const target = currentPlayers.find((p) => p.id === playerId);
     if (!target) return;
     const nowArrived = target.arrived === false; // toggling from not-arrived -> arrived
-    const newPlayers = players.map((p) => (p.id === playerId ? { ...p, arrived: nowArrived } : p));
+    const newPlayers = currentPlayers.map((p) => (p.id === playerId ? { ...p, arrived: nowArrived } : p));
     logActivity(
       `Toggle kehadiran: ${target.name} jadi ${nowArrived ? "HADIR" : "TIDAK HADIR"} (id tetap sama, histori tidak direset)`
     );
@@ -9635,6 +9713,7 @@ function SessionScreen(props) {
         <EditMatchPlayersModal
           round={round}
           courtIdx={editingCourtIdx}
+          isMexicano={!!engine?.mexicano}
           scoredCourtIdxs={round.courts
             .map((c, i) => (isMatchScoreComplete(scores[`${currentRound}-${i}`]) ? i : null))
             .filter((i) => i !== null)}
@@ -9705,7 +9784,7 @@ function SessionScreen(props) {
           <PrimaryButton onClick={onCopyViewLink} icon={Link2} className="w-full">
             Salin link pemantau (view only)
           </PrimaryButton>
-          {isOwner && !engine?.mexicano && (
+          {isOwner && (!engine?.mexicano || engine?.mexicanoUnit !== "team") && (
             <button
               onClick={async () => {
                 if (reshuffling) return;
@@ -10349,7 +10428,7 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, gameForm
 // Two-step flow: (1) pick which slot(s) to swap and with whom, (2) decide
 // whether every round AFTER this one should be regenerated to reflect the
 // change, or left exactly as-is.
-function EditMatchPlayersModal({ round, courtIdx, scoredCourtIdxs, currentRosterIds, playerMap, roundNumber, courtNumber, onConfirm, onClose }) {
+function EditMatchPlayersModal({ round, courtIdx, isMexicano, scoredCourtIdxs, currentRosterIds, playerMap, roundNumber, courtNumber, onConfirm, onClose }) {
   // Slots are fixed positions: 0-1 = Tim Kiri (team1), 2-3 = Tim Kanan (team2).
   const originalMatch = round.courts[courtIdx];
   const originalFour = [...originalMatch.team1, ...originalMatch.team2];
@@ -10392,7 +10471,18 @@ function EditMatchPlayersModal({ round, courtIdx, scoredCourtIdxs, currentRoster
   const changed =
     assignment.some((id, i) => id !== originalFour[i]) ||
     otherCourts.some((c, i) => c && (c.team1[0] !== round.courts[i].team1[0] || c.team1[1] !== round.courts[i].team1[1] || c.team2[0] !== round.courts[i].team2[0] || c.team2[1] !== round.courts[i].team2[1]));
-  const hasDuplicate = everyoneOnAnyCourt.size !== assignment.length + otherCourts.reduce((s, c) => s + (c ? 4 : 0), 0);
+  // For Americano, nobody should ever appear twice across this round's
+  // matches. For Mexicano, that's not true — someone getting a second
+  // ("extra") match within the same round-batch is the normal, intentional
+  // way uneven player counts get handled, not an error. So the allowed
+  // occurrence count differs: exactly 1 for Americano, up to 2 for
+  // Mexicano — anything beyond that is a genuine problem either way.
+  const occurrenceCounts = {};
+  [...assignment, ...otherCourts.flatMap((c) => (c ? [...c.team1, ...c.team2] : []))].forEach((id) => {
+    occurrenceCounts[id] = (occurrenceCounts[id] || 0) + 1;
+  });
+  const maxAllowedOccurrences = isMexicano ? 2 : 1;
+  const hasDuplicate = Object.values(occurrenceCounts).some((c) => c > maxAllowedOccurrences);
 
   const whichCourtHas = (id) => {
     for (let i = 0; i < otherCourts.length; i++) {
