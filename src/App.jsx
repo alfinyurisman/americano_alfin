@@ -920,8 +920,54 @@ function lockNewMexicanoRanking(unitIds, matches, scores, seed) {
   return { wins, losses, ties, matchesPlayed, diff, cumulativePoints, rankingSnapshot };
 }
 
-// Handles mid-round roster changes (Kelola Pertandingan / Kedatangan Pemain)
-// for Mexicano specifically: whatever's already scored in the CURRENT round
+// Editing a typo in an EARLIER round's score (not the current in-progress
+// one) doesn't retroactively change who played whom — match compositions
+// for already-played rounds stay exactly as they were, since that's what
+// genuinely happened on court. What DOES need to change is every ranking
+// computed from that point forward, since a corrected score shifts
+// cumulative points/wins for everyone in that match, which cascades into
+// win%/diff for the ranking, which is what later rounds' groupings were
+// based on. This replays lockNewMexicanoRanking sequentially through every
+// round that has a recorded score, rebuilding the full ranking history
+// (and cumulative stats) as if the correction had been there from the
+// start — WITHOUT touching any round's actual match composition.
+function replayMexicanoRankingHistory(unitIds, roundsData, scores) {
+  let cumulativePoints = {}, wins = {}, losses = {}, ties = {}, matchesPlayed = {}, diff = {};
+  const rankingSnapshotByRound = [null]; // round 0 is always pre-ranking (random)
+  let rankingSnapshot = null;
+
+  for (let rIdx = 0; rIdx < roundsData.length; rIdx++) {
+    const rd = roundsData[rIdx];
+    const scoreEntries = rd.courts.map((_, cIdx) => scores[`${rIdx}-${cIdx}`]);
+    const roundFullyScored = rd.courts.every((_, cIdx) => isMatchScoreComplete(scoreEntries[cIdx]));
+    if (!roundFullyScored) {
+      // First not-(fully-)scored round — nothing beyond this point has a
+      // real result yet, so the replay stops here. Whatever ranking was
+      // locked most recently is what the (regenerated) current round
+      // should use.
+      break;
+    }
+    const locked = lockNewMexicanoRanking(unitIds, rd.courts, scoreEntries, {
+      cumulativePoints,
+      wins,
+      losses,
+      ties,
+      matchesPlayed,
+      diff,
+    });
+    cumulativePoints = locked.cumulativePoints;
+    wins = locked.wins;
+    losses = locked.losses;
+    ties = locked.ties;
+    matchesPlayed = locked.matchesPlayed;
+    diff = locked.diff;
+    rankingSnapshot = locked.rankingSnapshot;
+    rankingSnapshotByRound[rIdx + 1] = rankingSnapshot;
+  }
+
+  return { cumulativePoints, wins, losses, ties, matchesPlayed, diff, rankingSnapshot, rankingSnapshotByRound };
+}
+
 // is locked and untouched — you can't retroactively un-play a match. Only
 // the not-yet-scored matches get rebuilt, using whoever's left in the
 // active roster once already-committed players (from the scored matches)
@@ -2974,6 +3020,92 @@ function AmericanoPadel() {
       isGeneratingNextMexicanoRound.current = false;
     }, 500);
   }, [scores, engine, ended, canManageForMexicanoEffect, courts, players]);
+
+  // MEXICANO retroactive correction: fixing a typo in an EARLIER round's
+  // score (navigating back via Sebelumnya/Berikutnya and re-entering it)
+  // doesn't just sit there — every ranking computed from that point onward
+  // was based on the WRONG cumulative results, which is what later rounds'
+  // groupings came from. This detects exactly that situation — editing a
+  // round that ISN'T the latest one — replays the full ranking chain with
+  // the correction applied, and if the current (latest) round hasn't been
+  // played at all yet, regenerates its composition using the corrected
+  // ranking. A round that's already partially or fully played is left
+  // untouched — people already on court with a specific matchup shouldn't
+  // have that retroactively rewritten, only the stats feeding into
+  // whatever comes AFTER it.
+  const isReplayingMexicanoHistory = useRef(false);
+  useEffect(() => {
+    if (!engine?.mexicano || engine.mexicanoUnit === "team" || ended || !canManageForMexicanoEffect) return;
+    const latestRoundIdx = engine.roundsData.length - 1;
+    if (currentRound >= latestRoundIdx || currentRound < 0) return; // only care about an EARLIER round
+    if (isReplayingMexicanoHistory.current || isGeneratingNextMexicanoRound.current) return;
+
+    const ids = players.map((p) => p.id);
+    const replayed = replayMexicanoRankingHistory(ids, engine.roundsData, scores);
+
+    // Nothing to do if the correction didn't actually change the final
+    // ranking that matters (e.g. the edit was to a score's SIDE that
+    // doesn't change who won, or this effect already caught up).
+    const sameRanking =
+      JSON.stringify(replayed.rankingSnapshot) === JSON.stringify(engine.rankingSnapshot) &&
+      JSON.stringify(replayed.cumulativePoints) === JSON.stringify(engine.cumulativePoints);
+    if (sameRanking) return;
+
+    isReplayingMexicanoHistory.current = true;
+
+    const latestRound = engine.roundsData[latestRoundIdx];
+    const latestScores = latestRound.courts.map((_, cIdx) => scores[`${latestRoundIdx}-${cIdx}`]);
+    const latestUntouched = latestScores.every((s) => !isMatchScoreComplete(s) && (!s || (!s.a && !s.b && !s.gamesA && !s.gamesB)));
+
+    let newEngine = {
+      ...engine,
+      rankingSnapshot: replayed.rankingSnapshot,
+      rankingSnapshotByRound: replayed.rankingSnapshotByRound,
+      cumulativePoints: replayed.cumulativePoints,
+      mexicanoWins: replayed.wins,
+      mexicanoLosses: replayed.losses,
+      mexicanoTies: replayed.ties,
+      mexicanoMatchesPlayed: replayed.matchesPlayed,
+      mexicanoDiff: replayed.diff,
+    };
+
+    if (latestUntouched) {
+      // The current round hasn't been played at all yet — safe to fully
+      // regenerate its composition using the corrected ranking, same as if
+      // it were being generated fresh right now.
+      const gen = generateMexicanoRoundBatch(ids, courts, {
+        ...newEngine,
+        rankingSnapshot: replayed.rankingSnapshot,
+        roundNum: latestRoundIdx,
+      });
+      const playingIds = new Set(gen.matches.flatMap((m) => [...m.team1, ...m.team2]));
+      const resting = ids.filter((id) => !playingIds.has(id));
+      const newRoundsData = [...engine.roundsData];
+      newRoundsData[latestRoundIdx] = { resting, courts: gen.matches };
+      newEngine = {
+        ...newEngine,
+        roundsData: newRoundsData,
+        lastPlayed: gen.lastPlayed,
+        playCount: gen.playCount,
+        restCount: gen.restCount,
+        partner: gen.partner,
+        opp: gen.opp,
+        usableCourts: gen.usableCourts,
+      };
+    }
+
+    setEngine(newEngine);
+    persist({ engine: newEngine });
+    logActivity(
+      `Koreksi skor Ronde ${currentRound + 1} (Mexicano) — klasemen dihitung ulang${
+        latestUntouched ? `, Ronde ${latestRoundIdx + 1} disusun ulang pakai klasemen terkoreksi` : ""
+      }`
+    );
+
+    setTimeout(() => {
+      isReplayingMexicanoHistory.current = false;
+    }, 500);
+  }, [scores, engine, ended, canManageForMexicanoEffect, courts, players, currentRound]);
 
   const clearJoinParam = () => {
     try {
