@@ -1837,6 +1837,18 @@ function generateEventNameTemplate(playDate, startTime, sportType) {
   return [sportLabel, dayName, timePeriod].filter(Boolean).join(" ");
 }
 
+// Formats a minute count into a short "X Jam" / "X Jam Y Menit" / "Y Menit"
+// label for the "Durasi Sesi" hint shown once both start and end time are
+// filled in.
+function formatDurationMinutes(mins) {
+  if (!mins || mins <= 0) return "";
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  if (h === 0) return `${m} Menit`;
+  if (m === 0) return `${h} Jam`;
+  return `${h} Jam ${m} Menit`;
+}
+
 // ---------------------------------------------------------------------------
 // UI PRIMITIVES
 // ---------------------------------------------------------------------------
@@ -8219,22 +8231,18 @@ function SetupScreen(props) {
           Rotasi pasangan otomatis, istirahat merata, jadwal mengikuti durasi sewa lapangan —
           bukan target jumlah match.
         </p>
-        <p className="text-[11px] text-cyan-300/80 mt-3 max-w-xs">
-          🔗 Web based — siapa saja yang membuka link/app ini melihat sesi & skor yang sama secara
-          real-time. Cukup bagikan link-nya ke grup.
-        </p>
+        <div className="text-[11px] text-cyan-300/80 mt-3 max-w-xs">
+          <p className="font-semibold text-cyan-300">🔗 Live & Shareable</p>
+          <p>Semua pemain melihat skor secara real-time.</p>
+          <p>Bagikan link ke grup</p>
+        </div>
       </div>
 
       {/* EVENT NAME */}
       {/* PLAY DATE + TIME (moved to the top — the event name template below is built from these) */}
-      <Section icon={CalendarDays} title="Tanggal Bermain" subtitle="opsional">
+      <Section icon={CalendarDays} title="Tanggal & Jam Bermain" subtitle="opsional">
         <DateInputField value={playDate} onChange={(e) => setPlayDate(e.target.value)} />
-        <p className="text-[11px] text-slate-500 mt-2">
-          Kalau dikosongkan, tanggal yang muncul di Lobby otomatis pakai tanggal acara ini dibuat.
-        </p>
-      </Section>
-
-      <Section icon={Clock} title="Jam Bermain" subtitle="opsional">
+        <p className="text-[11px] text-slate-500 mt-2 mb-4">Kosongkan untuk menggunakan tanggal hari ini.</p>
         <div className="flex items-center gap-3">
           <FieldRow label="Dari">
             <input
@@ -8253,24 +8261,14 @@ function SetupScreen(props) {
             />
           </FieldRow>
         </div>
-      </Section>
-
-      <Section icon={CalendarDays} title="Nama Acara">
-        <input
-          value={eventName}
-          onChange={(e) => setEventName(e.target.value)}
-          placeholder={generateEventNameTemplate(playDate, startTime, sportType) || "mis. Padel Malam Jumat"}
-          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
-        />
-        {!eventName && generateEventNameTemplate(playDate, startTime, sportType) && (
-          <p className="text-[11px] text-slate-500 mt-2">
-            Dibiarkan kosong? Nama acara otomatis jadi "{generateEventNameTemplate(playDate, startTime, sportType)}"
-            (dari tanggal, jam, & olahraga yang dipilih).
+        {startTime && endTime && (
+          <p className="text-[11px] text-cyan-300 mt-3">
+            Durasi Sesi — {formatDurationMinutes(totalMinutes)}
           </p>
         )}
       </Section>
 
-      {/* SPORT TYPE */}
+      {/* SPORT TYPE (moved before Nama Acara — the template below needs this filled in first) */}
       <Section icon={Swords} title="Jenis Olahraga">
         <div className="flex gap-2">
           <ModeTab active={sportType === "padel"} onClick={() => setSportType("padel")}>
@@ -8290,6 +8288,21 @@ function SetupScreen(props) {
             </span>
           </ModeTab>
         </div>
+      </Section>
+
+      <Section icon={CalendarDays} title="Nama Acara">
+        <input
+          value={eventName}
+          onChange={(e) => setEventName(e.target.value)}
+          placeholder={generateEventNameTemplate(playDate, startTime, sportType) || "mis. Padel Malam Jumat"}
+          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
+        />
+        {!eventName && generateEventNameTemplate(playDate, startTime, sportType) && (
+          <p className="text-[11px] text-slate-500 mt-2">
+            Dibiarkan kosong? Nama acara otomatis jadi "{generateEventNameTemplate(playDate, startTime, sportType)}"
+            (dari tanggal, jam, & olahraga yang dipilih).
+          </p>
+        )}
       </Section>
 
       {/* GAME FORMAT */}
