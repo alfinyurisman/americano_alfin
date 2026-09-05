@@ -8262,6 +8262,7 @@ function SetupScreen(props) {
           onStartChange={setStartTime}
           onEndChange={setEndTime}
           durationLabel={startTime && endTime ? formatDurationMinutes(totalMinutes) : null}
+          playDate={playDate}
         />
       </Section>
 
@@ -8694,43 +8695,90 @@ function CurrencyInput({ value, onChange, className }) {
 // state lives in a ref (not React state) so dragging doesn't re-trigger
 // re-renders on every pixel of movement, only committing a change once the
 // snapped value actually differs from before.
-function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, durationLabel }) {
+function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, durationLabel, playDate }) {
   const trackRef = useRef(null);
   const draggingRef = useRef(null); // "start" | "end" | null
   const DAY_MINS = 24 * 60;
-  const MAX_MINS = 27 * 60; // 00:00 through 03:00 the NEXT day — covers sessions starting late at night and running past midnight
+  const ABS_MAX_MINS = 27 * 60; // absolute upper bound: 03:00 the day AFTER playDate
+
+  // "Kosongkan untuk menggunakan tanggal hari ini" means an empty playDate
+  // IS today — matching that same default here, not just when a date is
+  // explicitly typed in.
+  const todayStr = (() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  })();
+  const isToday = !playDate || playDate === todayStr;
+  const nowMins = (() => {
+    const d = new Date();
+    return d.getHours() * 60 + d.getMinutes();
+  })();
+  // Booking a time slot that's already passed doesn't make sense for
+  // today — so the bar's floor moves up to the current hour instead of
+  // showing the whole day. Any other date keeps the full range, since
+  // there's no "past" to exclude for a day that hasn't happened yet.
+  const MIN_MINS = isToday ? Math.ceil(nowMins / 60) * 60 : 0;
+  const MAX_MINS = ABS_MAX_MINS;
+  const RANGE_MINS = Math.max(60, MAX_MINS - MIN_MINS); // guard against a degenerate zero-width range right at the very end of the day
 
   const timeToMinutes = (t) => {
     const [h, m] = (t || "00:00").split(":").map(Number);
     return (h || 0) * 60 + (m || 0);
   };
-  // Storage/state always stays a plain "HH:MM" with no day info — only the
-  // BAR's internal positioning needs to know whether a given handle sits in
-  // "today" or has wrapped into "tomorrow morning". End is treated as
-  // tomorrow whenever its raw time is earlier than Start's (23:00 → 02:00
-  // reads as wrapping forward, not jumping backward).
+  // Storage/state always stays a plain "HH:MM" with no day info. Whether End
+  // sits in "today" or has wrapped into "tomorrow morning" USED to be
+  // inferred purely by comparing raw times (End < Start means it wrapped) —
+  // but that's ambiguous whenever Start itself is early in the day: with
+  // Start=00:00, End="03:00" could mean either a same-day 3-hour session or
+  // a 27-hour one ending tomorrow at 03:00, and the comparison can't tell
+  // them apart. Dragging End all the way to the right (aiming for the
+  // 27-hour max) would silently snap back because of exactly this. So this
+  // now tracks the wrap decision as explicit state, set directly from
+  // where the drag actually lands — the comparison is only a fallback for
+  // whenever a value shows up from OUTSIDE a drag (e.g. loading a saved
+  // event) with no drag history to go on yet.
+  const [endWrapOverride, setEndWrapOverride] = useState(null); // null | true | false
   const minutesToTimeInDay = (mins) => {
     const clamped = ((mins % DAY_MINS) + DAY_MINS) % DAY_MINS;
     const h = Math.floor(clamped / 60);
     const m = clamped % 60;
     return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
   };
-  const snap30 = (mins) => Math.round(mins / 30) * 30;
+  // Whole-hour snapping only — half-hour sub-points used to sit close
+  // enough together (twice as many stops across the same bar width) that
+  // landing on the exact one intended was fiddly. Dropping to hourly
+  // stops doubles the pixel distance between adjacent options, which
+  // matters most here since most sessions only run 1–2 hours anyway.
+  const snap60 = (mins) => Math.round(mins / 60) * 60;
 
   const startMins = timeToMinutes(startTime); // always "today", 0–1439
   const rawEndMins = timeToMinutes(endTime);
-  const endWrapsToNextDay = rawEndMins < startMins;
+  const endWrapsToNextDay = endWrapOverride !== null ? endWrapOverride : rawEndMins < startMins;
   const endMins = endWrapsToNextDay ? rawEndMins + DAY_MINS : rawEndMins; // positioned on the extended 0–1620 scale
 
-  const startPct = (startMins / MAX_MINS) * 100;
-  const endPct = (endMins / MAX_MINS) * 100;
-  const midnightPct = (DAY_MINS / MAX_MINS) * 100;
+  // If today's actual current time has moved past whatever Start/End
+  // currently hold (e.g. the 19:00–21:00 defaults, opened at 20:30), those
+  // values would sit before MIN_MINS and render off the visible bar. Bump
+  // both forward by the same gap so the SESSION LENGTH is preserved,
+  // rather than silently clamping only Start and shrinking the duration.
+  useEffect(() => {
+    if (!isToday || startMins >= MIN_MINS) return;
+    const gap = endMins - startMins;
+    onStartChange(minutesToTimeInDay(MIN_MINS));
+    onEndChange(minutesToTimeInDay(MIN_MINS + gap));
+    setEndWrapOverride(MIN_MINS + gap >= DAY_MINS);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isToday, MIN_MINS]);
+
+  const startPct = ((startMins - MIN_MINS) / RANGE_MINS) * 100;
+  const endPct = ((endMins - MIN_MINS) / RANGE_MINS) * 100;
+  const midnightPct = ((DAY_MINS - MIN_MINS) / RANGE_MINS) * 100;
 
   const posToMinutes = (clientX) => {
-    if (!trackRef.current) return 0;
+    if (!trackRef.current) return MIN_MINS;
     const rect = trackRef.current.getBoundingClientRect();
     const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    return snap30(pct * MAX_MINS);
+    return snap60(pct * RANGE_MINS + MIN_MINS);
   };
 
   useEffect(() => {
@@ -8739,13 +8787,17 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
       const posMins = posToMinutes(clientX);
       if (draggingRef.current === "start") {
         // Start only ever represents "today" — clamp its draggable range to
-        // the first 24h of the bar, same as before.
-        const clamped = Math.min(posMins, Math.min(endMins - 30, DAY_MINS - 30));
+        // the first 24h of the bar (and never before "now" when playDate
+        // is today), same as before.
+        const clamped = Math.max(MIN_MINS, Math.min(posMins, Math.min(endMins - 60, DAY_MINS - 60)));
         onStartChange(minutesToTimeInDay(clamped));
       } else {
-        const clamped = Math.max(posMins, startMins + 30);
-        // clamped is a position on the extended 0–1620 scale — convert back
-        // to a plain "HH:MM" (minutesToTimeInDay wraps >=1440 correctly).
+        const clamped = Math.max(posMins, startMins + 60);
+        // The clamped position tells us directly whether this landed in
+        // "today" (< DAY_MINS) or "tomorrow morning" (>= DAY_MINS) — no
+        // need to infer it later from a plain HH:MM comparison, which is
+        // exactly what could get it wrong.
+        setEndWrapOverride(clamped >= DAY_MINS);
         onEndChange(minutesToTimeInDay(clamped));
       }
     };
@@ -8768,7 +8820,7 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
       window.removeEventListener("touchend", stopDragging);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startMins, endMins]);
+  }, [startMins, endMins, MIN_MINS, RANGE_MINS]);
 
   const Handle = ({ which, pct, label, nextDay }) => (
     <div
