@@ -8684,24 +8684,34 @@ function CurrencyInput({ value, onChange, className }) {
 function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, durationLabel }) {
   const trackRef = useRef(null);
   const draggingRef = useRef(null); // "start" | "end" | null
-  const MAX_MINS = 24 * 60;
+  const DAY_MINS = 24 * 60;
+  const MAX_MINS = 27 * 60; // 00:00 through 03:00 the NEXT day — covers sessions starting late at night and running past midnight
 
   const timeToMinutes = (t) => {
     const [h, m] = (t || "00:00").split(":").map(Number);
     return (h || 0) * 60 + (m || 0);
   };
-  const minutesToTime = (mins) => {
-    const clamped = Math.max(0, Math.min(MAX_MINS - 30, mins));
+  // Storage/state always stays a plain "HH:MM" with no day info — only the
+  // BAR's internal positioning needs to know whether a given handle sits in
+  // "today" or has wrapped into "tomorrow morning". End is treated as
+  // tomorrow whenever its raw time is earlier than Start's (23:00 → 02:00
+  // reads as wrapping forward, not jumping backward).
+  const minutesToTimeInDay = (mins) => {
+    const clamped = ((mins % DAY_MINS) + DAY_MINS) % DAY_MINS;
     const h = Math.floor(clamped / 60);
     const m = clamped % 60;
     return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
   };
   const snap30 = (mins) => Math.round(mins / 30) * 30;
 
-  const startMins = timeToMinutes(startTime);
-  const endMins = timeToMinutes(endTime);
+  const startMins = timeToMinutes(startTime); // always "today", 0–1439
+  const rawEndMins = timeToMinutes(endTime);
+  const endWrapsToNextDay = rawEndMins < startMins;
+  const endMins = endWrapsToNextDay ? rawEndMins + DAY_MINS : rawEndMins; // positioned on the extended 0–1620 scale
+
   const startPct = (startMins / MAX_MINS) * 100;
   const endPct = (endMins / MAX_MINS) * 100;
+  const midnightPct = (DAY_MINS / MAX_MINS) * 100;
 
   const posToMinutes = (clientX) => {
     if (!trackRef.current) return 0;
@@ -8713,11 +8723,17 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
   useEffect(() => {
     const handleMove = (clientX) => {
       if (!draggingRef.current) return;
-      const mins = posToMinutes(clientX);
+      const posMins = posToMinutes(clientX);
       if (draggingRef.current === "start") {
-        onStartChange(minutesToTime(Math.min(mins, endMins - 30)));
+        // Start only ever represents "today" — clamp its draggable range to
+        // the first 24h of the bar, same as before.
+        const clamped = Math.min(posMins, Math.min(endMins - 30, DAY_MINS - 30));
+        onStartChange(minutesToTimeInDay(clamped));
       } else {
-        onEndChange(minutesToTime(Math.max(mins, startMins + 30)));
+        const clamped = Math.max(posMins, startMins + 30);
+        // clamped is a position on the extended 0–1620 scale — convert back
+        // to a plain "HH:MM" (minutesToTimeInDay wraps >=1440 correctly).
+        onEndChange(minutesToTimeInDay(clamped));
       }
     };
     const onPointerMove = (e) => handleMove(e.clientX);
@@ -8741,7 +8757,7 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startMins, endMins]);
 
-  const Handle = ({ which, pct, label }) => (
+  const Handle = ({ which, pct, label, nextDay }) => (
     <div
       onPointerDown={() => (draggingRef.current = which)}
       onTouchStart={() => (draggingRef.current = which)}
@@ -8750,6 +8766,7 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
     >
       <span className="absolute -top-8 left-1/2 -translate-x-1/2 text-xs font-mono2 font-semibold text-slate-100 whitespace-nowrap bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5">
         {label}
+        {nextDay && <span className="text-cyan-300 ml-0.5">+1</span>}
       </span>
       <div className="w-6 h-6 rounded-full bg-lime-300 border-2 border-slate-950 shadow-[0_0_0_4px_rgba(190,242,100,0.25)]" />
     </div>
@@ -8759,12 +8776,18 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
     <div className="flex items-center gap-4">
       <div className="flex-1 pt-8 pb-2">
         <div ref={trackRef} className="relative h-1.5 bg-slate-800 rounded-full">
+          {/* Midnight marker — shows where "today" ends and "tomorrow
+              morning" begins, since the bar now extends past the 24h mark. */}
+          <div
+            className="absolute top-1/2 -translate-y-1/2 w-px h-3 bg-slate-600"
+            style={{ left: `${midnightPct}%` }}
+          />
           <div
             className="absolute h-1.5 bg-lime-400 rounded-full"
             style={{ left: `${startPct}%`, width: `${Math.max(0, endPct - startPct)}%` }}
           />
           <Handle which="start" pct={startPct} label={startTime} />
-          <Handle which="end" pct={endPct} label={endTime} />
+          <Handle which="end" pct={endPct} label={minutesToTimeInDay(endMins)} nextDay={endWrapsToNextDay} />
         </div>
       </div>
       {durationLabel && (
