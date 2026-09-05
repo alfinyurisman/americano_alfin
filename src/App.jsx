@@ -8729,13 +8729,21 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
 
   const { wraps: endWraps } = computeEnd(startTime, currentDurationHours);
 
-  const durationPct = ((currentDurationHours - MIN_HOURS) / (MAX_HOURS - MIN_HOURS)) * 100;
+  // At the minimum duration (1h), this used to map to position 0% —
+  // exactly where the Start anchor also sits — so both handles and their
+  // floating time labels landed right on top of each other. Reserving a
+  // fixed minimum offset keeps the duration handle visually separated from
+  // Start at every value, not just conveniently far apart at the high end.
+  const MIN_VISUAL_PCT = 20;
+  const durationPct =
+    MIN_VISUAL_PCT + ((currentDurationHours - MIN_HOURS) / (MAX_HOURS - MIN_HOURS)) * (100 - MIN_VISUAL_PCT);
 
   const posToHours = (clientX) => {
     if (!trackRef.current) return MIN_HOURS;
     const rect = trackRef.current.getBoundingClientRect();
-    const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    return Math.round(pct * (MAX_HOURS - MIN_HOURS)) + MIN_HOURS;
+    const rawPct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) * 100;
+    const adjustedPct = Math.max(0, (rawPct - MIN_VISUAL_PCT) / (100 - MIN_VISUAL_PCT));
+    return Math.round(adjustedPct * (MAX_HOURS - MIN_HOURS)) + MIN_HOURS;
   };
 
   useEffect(() => {
