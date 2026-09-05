@@ -8696,86 +8696,54 @@ function CurrencyInput({ value, onChange, className }) {
 // snapped value actually differs from before.
 function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, durationLabel }) {
   const trackRef = useRef(null);
-  const draggingRef = useRef(null); // "start" | "end" | null
-  const DAY_MINS = 24 * 60;
-  const MAX_MINS = 27 * 60; // 00:00 through 03:00 the NEXT day — covers sessions starting late at night and running past midnight
-  // The full 27h range used to be squeezed into whatever width the visible
-  // card happened to have, which made adjacent hour-stops sit too close
-  // together to grab precisely — worst for the 1–2h sessions most people
-  // actually book, since that's a tiny sliver of 27 total hours either way.
-  // Rather than reducing the range (which would defeat the point of
-  // supporting late-night-into-next-morning sessions) or using a
-  // non-linear scale (fiddly to reason about while dragging), the track
-  // itself is just wider than its visible viewport and scrolls
-  // horizontally — every hour gets a fixed, generous pixel width, and the
-  // visible card size stays exactly as before.
-  const TRACK_WIDTH_PX = 1080; // 27h * 40px/h
-  const PX_PER_MIN = TRACK_WIDTH_PX / MAX_MINS;
+  const draggingRef = useRef(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const MIN_HOURS = 1;
+  const MAX_HOURS = 8;
 
   const timeToMinutes = (t) => {
     const [h, m] = (t || "00:00").split(":").map(Number);
     return (h || 0) * 60 + (m || 0);
   };
-  // Storage/state always stays a plain "HH:MM" with no day info. Whether End
-  // sits in "today" or has wrapped into "tomorrow morning" USED to be
-  // inferred purely by comparing raw times (End < Start means it wrapped) —
-  // but that's ambiguous whenever Start itself is early in the day: with
-  // Start=00:00, End="03:00" could mean either a same-day 3-hour session or
-  // a 27-hour one ending tomorrow at 03:00, and the comparison can't tell
-  // them apart. Dragging End all the way to the right (aiming for the
-  // 27-hour max) would silently snap back because of exactly this. So this
-  // now tracks the wrap decision as explicit state, set directly from
-  // where the drag actually lands — the comparison is only a fallback for
-  // whenever a value shows up from OUTSIDE a drag (e.g. loading a saved
-  // event) with no drag history to go on yet.
-  const [endWrapOverride, setEndWrapOverride] = useState(null); // null | true | false
-  const minutesToTimeInDay = (mins) => {
-    const clamped = ((mins % DAY_MINS) + DAY_MINS) % DAY_MINS;
-    const h = Math.floor(clamped / 60);
-    const m = clamped % 60;
-    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  const currentDurationHours = (() => {
+    const startMins = timeToMinutes(startTime);
+    let endMins = timeToMinutes(endTime);
+    if (endMins <= startMins) endMins += 24 * 60; // wraps past midnight
+    const hours = Math.round((endMins - startMins) / 60);
+    return Math.max(MIN_HOURS, Math.min(MAX_HOURS, hours));
+  })();
+
+  // End is always derived from Start + Duration, so day-wrap ("plays past
+  // midnight") is just plain modulo arithmetic here — no separate absolute
+  // position on some extended 24h+ scale needed, since the bar itself only
+  // ever represents 1–8 hours of DURATION, not a specific clock position.
+  const computeEnd = (startHHMM, hours) => {
+    const startMins = timeToMinutes(startHHMM);
+    const endMinsRaw = startMins + hours * 60;
+    const wraps = endMinsRaw >= 24 * 60;
+    const endMins = endMinsRaw % (24 * 60);
+    const h = Math.floor(endMins / 60);
+    const m = endMins % 60;
+    return { endTime: `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`, wraps };
   };
-  // Whole-hour snapping only — half-hour sub-points used to sit close
-  // enough together that landing on the exact one intended was fiddly.
-  const snap60 = (mins) => Math.round(mins / 60) * 60;
 
-  const startMins = timeToMinutes(startTime); // always "today", 0–1439
-  const rawEndMins = timeToMinutes(endTime);
-  const endWrapsToNextDay = endWrapOverride !== null ? endWrapOverride : rawEndMins < startMins;
-  const endMins = endWrapsToNextDay ? rawEndMins + DAY_MINS : rawEndMins; // positioned on the extended 0–1620 scale
+  const { wraps: endWraps } = computeEnd(startTime, currentDurationHours);
 
-  const startPct = (startMins / MAX_MINS) * 100;
-  const endPct = (endMins / MAX_MINS) * 100;
-  const midnightPct = (DAY_MINS / MAX_MINS) * 100;
+  const durationPct = ((currentDurationHours - MIN_HOURS) / (MAX_HOURS - MIN_HOURS)) * 100;
 
-  const posToMinutes = (clientX) => {
-    if (!trackRef.current) return 0;
+  const posToHours = (clientX) => {
+    if (!trackRef.current) return MIN_HOURS;
     const rect = trackRef.current.getBoundingClientRect();
-    // rect reflects the track's ACTUAL on-screen position, which already
-    // accounts for however far the container has been scrolled — no extra
-    // scroll-offset math needed.
     const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    return snap60(pct * MAX_MINS);
+    return Math.round(pct * (MAX_HOURS - MIN_HOURS)) + MIN_HOURS;
   };
 
   useEffect(() => {
     const handleMove = (clientX) => {
       if (!draggingRef.current) return;
-      const posMins = posToMinutes(clientX);
-      if (draggingRef.current === "start") {
-        // Start only ever represents "today" — clamp its draggable range to
-        // the first 24h of the bar, same as before.
-        const clamped = Math.min(posMins, Math.min(endMins - 60, DAY_MINS - 60));
-        onStartChange(minutesToTimeInDay(clamped));
-      } else {
-        const clamped = Math.max(posMins, startMins + 60);
-        // The clamped position tells us directly whether this landed in
-        // "today" (< DAY_MINS) or "tomorrow morning" (>= DAY_MINS) — no
-        // need to infer it later from a plain HH:MM comparison, which is
-        // exactly what could get it wrong.
-        setEndWrapOverride(clamped >= DAY_MINS);
-        onEndChange(minutesToTimeInDay(clamped));
-      }
+      const hours = posToHours(clientX);
+      const { endTime: newEnd } = computeEnd(startTime, hours);
+      onEndChange(newEnd);
     };
     const onPointerMove = (e) => handleMove(e.clientX);
     const onTouchMove = (e) => {
@@ -8783,7 +8751,7 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
       handleMove(e.touches[0].clientX);
     };
     const stopDragging = () => {
-      draggingRef.current = null;
+      draggingRef.current = false;
     };
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", stopDragging);
@@ -8796,71 +8764,85 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
       window.removeEventListener("touchend", stopDragging);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startMins, endMins]);
+  }, [startTime, currentDurationHours]);
 
-  const Handle = ({ which, pct, label, nextDay }) => (
-    <div
-      onPointerDown={(e) => {
-        e.stopPropagation();
-        draggingRef.current = which;
-      }}
-      onTouchStart={(e) => {
-        e.stopPropagation();
-        draggingRef.current = which;
-      }}
-      className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 touch-none cursor-grab active:cursor-grabbing"
-      style={{ left: `${pct}%` }}
-    >
-      <span className="absolute -top-8 left-1/2 -translate-x-1/2 text-xs font-mono2 font-semibold text-slate-100 whitespace-nowrap bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5">
-        {label}
-        {nextDay && <span className="text-cyan-300 ml-0.5">+1</span>}
-      </span>
-      <div className="w-6 h-6 rounded-full bg-lime-300 border-2 border-slate-950 shadow-[0_0_0_4px_rgba(190,242,100,0.25)]" />
-    </div>
-  );
+  const handleHourPick = (hh) => {
+    const newStart = `${String(hh).padStart(2, "0")}:00`;
+    onStartChange(newStart);
+    const { endTime: newEnd } = computeEnd(newStart, currentDurationHours);
+    onEndChange(newEnd);
+    setPickerOpen(false);
+  };
 
   return (
-    <div className="flex items-center gap-4">
-      <div className="flex-1 min-w-0">
-        <div className="overflow-x-auto pt-8 pb-2 -mx-1 px-1" style={{ WebkitOverflowScrolling: "touch" }}>
-          <div ref={trackRef} className="relative h-1.5 bg-slate-800 rounded-full" style={{ width: `${TRACK_WIDTH_PX}px` }}>
-            {/* Hour ticks — every 3h, so the wider track still has a sense
-                of scale while scrolling instead of just a blank line. */}
-            {Array.from({ length: Math.floor(MAX_MINS / 180) + 1 }, (_, i) => i * 180).map((mins) => (
-              <div
-                key={mins}
-                className="absolute top-1/2 -translate-y-1/2 w-px h-2 bg-slate-700"
-                style={{ left: `${(mins / MAX_MINS) * 100}%` }}
-              />
-            ))}
-            {/* Midnight marker — shows where "today" ends and "tomorrow
-                morning" begins, since the bar extends past the 24h mark. */}
+    <div>
+      <div className="flex items-center gap-4">
+        <div className="flex-1 pt-8 pb-2 relative">
+          {/* START anchor — tapping opens an hour picker; visually this
+              always sits at the far left, since the bar itself represents
+              DURATION (1–8h) rather than an absolute position in the day.
+              Splitting "when" (tap to pick) from "how long" (drag) is what
+              lets the drag range stay small enough that every stop gets
+              generous, easy-to-hit spacing — no scrolling, same bar length
+              as before. */}
+          <button
+            onClick={() => setPickerOpen((v) => !v)}
+            className="absolute -top-1 left-0 -translate-x-1/2 flex flex-col items-center gap-1 z-10"
+          >
+            <span className="text-xs font-mono2 font-semibold text-slate-100 whitespace-nowrap bg-slate-800 border border-lime-300/50 rounded px-1.5 py-0.5">
+              {startTime}
+            </span>
+            <div className="w-6 h-6 rounded-full bg-slate-700 border-2 border-lime-300 shadow-[0_0_0_4px_rgba(190,242,100,0.15)]" />
+          </button>
+
+          <div ref={trackRef} className="relative h-1.5 bg-slate-800 rounded-full mx-3">
+            <div className="absolute h-1.5 bg-lime-400 rounded-full" style={{ left: 0, width: `${durationPct}%` }} />
             <div
-              className="absolute top-1/2 -translate-y-1/2 w-px h-3 bg-cyan-500/70"
-              style={{ left: `${midnightPct}%` }}
-            />
-            <div
-              className="absolute h-1.5 bg-lime-400 rounded-full"
-              style={{ left: `${startPct}%`, width: `${Math.max(0, endPct - startPct)}%` }}
-            />
-            <Handle which="start" pct={startPct} label={startTime} />
-            <Handle which="end" pct={endPct} label={minutesToTimeInDay(endMins)} nextDay={endWrapsToNextDay} />
+              onPointerDown={() => (draggingRef.current = true)}
+              onTouchStart={() => (draggingRef.current = true)}
+              className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 touch-none cursor-grab active:cursor-grabbing"
+              style={{ left: `${durationPct}%` }}
+            >
+              <span className="absolute -top-8 left-1/2 -translate-x-1/2 text-xs font-mono2 font-semibold text-slate-100 whitespace-nowrap bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5">
+                {computeEnd(startTime, currentDurationHours).endTime}
+                {endWraps && <span className="text-cyan-300 ml-0.5">+1</span>}
+              </span>
+              <div className="w-6 h-6 rounded-full bg-lime-300 border-2 border-slate-950 shadow-[0_0_0_4px_rgba(190,242,100,0.25)]" />
+            </div>
           </div>
         </div>
-        <p className="text-[10px] text-slate-600 mt-1">← geser buat lihat jam lainnya →</p>
-      </div>
-      {durationLabel && (
-        <div className="flex items-center gap-3 shrink-0 pl-1">
-          <div className="w-px h-9 bg-slate-700" />
-          <div className="flex flex-col leading-tight">
-            <span className="text-xs font-semibold text-cyan-300 whitespace-nowrap">Durasi Sesi</span>
-            <span className="text-xs font-semibold text-cyan-300 whitespace-nowrap">{durationLabel}</span>
+        {durationLabel && (
+          <div className="flex items-center gap-3 shrink-0 pl-1">
+            <div className="w-px h-9 bg-slate-700" />
+            <div className="flex flex-col leading-tight">
+              <span className="text-xs font-semibold text-cyan-300 whitespace-nowrap">Durasi Sesi</span>
+              <span className="text-xs font-semibold text-cyan-300 whitespace-nowrap">{durationLabel}</span>
+            </div>
           </div>
+        )}
+      </div>
+
+      {pickerOpen && (
+        <div className="mt-2 p-2 bg-slate-900 border border-slate-700 rounded-xl grid grid-cols-6 gap-1 max-h-40 overflow-y-auto">
+          {Array.from({ length: 24 }, (_, h) => h).map((h) => (
+            <button
+              key={h}
+              onClick={() => handleHourPick(h)}
+              className={`text-xs font-mono2 font-semibold rounded-lg py-1.5 ${
+                timeToMinutes(startTime) === h * 60
+                  ? "bg-lime-300 text-slate-950"
+                  : "bg-slate-800 text-slate-300"
+              }`}
+            >
+              {String(h).padStart(2, "0")}
+            </button>
+          ))}
         </div>
       )}
     </div>
   );
 }
+
 
 // Native <input type="date"> renders with the browser's own pill-shaped
 // chrome on iOS/Android that ignores most of our styling, making it look
