@@ -8699,7 +8699,7 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
   const draggingRef = useRef(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const MIN_HOURS = 1;
-  const MAX_HOURS = 8;
+  const MAX_HOURS = 6;
 
   const timeToMinutes = (t) => {
     const [h, m] = (t || "00:00").split(":").map(Number);
@@ -8787,7 +8787,7 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
               as before. */}
           <button
             onClick={() => setPickerOpen((v) => !v)}
-            className="absolute -top-1 left-0 -translate-x-1/2 flex flex-col items-center gap-1 z-10"
+            className="absolute -top-1 left-0 flex flex-col items-start gap-1 z-10"
           >
             <span className="text-xs font-mono2 font-semibold text-slate-100 whitespace-nowrap bg-slate-800 border border-lime-300/50 rounded px-1.5 py-0.5">
               {startTime}
