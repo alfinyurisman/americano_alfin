@@ -8262,7 +8262,6 @@ function SetupScreen(props) {
           onStartChange={setStartTime}
           onEndChange={setEndTime}
           durationLabel={startTime && endTime ? formatDurationMinutes(totalMinutes) : null}
-          playDate={playDate}
         />
       </Section>
 
@@ -8695,31 +8694,23 @@ function CurrencyInput({ value, onChange, className }) {
 // state lives in a ref (not React state) so dragging doesn't re-trigger
 // re-renders on every pixel of movement, only committing a change once the
 // snapped value actually differs from before.
-function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, durationLabel, playDate }) {
+function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, durationLabel }) {
   const trackRef = useRef(null);
   const draggingRef = useRef(null); // "start" | "end" | null
   const DAY_MINS = 24 * 60;
-  const ABS_MAX_MINS = 27 * 60; // absolute upper bound: 03:00 the day AFTER playDate
-
-  // "Kosongkan untuk menggunakan tanggal hari ini" means an empty playDate
-  // IS today — matching that same default here, not just when a date is
-  // explicitly typed in.
-  const todayStr = (() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  })();
-  const isToday = !playDate || playDate === todayStr;
-  const nowMins = (() => {
-    const d = new Date();
-    return d.getHours() * 60 + d.getMinutes();
-  })();
-  // Booking a time slot that's already passed doesn't make sense for
-  // today — so the bar's floor moves up to the current hour instead of
-  // showing the whole day. Any other date keeps the full range, since
-  // there's no "past" to exclude for a day that hasn't happened yet.
-  const MIN_MINS = isToday ? Math.ceil(nowMins / 60) * 60 : 0;
-  const MAX_MINS = ABS_MAX_MINS;
-  const RANGE_MINS = Math.max(60, MAX_MINS - MIN_MINS); // guard against a degenerate zero-width range right at the very end of the day
+  const MAX_MINS = 27 * 60; // 00:00 through 03:00 the NEXT day — covers sessions starting late at night and running past midnight
+  // The full 27h range used to be squeezed into whatever width the visible
+  // card happened to have, which made adjacent hour-stops sit too close
+  // together to grab precisely — worst for the 1–2h sessions most people
+  // actually book, since that's a tiny sliver of 27 total hours either way.
+  // Rather than reducing the range (which would defeat the point of
+  // supporting late-night-into-next-morning sessions) or using a
+  // non-linear scale (fiddly to reason about while dragging), the track
+  // itself is just wider than its visible viewport and scrolls
+  // horizontally — every hour gets a fixed, generous pixel width, and the
+  // visible card size stays exactly as before.
+  const TRACK_WIDTH_PX = 1080; // 27h * 40px/h
+  const PX_PER_MIN = TRACK_WIDTH_PX / MAX_MINS;
 
   const timeToMinutes = (t) => {
     const [h, m] = (t || "00:00").split(":").map(Number);
@@ -8745,10 +8736,7 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
     return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
   };
   // Whole-hour snapping only — half-hour sub-points used to sit close
-  // enough together (twice as many stops across the same bar width) that
-  // landing on the exact one intended was fiddly. Dropping to hourly
-  // stops doubles the pixel distance between adjacent options, which
-  // matters most here since most sessions only run 1–2 hours anyway.
+  // enough together that landing on the exact one intended was fiddly.
   const snap60 = (mins) => Math.round(mins / 60) * 60;
 
   const startMins = timeToMinutes(startTime); // always "today", 0–1439
@@ -8756,29 +8744,18 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
   const endWrapsToNextDay = endWrapOverride !== null ? endWrapOverride : rawEndMins < startMins;
   const endMins = endWrapsToNextDay ? rawEndMins + DAY_MINS : rawEndMins; // positioned on the extended 0–1620 scale
 
-  // If today's actual current time has moved past whatever Start/End
-  // currently hold (e.g. the 19:00–21:00 defaults, opened at 20:30), those
-  // values would sit before MIN_MINS and render off the visible bar. Bump
-  // both forward by the same gap so the SESSION LENGTH is preserved,
-  // rather than silently clamping only Start and shrinking the duration.
-  useEffect(() => {
-    if (!isToday || startMins >= MIN_MINS) return;
-    const gap = endMins - startMins;
-    onStartChange(minutesToTimeInDay(MIN_MINS));
-    onEndChange(minutesToTimeInDay(MIN_MINS + gap));
-    setEndWrapOverride(MIN_MINS + gap >= DAY_MINS);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isToday, MIN_MINS]);
-
-  const startPct = ((startMins - MIN_MINS) / RANGE_MINS) * 100;
-  const endPct = ((endMins - MIN_MINS) / RANGE_MINS) * 100;
-  const midnightPct = ((DAY_MINS - MIN_MINS) / RANGE_MINS) * 100;
+  const startPct = (startMins / MAX_MINS) * 100;
+  const endPct = (endMins / MAX_MINS) * 100;
+  const midnightPct = (DAY_MINS / MAX_MINS) * 100;
 
   const posToMinutes = (clientX) => {
-    if (!trackRef.current) return MIN_MINS;
+    if (!trackRef.current) return 0;
     const rect = trackRef.current.getBoundingClientRect();
+    // rect reflects the track's ACTUAL on-screen position, which already
+    // accounts for however far the container has been scrolled — no extra
+    // scroll-offset math needed.
     const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    return snap60(pct * RANGE_MINS + MIN_MINS);
+    return snap60(pct * MAX_MINS);
   };
 
   useEffect(() => {
@@ -8787,9 +8764,8 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
       const posMins = posToMinutes(clientX);
       if (draggingRef.current === "start") {
         // Start only ever represents "today" — clamp its draggable range to
-        // the first 24h of the bar (and never before "now" when playDate
-        // is today), same as before.
-        const clamped = Math.max(MIN_MINS, Math.min(posMins, Math.min(endMins - 60, DAY_MINS - 60)));
+        // the first 24h of the bar, same as before.
+        const clamped = Math.min(posMins, Math.min(endMins - 60, DAY_MINS - 60));
         onStartChange(minutesToTimeInDay(clamped));
       } else {
         const clamped = Math.max(posMins, startMins + 60);
@@ -8820,12 +8796,18 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
       window.removeEventListener("touchend", stopDragging);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startMins, endMins, MIN_MINS, RANGE_MINS]);
+  }, [startMins, endMins]);
 
   const Handle = ({ which, pct, label, nextDay }) => (
     <div
-      onPointerDown={() => (draggingRef.current = which)}
-      onTouchStart={() => (draggingRef.current = which)}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        draggingRef.current = which;
+      }}
+      onTouchStart={(e) => {
+        e.stopPropagation();
+        draggingRef.current = which;
+      }}
       className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 touch-none cursor-grab active:cursor-grabbing"
       style={{ left: `${pct}%` }}
     >
@@ -8839,21 +8821,33 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
 
   return (
     <div className="flex items-center gap-4">
-      <div className="flex-1 pt-8 pb-2">
-        <div ref={trackRef} className="relative h-1.5 bg-slate-800 rounded-full">
-          {/* Midnight marker — shows where "today" ends and "tomorrow
-              morning" begins, since the bar now extends past the 24h mark. */}
-          <div
-            className="absolute top-1/2 -translate-y-1/2 w-px h-3 bg-slate-600"
-            style={{ left: `${midnightPct}%` }}
-          />
-          <div
-            className="absolute h-1.5 bg-lime-400 rounded-full"
-            style={{ left: `${startPct}%`, width: `${Math.max(0, endPct - startPct)}%` }}
-          />
-          <Handle which="start" pct={startPct} label={startTime} />
-          <Handle which="end" pct={endPct} label={minutesToTimeInDay(endMins)} nextDay={endWrapsToNextDay} />
+      <div className="flex-1 min-w-0">
+        <div className="overflow-x-auto pt-8 pb-2 -mx-1 px-1" style={{ WebkitOverflowScrolling: "touch" }}>
+          <div ref={trackRef} className="relative h-1.5 bg-slate-800 rounded-full" style={{ width: `${TRACK_WIDTH_PX}px` }}>
+            {/* Hour ticks — every 3h, so the wider track still has a sense
+                of scale while scrolling instead of just a blank line. */}
+            {Array.from({ length: Math.floor(MAX_MINS / 180) + 1 }, (_, i) => i * 180).map((mins) => (
+              <div
+                key={mins}
+                className="absolute top-1/2 -translate-y-1/2 w-px h-2 bg-slate-700"
+                style={{ left: `${(mins / MAX_MINS) * 100}%` }}
+              />
+            ))}
+            {/* Midnight marker — shows where "today" ends and "tomorrow
+                morning" begins, since the bar extends past the 24h mark. */}
+            <div
+              className="absolute top-1/2 -translate-y-1/2 w-px h-3 bg-cyan-500/70"
+              style={{ left: `${midnightPct}%` }}
+            />
+            <div
+              className="absolute h-1.5 bg-lime-400 rounded-full"
+              style={{ left: `${startPct}%`, width: `${Math.max(0, endPct - startPct)}%` }}
+            />
+            <Handle which="start" pct={startPct} label={startTime} />
+            <Handle which="end" pct={endPct} label={minutesToTimeInDay(endMins)} nextDay={endWrapsToNextDay} />
+          </div>
         </div>
+        <p className="text-[10px] text-slate-600 mt-1">← geser buat lihat jam lainnya →</p>
       </div>
       {durationLabel && (
         <div className="flex items-center gap-3 shrink-0 pl-1">
