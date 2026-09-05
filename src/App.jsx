@@ -8785,7 +8785,7 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
   return (
     <div>
       <div className="flex items-center gap-4">
-        <div className="flex-1 pt-8 pb-2 relative">
+        <div className="flex-1 pt-16 pb-2 relative">
           {/* START anchor — tapping opens an hour picker; visually this
               always sits at the far left, since the bar itself represents
               DURATION (1–8h) rather than an absolute position in the day.
@@ -8795,7 +8795,7 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
               as before. */}
           <button
             onClick={() => setPickerOpen((v) => !v)}
-            className="absolute -top-1 left-0 flex flex-col items-start gap-1 z-10"
+            className="absolute -top-1 left-0 flex flex-col items-start gap-1 z-20"
           >
             <span className="text-xs font-mono2 font-semibold text-slate-100 whitespace-nowrap bg-slate-800 border border-lime-300/50 rounded px-1.5 py-0.5">
               {startTime}
@@ -8808,10 +8808,16 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
             <div
               onPointerDown={() => (draggingRef.current = true)}
               onTouchStart={() => (draggingRef.current = true)}
-              className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 touch-none cursor-grab active:cursor-grabbing"
+              className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 touch-none cursor-grab active:cursor-grabbing z-10"
               style={{ left: `${durationPct}%` }}
             >
-              <span className="absolute -top-8 left-1/2 -translate-x-1/2 text-xs font-mono2 font-semibold text-slate-100 whitespace-nowrap bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5">
+              {/* Pushed higher than Start's label (-top-14 vs -top-1) —
+                  the two used to sit at the same height and only avoided
+                  overlapping by relying on enough horizontal gap between
+                  the handles, which broke down at the minimum duration
+                  where they're closest together. Staggering the heights
+                  means they can never collide regardless of spacing. */}
+              <span className="absolute -top-14 left-1/2 -translate-x-1/2 text-xs font-mono2 font-semibold text-slate-100 whitespace-nowrap bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5">
                 {computeEnd(startTime, currentDurationHours).endTime}
                 {endWraps && <span className="text-cyan-300 ml-0.5">+1</span>}
               </span>
