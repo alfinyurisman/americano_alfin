@@ -11,6 +11,7 @@ import tennisIconWhite from "./assets/tennis-icon-white.png";
 import padelIconWhite from "./assets/padel-icon-white.png";
 import tennisIconBlack from "./assets/tennis-icon-black.png";
 import padelIconBlack from "./assets/padel-icon-black.png";
+import courtBg from "./assets/court-bg.jpg";
 
 // ---------------------------------------------------------------------------
 // SCHEDULING ENGINE
@@ -6945,8 +6946,14 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
 
   return (
     <div className="pb-10">
-      <div className="px-6 pt-14 pb-8 border-b border-slate-800 relative overflow-hidden">
-        <div className="absolute -right-10 -top-10 w-40 h-40 rounded-full bg-lime-400/10 blur-2xl pointer-events-none" />
+      <div
+        className="px-6 pt-14 pb-8 border-b border-slate-800 relative overflow-hidden bg-slate-950"
+        style={{
+          backgroundImage: `linear-gradient(180deg, rgba(2,6,23,0.25) 0%, rgba(2,6,23,0.55) 50%, rgba(2,6,23,0.95) 100%), url(${courtBg})`,
+          backgroundSize: "cover",
+          backgroundPosition: "top right",
+        }}
+      >
         <div className="flex items-center gap-2 mb-4">
           <img src="/icon-192.png" alt="APlay" className="w-8 h-8 rounded-lg shrink-0" />
           <span className="font-display text-2xl text-slate-50 tracking-wide">APlay</span>
@@ -8210,8 +8217,14 @@ function SetupScreen(props) {
   return (
     <div className="pb-10">
       {/* HERO */}
-      <div className="px-6 pt-14 pb-8 border-b border-slate-800 relative overflow-hidden">
-        <div className="absolute -right-10 -top-10 w-40 h-40 rounded-full bg-lime-400/10 blur-2xl pointer-events-none" />
+      <div
+        className="px-6 pt-14 pb-8 border-b border-slate-800 relative overflow-hidden bg-slate-950"
+        style={{
+          backgroundImage: `linear-gradient(180deg, rgba(2,6,23,0.25) 0%, rgba(2,6,23,0.55) 50%, rgba(2,6,23,0.95) 100%), url(${courtBg})`,
+          backgroundSize: "cover",
+          backgroundPosition: "top right",
+        }}
+      >
         <button
           onClick={onBackToLobby}
           className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-200 border border-slate-700 rounded-full px-3.5 py-2 active:scale-95 transition-transform mb-4"
