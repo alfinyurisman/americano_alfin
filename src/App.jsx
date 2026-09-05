@@ -1844,9 +1844,9 @@ function formatDurationMinutes(mins) {
   if (!mins || mins <= 0) return "";
   const h = Math.floor(mins / 60);
   const m = mins % 60;
-  if (h === 0) return `${m} Menit`;
-  if (m === 0) return `${h} Jam`;
-  return `${h} Jam ${m} Menit`;
+  if (h === 0) return `${m} Minutes`;
+  if (m === 0) return `${h} Hours`;
+  return `${h} H ${m} M`;
 }
 
 // ---------------------------------------------------------------------------
@@ -8770,9 +8770,10 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
       {durationLabel && (
         <div className="flex items-center gap-3 shrink-0 pl-1">
           <div className="w-px h-9 bg-slate-700" />
-          <span className="text-xs font-semibold text-cyan-300 leading-tight max-w-[64px]">
-            Durasi Sesi — {durationLabel}
-          </span>
+          <div className="flex flex-col leading-tight">
+            <span className="text-xs font-semibold text-cyan-300 whitespace-nowrap">Durasi Sesi</span>
+            <span className="text-xs font-semibold text-cyan-300 whitespace-nowrap">{durationLabel}</span>
+          </div>
         </div>
       )}
     </div>
