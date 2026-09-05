@@ -6271,6 +6271,8 @@ function AmericanoPadel() {
           setManualRounds={setManualRounds}
           startTime={startTime}
           setStartTime={setStartTime}
+          endTime={endTime}
+          setEndTime={setEndTime}
           scoreFormat={scoreFormat}
           setScoreFormat={setScoreFormat}
           sportType={sportType}
@@ -8177,6 +8179,7 @@ function SetupScreen(props) {
     totalMinutes, setTotalMinutes, minutesPerRound, setMinutesPerRound,
     breakMinutes, setBreakMinutes, manualRounds, setManualRounds,
     startTime, setStartTime,
+    endTime, setEndTime,
     scoreFormat, setScoreFormat, pointTarget, setPointTarget,
     sportType, setSportType,
     gameFormat, setGameFormat,
