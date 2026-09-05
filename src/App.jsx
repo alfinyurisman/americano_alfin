@@ -8519,31 +8519,13 @@ function SetupScreen(props) {
         </p>
         <div className="space-y-3">
           <FieldRow label="Harga lapangan (Rp)">
-            <input
-              type="number"
-              value={courtCost}
-              onChange={(e) => setCourtCost(e.target.value)}
-              placeholder="0"
-              className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
-            />
+            <CurrencyInput value={courtCost} onChange={setCourtCost} />
           </FieldRow>
           <FieldRow label="Biaya admin (Rp)">
-            <input
-              type="number"
-              value={adminFee}
-              onChange={(e) => setAdminFee(e.target.value)}
-              placeholder="0"
-              className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
-            />
+            <CurrencyInput value={adminFee} onChange={setAdminFee} />
           </FieldRow>
           <FieldRow label="Biaya bola (Rp)">
-            <input
-              type="number"
-              value={ballCost}
-              onChange={(e) => setBallCost(e.target.value)}
-              placeholder="0"
-              className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
-            />
+            <CurrencyInput value={ballCost} onChange={setBallCost} />
           </FieldRow>
         </div>
       </Section>
@@ -8643,6 +8625,31 @@ function FieldRow({ label, children }) {
     <div className="flex items-center justify-between">
       <span className="text-sm text-slate-300">{label}</span>
       {children}
+    </div>
+  );
+}
+
+// Plain <input type="number"> can't show thousand-separator dots while
+// typing (browsers reject non-digit characters in a number input). This
+// keeps the underlying value as a plain digit string in state — same as
+// before — but DISPLAYS it with "." every three digits (Rp 500.000 style),
+// stripping whatever the person typed back down to digits-only before
+// calling onChange so the stored value never actually contains dots.
+function CurrencyInput({ value, onChange, className }) {
+  const formatted = String(value || "").replace(/\D/g, "").replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return (
+    <div className="relative">
+      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm pointer-events-none">
+        Rp
+      </span>
+      <input
+        type="text"
+        inputMode="numeric"
+        value={formatted}
+        onChange={(e) => onChange(e.target.value.replace(/\D/g, ""))}
+        placeholder="0"
+        className={className || "w-32 bg-slate-900 border border-slate-700 rounded-lg pl-8 pr-3 py-2 text-right font-mono2"}
+      />
     </div>
   );
 }
@@ -9383,34 +9390,13 @@ function WaitingRoomScreen(props) {
           </p>
           <div className="space-y-3">
             <FieldRow label="Harga lapangan (Rp)">
-              <input
-                type="number"
-                inputMode="numeric"
-                value={courtCost}
-                onChange={(e) => setCourtCost(e.target.value)}
-                placeholder="0"
-                className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
-              />
+              <CurrencyInput value={courtCost} onChange={setCourtCost} />
             </FieldRow>
             <FieldRow label="Biaya admin (Rp)">
-              <input
-                type="number"
-                inputMode="numeric"
-                value={adminFee}
-                onChange={(e) => setAdminFee(e.target.value)}
-                placeholder="0"
-                className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
-              />
+              <CurrencyInput value={adminFee} onChange={setAdminFee} />
             </FieldRow>
             <FieldRow label="Biaya bola (Rp)">
-              <input
-                type="number"
-                inputMode="numeric"
-                value={ballCost}
-                onChange={(e) => setBallCost(e.target.value)}
-                placeholder="0"
-                className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
-              />
+              <CurrencyInput value={ballCost} onChange={setBallCost} />
             </FieldRow>
           </div>
           <CostSaveButton onSave={onSaveCosts} />
