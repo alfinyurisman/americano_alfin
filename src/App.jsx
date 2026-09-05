@@ -8242,16 +8242,14 @@ function SetupScreen(props) {
       {/* PLAY DATE + TIME (moved to the top — the event name template below is built from these) */}
       <Section icon={CalendarDays} title="Tanggal & Jam Bermain" subtitle="opsional">
         <DateInputField value={playDate} onChange={(e) => setPlayDate(e.target.value)} />
-        <p className="text-[11px] text-slate-500 mt-2 mb-4">Kosongkan untuk menggunakan tanggal hari ini.</p>
-        <div className="flex items-start gap-4">
-          <HalfHourTimeField label="Start" value={startTime} onChange={setStartTime} />
-          <HalfHourTimeField label="End" value={endTime} onChange={setEndTime} />
-        </div>
-        {startTime && endTime && (
-          <p className="text-[11px] text-cyan-300 mt-3">
-            Durasi Sesi — {formatDurationMinutes(totalMinutes)}
-          </p>
-        )}
+        <p className="text-[11px] text-slate-500 mt-2 mb-2">Kosongkan untuk menggunakan tanggal hari ini.</p>
+        <TimeRangeBar
+          startTime={startTime}
+          endTime={endTime}
+          onStartChange={setStartTime}
+          onEndChange={setEndTime}
+          durationLabel={startTime && endTime ? formatDurationMinutes(totalMinutes) : null}
+        />
       </Section>
 
       {/* SPORT TYPE (moved before Nama Acara — the template below needs this filled in first) */}
@@ -8676,46 +8674,107 @@ function CurrencyInput({ value, onChange, className }) {
   );
 }
 
-// Court/field bookings almost always run on the hour or the half-hour —
-// the native <input type="time"> picker's minute wheel offers all 60
-// values regardless, so this replaces it with two explicit dropdowns
-// (hour 00–23, minute limited to just 00/30) for a pick that always
-// matches how sessions actually get booked. Label sits ABOVE the control
-// rather than beside it — the previous label-then-box row layout is what
-// caused label and input to visually crowd together when narrowed to fit
-// two side by side.
-function HalfHourTimeField({ label, value, onChange }) {
-  const [hh, rawMm] = (value || "00:00").split(":");
-  const mm = Number(rawMm) >= 30 ? "30" : "00"; // clamp any non-half-hour legacy value for display
-  const hourOptions = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"));
+// Horizontal dual-handle time range slider replacing the old dropdown
+// pickers — drag either end to adjust Start/End, snapped to the half-hour
+// (matching how court bookings actually work). Built with pointer events
+// so the same code handles mouse AND touch without extra libraries; drag
+// state lives in a ref (not React state) so dragging doesn't re-trigger
+// re-renders on every pixel of movement, only committing a change once the
+// snapped value actually differs from before.
+function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, durationLabel }) {
+  const trackRef = useRef(null);
+  const draggingRef = useRef(null); // "start" | "end" | null
+  const MAX_MINS = 24 * 60;
+
+  const timeToMinutes = (t) => {
+    const [h, m] = (t || "00:00").split(":").map(Number);
+    return (h || 0) * 60 + (m || 0);
+  };
+  const minutesToTime = (mins) => {
+    const clamped = Math.max(0, Math.min(MAX_MINS - 30, mins));
+    const h = Math.floor(clamped / 60);
+    const m = clamped % 60;
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  };
+  const snap30 = (mins) => Math.round(mins / 30) * 30;
+
+  const startMins = timeToMinutes(startTime);
+  const endMins = timeToMinutes(endTime);
+  const startPct = (startMins / MAX_MINS) * 100;
+  const endPct = (endMins / MAX_MINS) * 100;
+
+  const posToMinutes = (clientX) => {
+    if (!trackRef.current) return 0;
+    const rect = trackRef.current.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    return snap30(pct * MAX_MINS);
+  };
+
+  useEffect(() => {
+    const handleMove = (clientX) => {
+      if (!draggingRef.current) return;
+      const mins = posToMinutes(clientX);
+      if (draggingRef.current === "start") {
+        onStartChange(minutesToTime(Math.min(mins, endMins - 30)));
+      } else {
+        onEndChange(minutesToTime(Math.max(mins, startMins + 30)));
+      }
+    };
+    const onPointerMove = (e) => handleMove(e.clientX);
+    const onTouchMove = (e) => {
+      if (draggingRef.current) e.preventDefault();
+      handleMove(e.touches[0].clientX);
+    };
+    const stopDragging = () => {
+      draggingRef.current = null;
+    };
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", stopDragging);
+    window.addEventListener("touchmove", onTouchMove, { passive: false });
+    window.addEventListener("touchend", stopDragging);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", stopDragging);
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchend", stopDragging);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startMins, endMins]);
+
+  const Handle = ({ which, pct, label }) => (
+    <div
+      onPointerDown={() => (draggingRef.current = which)}
+      onTouchStart={() => (draggingRef.current = which)}
+      className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 touch-none cursor-grab active:cursor-grabbing"
+      style={{ left: `${pct}%` }}
+    >
+      <span className="absolute -top-8 left-1/2 -translate-x-1/2 text-xs font-mono2 font-semibold text-slate-100 whitespace-nowrap bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5">
+        {label}
+      </span>
+      <div className="w-6 h-6 rounded-full bg-lime-300 border-2 border-slate-950 shadow-[0_0_0_4px_rgba(190,242,100,0.25)]" />
+    </div>
+  );
+
   return (
-    <div>
-      <span className="text-sm text-slate-300 block mb-1.5">{label}</span>
-      <div className="flex items-center gap-1 bg-slate-900 border border-slate-700 rounded-lg px-2 py-2">
-        <select
-          value={hh}
-          onChange={(e) => onChange(`${e.target.value}:${mm}`)}
-          className="bg-transparent font-mono2 text-right focus:outline-none appearance-none"
-        >
-          {hourOptions.map((h) => (
-            <option key={h} value={h} className="bg-slate-900">
-              {h}
-            </option>
-          ))}
-        </select>
-        <span className="text-slate-500">:</span>
-        <select
-          value={mm}
-          onChange={(e) => onChange(`${hh}:${e.target.value}`)}
-          className="bg-transparent font-mono2 focus:outline-none appearance-none"
-        >
-          {["00", "30"].map((m) => (
-            <option key={m} value={m} className="bg-slate-900">
-              {m}
-            </option>
-          ))}
-        </select>
+    <div className="flex items-center gap-4">
+      <div className="flex-1 pt-8 pb-2">
+        <div ref={trackRef} className="relative h-1.5 bg-slate-800 rounded-full">
+          <div
+            className="absolute h-1.5 bg-lime-400 rounded-full"
+            style={{ left: `${startPct}%`, width: `${Math.max(0, endPct - startPct)}%` }}
+          />
+          <Handle which="start" pct={startPct} label={startTime} />
+          <Handle which="end" pct={endPct} label={endTime} />
+        </div>
       </div>
+      {durationLabel && (
+        <div className="flex items-center gap-3 shrink-0 pl-1">
+          <div className="w-px h-9 bg-slate-700" />
+          <span className="text-xs font-semibold text-cyan-300 leading-tight max-w-[64px]">
+            Durasi Sesi — {durationLabel}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
