@@ -8243,23 +8243,9 @@ function SetupScreen(props) {
       <Section icon={CalendarDays} title="Tanggal & Jam Bermain" subtitle="opsional">
         <DateInputField value={playDate} onChange={(e) => setPlayDate(e.target.value)} />
         <p className="text-[11px] text-slate-500 mt-2 mb-4">Kosongkan untuk menggunakan tanggal hari ini.</p>
-        <div className="flex items-center gap-3">
-          <FieldRow label="Dari">
-            <input
-              type="time"
-              value={startTime}
-              onChange={(e) => setStartTime(e.target.value)}
-              className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
-            />
-          </FieldRow>
-          <FieldRow label="Hingga">
-            <input
-              type="time"
-              value={endTime}
-              onChange={(e) => setEndTime(e.target.value)}
-              className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
-            />
-          </FieldRow>
+        <div className="flex items-start gap-4">
+          <HalfHourTimeField label="Start" value={startTime} onChange={setStartTime} />
+          <HalfHourTimeField label="End" value={endTime} onChange={setEndTime} />
         </div>
         {startTime && endTime && (
           <p className="text-[11px] text-cyan-300 mt-3">
@@ -8381,12 +8367,22 @@ function SetupScreen(props) {
                   {v} poin
                 </button>
               ))}
-              <input
-                type="number"
-                value={pointTarget}
-                onChange={(e) => setPointTarget(Number(e.target.value))}
-                className="w-20 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-center font-mono2"
-              />
+              <label
+                className={`flex items-center gap-1 px-4 py-2 rounded-xl text-sm font-semibold border cursor-text ${
+                  ![16, 21, 24, 32].includes(pointTarget)
+                    ? "bg-lime-300 text-slate-950 border-lime-300"
+                    : "bg-slate-900 text-slate-300 border-slate-700"
+                }`}
+              >
+                Custom:
+                <input
+                  type="number"
+                  value={pointTarget}
+                  onChange={(e) => setPointTarget(Number(e.target.value))}
+                  className="w-10 bg-transparent text-center font-mono2 focus:outline-none"
+                />
+                Poin
+              </label>
             </div>
           </div>
         ) : (
@@ -8409,19 +8405,29 @@ function SetupScreen(props) {
                   Race to {v} game
                 </button>
               ))}
-              <input
-                type="number"
-                value={tennisTarget}
-                onChange={(e) => setTennisTarget(Number(e.target.value))}
-                className="w-20 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-center font-mono2"
-              />
+              <label
+                className={`flex items-center gap-1 px-4 py-2 rounded-xl text-sm font-semibold border cursor-text ${
+                  ![4, 6].includes(tennisTarget)
+                    ? "bg-lime-300 text-slate-950 border-lime-300"
+                    : "bg-slate-900 text-slate-300 border-slate-700"
+                }`}
+              >
+                Race to
+                <input
+                  type="number"
+                  value={tennisTarget}
+                  onChange={(e) => setTennisTarget(Number(e.target.value))}
+                  className="w-10 bg-transparent text-center font-mono2 focus:outline-none"
+                />
+                Game
+              </label>
             </div>
           </div>
         )}
       </Section>
 
       {/* MAX PARTICIPANTS */}
-      <Section icon={Users} title="Maks Peserta" subtitle="bisa disesuaikan nanti">
+      <Section icon={Users} title="Target Peserta" subtitle="bisa disesuaikan nanti">
         <div className="flex items-center gap-4">
           <button
             onClick={() => setMaxParticipants((n) => Math.max(4, n - 1))}
@@ -8666,6 +8672,50 @@ function CurrencyInput({ value, onChange, className }) {
         placeholder="0"
         className={className || "w-32 bg-slate-900 border border-slate-700 rounded-lg pl-8 pr-3 py-2 text-right font-mono2"}
       />
+    </div>
+  );
+}
+
+// Court/field bookings almost always run on the hour or the half-hour —
+// the native <input type="time"> picker's minute wheel offers all 60
+// values regardless, so this replaces it with two explicit dropdowns
+// (hour 00–23, minute limited to just 00/30) for a pick that always
+// matches how sessions actually get booked. Label sits ABOVE the control
+// rather than beside it — the previous label-then-box row layout is what
+// caused label and input to visually crowd together when narrowed to fit
+// two side by side.
+function HalfHourTimeField({ label, value, onChange }) {
+  const [hh, rawMm] = (value || "00:00").split(":");
+  const mm = Number(rawMm) >= 30 ? "30" : "00"; // clamp any non-half-hour legacy value for display
+  const hourOptions = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"));
+  return (
+    <div>
+      <span className="text-sm text-slate-300 block mb-1.5">{label}</span>
+      <div className="flex items-center gap-1 bg-slate-900 border border-slate-700 rounded-lg px-2 py-2">
+        <select
+          value={hh}
+          onChange={(e) => onChange(`${e.target.value}:${mm}`)}
+          className="bg-transparent font-mono2 text-right focus:outline-none appearance-none"
+        >
+          {hourOptions.map((h) => (
+            <option key={h} value={h} className="bg-slate-900">
+              {h}
+            </option>
+          ))}
+        </select>
+        <span className="text-slate-500">:</span>
+        <select
+          value={mm}
+          onChange={(e) => onChange(`${hh}:${e.target.value}`)}
+          className="bg-transparent font-mono2 focus:outline-none appearance-none"
+        >
+          {["00", "30"].map((m) => (
+            <option key={m} value={m} className="bg-slate-900">
+              {m}
+            </option>
+          ))}
+        </select>
+      </div>
     </div>
   );
 }
