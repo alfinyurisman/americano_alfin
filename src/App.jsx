@@ -1810,6 +1810,33 @@ function fmtClock(mins) {
   return `${pad(h)}:${pad(m)}`;
 }
 
+// Builds the "Sport Hari Waktu" template suggestion (e.g. "Padel Sabtu
+// Pagi") shown as a placeholder in the event name field — used as the
+// actual name if the person leaves the field blank when creating the
+// event. Needs a play date and a start time to say anything meaningful;
+// returns "" if either is missing so the field just shows nothing rather
+// than a half-finished guess.
+function generateEventNameTemplate(playDate, startTime, sportType) {
+  if (!playDate || !startTime) return "";
+  const [y, m, d] = playDate.split("-").map(Number);
+  if (!y || !m || !d) return "";
+  const date = new Date(y, m - 1, d);
+  const dayNames = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
+  const dayName = dayNames[date.getDay()];
+
+  const hour = parseInt(startTime.split(":")[0], 10);
+  let timePeriod = "";
+  if (!isNaN(hour)) {
+    if (hour < 11) timePeriod = "Pagi";
+    else if (hour < 15) timePeriod = "Siang";
+    else if (hour < 18) timePeriod = "Sore";
+    else timePeriod = "Malam";
+  }
+
+  const sportLabel = sportType === "tenis" ? "Tenis" : "Padel";
+  return [sportLabel, dayName, timePeriod].filter(Boolean).join(" ");
+}
+
 // ---------------------------------------------------------------------------
 // UI PRIMITIVES
 // ---------------------------------------------------------------------------
@@ -2863,6 +2890,7 @@ function AmericanoPadel() {
   const [ownerUsername, setOwnerUsername] = useState("");
   const [publicEvents, setPublicEvents] = useState([]);
   const [pendingJoinId] = useState(() => new URLSearchParams(window.location.search).get("join"));
+  const [joinConfirmPreview, setJoinConfirmPreview] = useState(null); // {id, data, me} | null — set once event data is fetched, awaiting the person's confirm/cancel
   const [hostInvitations, setHostInvitations] = useState([]); // [{id, accountId, username}] sent by host, awaiting the friend's accept
 
   // Setup state
@@ -2888,6 +2916,22 @@ function AmericanoPadel() {
   const [breakMinutes, setBreakMinutes] = useState(0);
   const [manualRounds, setManualRounds] = useState(8);
   const [startTime, setStartTime] = useState("19:00");
+  const [endTime, setEndTime] = useState("21:00"); // used to auto-compute totalMinutes and suggest an event name template
+
+  // "Total durasi sewa" used to be a separate manual field — now derived
+  // straight from the Jam Bermain range above, so the person only enters
+  // the start/end time once instead of that and a duration that has to
+  // stay consistent with it by hand.
+  useEffect(() => {
+    if (mode !== "duration") return;
+    const [sh, sm] = startTime.split(":").map(Number);
+    const [eh, em] = endTime.split(":").map(Number);
+    if ([sh, sm, eh, em].some((n) => Number.isNaN(n))) return;
+    let diff = eh * 60 + em - (sh * 60 + sm);
+    if (diff <= 0) diff += 24 * 60; // end time past midnight relative to start
+    setTotalMinutes(diff);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startTime, endTime, mode]);
   const [scoreFormat, setScoreFormat] = useState("points"); // points | tennis
   const [sportType, setSportType] = useState("padel"); // padel | tenis — purely informational, doesn't change scoring logic
   const [gameFormat, setGameFormat] = useState("americano"); // americano | mexicano
@@ -3176,8 +3220,7 @@ function AmericanoPadel() {
           : remembered;
         setCurrentUser(me);
         if (pendingJoinId) {
-          await handleJoinViaLink(pendingJoinId, me);
-          clearJoinParam();
+          await prepareJoinConfirmation(pendingJoinId, me);
         } else {
           await refreshLobbyFor(me.accountId);
           await refreshFriends(me.accountId);
@@ -3201,8 +3244,7 @@ function AmericanoPadel() {
     };
     setCurrentUser(me);
     if (pendingJoinId) {
-      await handleJoinViaLink(pendingJoinId, me);
-      clearJoinParam();
+      await prepareJoinConfirmation(pendingJoinId, me);
     } else {
       await refreshLobbyFor(me.accountId);
       await refreshFriends(me.accountId);
@@ -3416,6 +3458,31 @@ function AmericanoPadel() {
   // them as a participant (both into the session's player list, if it's
   // still gathering players, and into their own account's lobby/history),
   // then opens the event for them in read-only mode.
+  // Fetches just enough about the event to show a confirmation step before
+  // actually submitting a join request — clicking a link shouldn't
+  // silently commit someone to an event's pending list without a final
+  // "yes, this is the one I meant to join" check. Skipped entirely for the
+  // owner or anyone already a player/pending — there's nothing to confirm
+  // for someone already in it.
+  const prepareJoinConfirmation = async (id, me) => {
+    const data = await loadSessionData(id);
+    if (!data) {
+      alert("Link acara ini tidak valid atau sudah dihapus.");
+      clearJoinParam();
+      setScreen("lobby");
+      return;
+    }
+    const isOwner = data.ownerId === me.accountId;
+    const alreadyPlayer = (data.players || []).some((p) => p.accountId === me.accountId);
+    const alreadyPending = (data.pendingRequests || []).some((p) => p.accountId === me.accountId);
+    if (isOwner || alreadyPlayer || alreadyPending) {
+      await handleJoinViaLink(id, me);
+      clearJoinParam();
+      return;
+    }
+    setJoinConfirmPreview({ id, data, me });
+  };
+
   const handleJoinViaLink = async (id, me) => {
     const account = me || currentUser;
     if (!account) return;
@@ -3532,6 +3599,7 @@ function AmericanoPadel() {
     setBreakMinutes(current.breakMinutes ?? 0);
     setManualRounds(current.manualRounds ?? 8);
     setStartTime(current.startTime || "19:00");
+    setEndTime(current.endTime || "21:00");
     setScoreFormat(current.scoreFormat || "points");
     setSportType(current.sportType || "padel");
     {
@@ -3680,6 +3748,7 @@ function AmericanoPadel() {
         breakMinutes,
         manualRounds,
         startTime,
+        endTime,
         scoreFormat,
         sportType,
         gameFormat,
@@ -3741,7 +3810,7 @@ function AmericanoPadel() {
       }
       return savePromise;
     },
-    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, loggedMatchKeys, courtStages, playDate, excludeFromStats, activityLog, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, scoreFormat, sportType, gameFormat, teamFormat, fixedPairs, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
+    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, loggedMatchKeys, courtStages, playDate, excludeFromStats, activityLog, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, endTime, scoreFormat, sportType, gameFormat, teamFormat, fixedPairs, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
   );
 
   // Partner Synergy Index: whenever a specific match's score newly becomes
@@ -3943,7 +4012,8 @@ function AmericanoPadel() {
   // target participant count) and move to the waiting room to gather players.
   const handleCreateConcept = async () => {
     const id = activeId || uid();
-    const finalName = eventName.trim() || "Sesi Padel";
+    const finalName =
+      eventName.trim() || generateEventNameTemplate(playDate, startTime, sportType) || "Sesi Padel";
     setEventName(finalName);
     setStatus("waiting");
     setSessionRole("owner");
@@ -5562,6 +5632,7 @@ function AmericanoPadel() {
     setBreakMinutes(0);
     setManualRounds(8);
     setStartTime("19:00");
+    setEndTime("21:00");
     setScoreFormat("points");
     setSportType("padel");
     setGameFormat("americano");
@@ -5615,6 +5686,7 @@ function AmericanoPadel() {
     setBreakMinutes(data.breakMinutes ?? 0);
     setManualRounds(data.manualRounds ?? 8);
     setStartTime(data.startTime || "19:00");
+    setEndTime(data.endTime || "21:00");
     setScoreFormat(data.scoreFormat || "points");
     setSportType(data.sportType || "padel");
     {
@@ -6062,6 +6134,22 @@ function AmericanoPadel() {
       `}</style>
 
       <div className="max-w-md mx-auto relative">
+      {joinConfirmPreview && (
+        <JoinConfirmModal
+          eventData={joinConfirmPreview.data}
+          onConfirm={async () => {
+            const { id, me } = joinConfirmPreview;
+            setJoinConfirmPreview(null);
+            await handleJoinViaLink(id, me);
+            clearJoinParam();
+          }}
+          onCancel={() => {
+            setJoinConfirmPreview(null);
+            clearJoinParam();
+            setScreen("lobby");
+          }}
+        />
+      )}
       {screen === "lobby" && (
         <LobbyScreen
           lobby={lobby}
@@ -6160,7 +6248,7 @@ function AmericanoPadel() {
       {screen === "discover" && (
         <PublicEventsScreen
           events={publicEvents}
-          onJoinRequest={(id) => handleJoinViaLink(id)}
+          onJoinRequest={(id) => prepareJoinConfirmation(id, currentUser)}
           onBackToLobby={handleBackToLobby}
         />
       )}
@@ -8135,13 +8223,48 @@ function SetupScreen(props) {
       </div>
 
       {/* EVENT NAME */}
+      {/* PLAY DATE + TIME (moved to the top — the event name template below is built from these) */}
+      <Section icon={CalendarDays} title="Tanggal Bermain" subtitle="opsional">
+        <DateInputField value={playDate} onChange={(e) => setPlayDate(e.target.value)} />
+        <p className="text-[11px] text-slate-500 mt-2">
+          Kalau dikosongkan, tanggal yang muncul di Lobby otomatis pakai tanggal acara ini dibuat.
+        </p>
+      </Section>
+
+      <Section icon={Clock} title="Jam Bermain" subtitle="opsional">
+        <div className="flex items-center gap-3">
+          <FieldRow label="Dari">
+            <input
+              type="time"
+              value={startTime}
+              onChange={(e) => setStartTime(e.target.value)}
+              className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
+            />
+          </FieldRow>
+          <FieldRow label="Hingga">
+            <input
+              type="time"
+              value={endTime}
+              onChange={(e) => setEndTime(e.target.value)}
+              className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
+            />
+          </FieldRow>
+        </div>
+      </Section>
+
       <Section icon={CalendarDays} title="Nama Acara">
         <input
           value={eventName}
           onChange={(e) => setEventName(e.target.value)}
-          placeholder="mis. Padel Malam Jumat"
+          placeholder={generateEventNameTemplate(playDate, startTime, sportType) || "mis. Padel Malam Jumat"}
           className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-lime-400/50"
         />
+        {!eventName && generateEventNameTemplate(playDate, startTime, sportType) && (
+          <p className="text-[11px] text-slate-500 mt-2">
+            Dibiarkan kosong? Nama acara otomatis jadi "{generateEventNameTemplate(playDate, startTime, sportType)}"
+            (dari tanggal, jam, & olahraga yang dipilih).
+          </p>
+        )}
       </Section>
 
       {/* SPORT TYPE */}
@@ -8339,14 +8462,9 @@ function SetupScreen(props) {
 
         {mode === "duration" ? (
           <div className="space-y-4">
-            <FieldRow label="Total durasi sewa (menit)">
-              <input
-                type="number"
-                value={totalMinutes}
-                onChange={(e) => setTotalMinutes(Number(e.target.value))}
-                className="w-24 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
-              />
-            </FieldRow>
+            <p className="text-[11px] text-slate-500 -mt-1">
+              Total durasi ({totalMinutes} menit) otomatis dihitung dari jam bermain di atas.
+            </p>
             <FieldRow label="Menit per ronde (1 match)">
               <input
                 type="number"
@@ -8374,25 +8492,6 @@ function SetupScreen(props) {
             />
           </FieldRow>
         )}
-
-        <div className="mt-4">
-          <FieldRow label="Jam mulai (opsional)">
-            <input
-              type="time"
-              value={startTime}
-              onChange={(e) => setStartTime(e.target.value)}
-              className="w-28 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-right font-mono2"
-            />
-          </FieldRow>
-        </div>
-      </Section>
-
-      {/* PLAY DATE (optional) */}
-      <Section icon={CalendarDays} title="Tanggal Bermain" subtitle="opsional">
-        <DateInputField value={playDate} onChange={(e) => setPlayDate(e.target.value)} />
-        <p className="text-[11px] text-slate-500 mt-2">
-          Kalau dikosongkan, tanggal yang muncul di Lobby otomatis pakai tanggal acara ini dibuat.
-        </p>
       </Section>
 
       {/* VISIBILITY */}
@@ -10935,6 +11034,94 @@ function DeleteRoundModal({ roundNumber, onConfirm, onClose }) {
   );
 }
 
+
+function JoinConfirmModal({ eventData, onConfirm, onCancel }) {
+  const [submitting, setSubmitting] = useState(false);
+  const gameFormatLabel = eventData.gameFormat === "mexicano" ? "Mexicano" : "Americano";
+  const teamFormatLabel = eventData.teamFormat === "fixed" ? "Fixed Partner" : "Rotating";
+  const scoreLabel =
+    eventData.scoreFormat === "tennis"
+      ? `Race to ${eventData.tennisTarget || 4} Game`
+      : `Total Poin (target ${eventData.pointTarget || 21})`;
+  const arrivedPlayers = (eventData.players || []).filter((p) => p.arrived !== false);
+  const playerCount = arrivedPlayers.length;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="w-full sm:max-w-sm bg-slate-900 border border-slate-700 rounded-t-3xl sm:rounded-3xl p-6 max-h-[85vh] overflow-y-auto">
+        <div className="flex items-center gap-2 mb-1">
+          <Link2 size={16} className="text-cyan-300" />
+          <span className="text-[11px] font-semibold tracking-wide text-cyan-300 uppercase">
+            Konfirmasi Gabung Acara
+          </span>
+        </div>
+        <h2 className="font-display text-3xl text-slate-50 mb-3">{eventData.name || "Sesi Padel"}</h2>
+        <div className="space-y-2 mb-4 text-sm">
+          <div className="flex items-center justify-between text-slate-300">
+            <span className="text-slate-500">Host</span>
+            <span className="font-semibold">{eventData.ownerUsername || "-"}</span>
+          </div>
+          <div className="flex items-center justify-between text-slate-300">
+            <span className="text-slate-500">Tanggal</span>
+            <span className="font-semibold">{eventData.playDate || "-"}</span>
+          </div>
+          <div className="flex items-center justify-between text-slate-300">
+            <span className="text-slate-500">Format</span>
+            <span className="font-semibold">
+              {gameFormatLabel} · {teamFormatLabel}
+            </span>
+          </div>
+          <div className="flex items-center justify-between text-slate-300">
+            <span className="text-slate-500">Skor</span>
+            <span className="font-semibold">{scoreLabel}</span>
+          </div>
+        </div>
+        <div className="mb-5">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-slate-500">Sudah gabung</span>
+            <span className="text-sm font-bold text-lime-300">{playerCount} orang</span>
+          </div>
+          {playerCount > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {arrivedPlayers.map((p) => (
+                <span
+                  key={p.id}
+                  className="text-xs font-semibold text-slate-200 bg-slate-800 border border-slate-700 rounded-full px-2.5 py-1"
+                >
+                  {p.name}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-slate-600">Belum ada yang gabung.</p>
+          )}
+        </div>
+        <p className="text-xs text-slate-500 mb-5">
+          Kamu bakal masuk daftar permintaan gabung — host perlu approve dulu sebelum kamu resmi jadi peserta.
+        </p>
+        <div className="flex gap-2">
+          <button
+            onClick={onCancel}
+            disabled={submitting}
+            className="flex-1 py-3 rounded-xl font-semibold text-slate-300 border border-slate-700 disabled:opacity-50"
+          >
+            Batal
+          </button>
+          <button
+            onClick={async () => {
+              setSubmitting(true);
+              await onConfirm();
+            }}
+            disabled={submitting}
+            className="flex-1 py-3 rounded-xl font-bold text-slate-950 bg-lime-300 disabled:opacity-50"
+          >
+            {submitting ? "Memproses…" : "Ya, Gabung"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function AttendanceModal({ players, onToggle, onClose }) {
   const arrivedCount = players.filter((p) => p.arrived !== false).length;
