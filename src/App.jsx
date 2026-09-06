@@ -8790,21 +8790,22 @@ function TimeRangeBar({ startTime, endTime, onEndChange, durationLabel }) {
   return (
     <div className="flex items-center gap-4">
       <div className="flex-1 py-3 relative">
-        {/* mx-7 keeps the pill's center position (0%–100%) far enough from
-            the edges that the pill itself — roughly 50-something px wide —
-            never sticks out past the box, even at the minimum duration
-            where it sits closest to the left edge. */}
-        <div ref={trackRef} className="relative h-1.5 bg-slate-800 rounded-full mx-7">
+        {/* mx-5 keeps the pill from overflowing the box at the extremes,
+            while staying small enough that the bar still reads as starting
+            close to the box's left content edge rather than visibly
+            indented from it. */}
+        <div ref={trackRef} className="relative h-1.5 bg-slate-800 rounded-full mx-5">
           <div className="absolute h-1.5 bg-lime-400 rounded-full" style={{ left: 0, width: `${durationPct}%` }} />
           {/* Pill sits directly ON the track (matching the reference) instead
               of a small circle with its time label floating above — that
               floating label needed extra vertical padding just to have room
               to render, which is what made the surrounding box taller than
-              it needed to be. */}
+              it needed to be. Kept snug (minimal padding) so it doesn't eat
+              up much of the track's own visual space. */}
           <div
             onPointerDown={() => (draggingRef.current = true)}
             onTouchStart={() => (draggingRef.current = true)}
-            className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 touch-none cursor-grab active:cursor-grabbing bg-slate-800 border-2 border-slate-600 rounded-full px-2.5 py-1"
+            className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 touch-none cursor-grab active:cursor-grabbing bg-slate-800 border-2 border-slate-600 rounded-full px-2 py-0.5"
             style={{ left: `${durationPct}%` }}
           >
             <span className="text-xs font-mono2 font-semibold text-slate-100 whitespace-nowrap">
