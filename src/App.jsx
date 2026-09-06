@@ -8272,7 +8272,10 @@ function SetupScreen(props) {
         </div>
         <p className="text-[11px] text-slate-500 mt-2 mb-2">Kosongkan untuk menggunakan tanggal hari ini.</p>
         <div className="bg-slate-900 border border-slate-700 rounded-xl px-4 py-3">
-          <span className="text-sm font-semibold text-slate-100 block mb-3">Durasi Sesi</span>
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-sm font-semibold text-slate-100">Durasi Sesi</span>
+            <span className="text-[10px] text-slate-600">Geser buat atur durasi sesi</span>
+          </div>
           <TimeRangeBar
             startTime={startTime}
             endTime={endTime}
@@ -8787,7 +8790,11 @@ function TimeRangeBar({ startTime, endTime, onEndChange, durationLabel }) {
   return (
     <div className="flex items-center gap-4">
       <div className="flex-1 py-3 relative">
-        <div ref={trackRef} className="relative h-1.5 bg-slate-800 rounded-full">
+        {/* mx-7 keeps the pill's center position (0%–100%) far enough from
+            the edges that the pill itself — roughly 50-something px wide —
+            never sticks out past the box, even at the minimum duration
+            where it sits closest to the left edge. */}
+        <div ref={trackRef} className="relative h-1.5 bg-slate-800 rounded-full mx-7">
           <div className="absolute h-1.5 bg-lime-400 rounded-full" style={{ left: 0, width: `${durationPct}%` }} />
           {/* Pill sits directly ON the track (matching the reference) instead
               of a small circle with its time label floating above — that
@@ -8797,7 +8804,7 @@ function TimeRangeBar({ startTime, endTime, onEndChange, durationLabel }) {
           <div
             onPointerDown={() => (draggingRef.current = true)}
             onTouchStart={() => (draggingRef.current = true)}
-            className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 touch-none cursor-grab active:cursor-grabbing bg-slate-800 border-2 border-slate-600 rounded-full px-3 py-1"
+            className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 touch-none cursor-grab active:cursor-grabbing bg-slate-800 border-2 border-slate-600 rounded-full px-2.5 py-1"
             style={{ left: `${durationPct}%` }}
           >
             <span className="text-xs font-mono2 font-semibold text-slate-100 whitespace-nowrap">
@@ -8806,7 +8813,6 @@ function TimeRangeBar({ startTime, endTime, onEndChange, durationLabel }) {
             </span>
           </div>
         </div>
-        <p className="text-[10px] text-slate-600 mt-3">Geser buat atur durasi sesi</p>
       </div>
       {durationLabel && (
         <div className="flex items-center gap-3 shrink-0 pl-1">
