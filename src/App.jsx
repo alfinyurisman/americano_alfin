@@ -8271,12 +8271,15 @@ function SetupScreen(props) {
           </div>
         </div>
         <p className="text-[11px] text-slate-500 mt-2 mb-2">Kosongkan untuk menggunakan tanggal hari ini.</p>
-        <TimeRangeBar
-          startTime={startTime}
-          endTime={endTime}
-          onEndChange={setEndTime}
-          durationLabel={startTime && endTime ? formatDurationMinutes(totalMinutes) : null}
-        />
+        <div className="bg-slate-900 border border-slate-700 rounded-xl px-4 py-3">
+          <span className="text-sm font-semibold text-slate-100 block mb-3">Durasi Sesi</span>
+          <TimeRangeBar
+            startTime={startTime}
+            endTime={endTime}
+            onEndChange={setEndTime}
+            durationLabel={startTime && endTime ? formatDurationMinutes(totalMinutes) : null}
+          />
+        </div>
       </Section>
 
       {/* SPORT TYPE (moved before Nama Acara — the template below needs this filled in first) */}
@@ -8803,11 +8806,9 @@ function TimeRangeBar({ startTime, endTime, onEndChange, durationLabel }) {
       </div>
       {durationLabel && (
         <div className="flex items-center gap-3 shrink-0 pl-1">
+          <div className="w-2 h-2 rounded-full bg-lime-300 shrink-0" />
           <div className="w-px h-9 bg-slate-700" />
-          <div className="flex flex-col leading-tight">
-            <span className="text-xs font-semibold text-cyan-300 whitespace-nowrap">Durasi Sesi</span>
-            <span className="text-xs font-semibold text-cyan-300 whitespace-nowrap">{durationLabel}</span>
-          </div>
+          <span className="text-sm font-bold text-lime-300 whitespace-nowrap">— {durationLabel}</span>
         </div>
       )}
     </div>
