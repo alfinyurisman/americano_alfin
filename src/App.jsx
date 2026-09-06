@@ -8213,6 +8213,8 @@ function SetupScreen(props) {
   } = props;
 
   const [creating, setCreating] = useState(false);
+  const [editingCustomPoint, setEditingCustomPoint] = useState(false);
+  const [editingCustomGame, setEditingCustomGame] = useState(false);
 
   return (
     <div className="pb-10">
@@ -8398,22 +8400,39 @@ function SetupScreen(props) {
                   {v} poin
                 </button>
               ))}
-              <label
-                className={`flex items-center gap-1 px-4 py-2 rounded-xl text-sm font-semibold border cursor-text ${
-                  ![16, 21, 24, 32].includes(pointTarget)
-                    ? "bg-lime-300 text-slate-950 border-lime-300"
-                    : "bg-slate-900 text-slate-300 border-slate-700"
-                }`}
-              >
-                Custom:
-                <input
-                  type="number"
-                  value={pointTarget}
-                  onChange={(e) => setPointTarget(Number(e.target.value))}
-                  className="w-10 bg-transparent text-center font-mono2 focus:outline-none"
-                />
-                Poin
-              </label>
+              {(() => {
+                const isCustomActive = ![16, 21, 24, 32].includes(pointTarget);
+                if (!editingCustomPoint && !isCustomActive) {
+                  return (
+                    <button
+                      onClick={() => setEditingCustomPoint(true)}
+                      className="px-4 py-2 rounded-xl text-sm font-semibold border bg-slate-900 text-slate-300 border-slate-700"
+                    >
+                      Custom: X Poin
+                    </button>
+                  );
+                }
+                return (
+                  <label
+                    className={`flex items-center gap-1 px-4 py-2 rounded-xl text-sm font-semibold border cursor-text ${
+                      isCustomActive
+                        ? "bg-lime-300 text-slate-950 border-lime-300"
+                        : "bg-slate-900 text-slate-300 border-slate-700"
+                    }`}
+                  >
+                    Custom:
+                    <input
+                      autoFocus={editingCustomPoint}
+                      type="number"
+                      value={pointTarget}
+                      onChange={(e) => setPointTarget(Number(e.target.value))}
+                      onBlur={() => setEditingCustomPoint(false)}
+                      className="w-10 bg-transparent text-center font-mono2 focus:outline-none"
+                    />
+                    Poin
+                  </label>
+                );
+              })()}
             </div>
           </div>
         ) : (
@@ -8436,22 +8455,39 @@ function SetupScreen(props) {
                   Race to {v} game
                 </button>
               ))}
-              <label
-                className={`flex items-center gap-1 px-4 py-2 rounded-xl text-sm font-semibold border cursor-text ${
-                  ![4, 6].includes(tennisTarget)
-                    ? "bg-lime-300 text-slate-950 border-lime-300"
-                    : "bg-slate-900 text-slate-300 border-slate-700"
-                }`}
-              >
-                Race to
-                <input
-                  type="number"
-                  value={tennisTarget}
-                  onChange={(e) => setTennisTarget(Number(e.target.value))}
-                  className="w-10 bg-transparent text-center font-mono2 focus:outline-none"
-                />
-                Game
-              </label>
+              {(() => {
+                const isCustomActive = ![4, 6].includes(tennisTarget);
+                if (!editingCustomGame && !isCustomActive) {
+                  return (
+                    <button
+                      onClick={() => setEditingCustomGame(true)}
+                      className="px-4 py-2 rounded-xl text-sm font-semibold border bg-slate-900 text-slate-300 border-slate-700"
+                    >
+                      Race to X Game
+                    </button>
+                  );
+                }
+                return (
+                  <label
+                    className={`flex items-center gap-1 px-4 py-2 rounded-xl text-sm font-semibold border cursor-text ${
+                      isCustomActive
+                        ? "bg-lime-300 text-slate-950 border-lime-300"
+                        : "bg-slate-900 text-slate-300 border-slate-700"
+                    }`}
+                  >
+                    Race to
+                    <input
+                      autoFocus={editingCustomGame}
+                      type="number"
+                      value={tennisTarget}
+                      onChange={(e) => setTennisTarget(Number(e.target.value))}
+                      onBlur={() => setEditingCustomGame(false)}
+                      className="w-10 bg-transparent text-center font-mono2 focus:outline-none"
+                    />
+                    Game
+                  </label>
+                );
+              })()}
             </div>
           </div>
         )}
