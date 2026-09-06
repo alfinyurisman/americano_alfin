@@ -8259,7 +8259,15 @@ function SetupScreen(props) {
             <DateInputField value={playDate} onChange={(e) => setPlayDate(e.target.value)} />
           </div>
           <div className="w-28 shrink-0">
-            <StartTimeButton value={startTime} onChange={setStartTime} />
+            <StartTimeButton
+              value={startTime}
+              onPick={(newStart) => {
+                setStartTime(newStart);
+                const [h, m] = newStart.split(":").map(Number);
+                const endMins = (h * 60 + m + 2 * 60) % (24 * 60); // always resets to a fresh 2h session, wrapping past midnight if needed
+                setEndTime(`${String(Math.floor(endMins / 60)).padStart(2, "0")}:${String(endMins % 60).padStart(2, "0")}`);
+              }}
+            />
           </div>
         </div>
         <p className="text-[11px] text-slate-500 mt-2 mb-2">Kosongkan untuk menggunakan tanggal hari ini.</p>
@@ -8991,7 +8999,7 @@ function StatsCountToggle({ excluded, onToggle }) {
 // whether the left dot on the old combined bar was meant to be tapped or
 // dragged. Rounded rectangle + clock icon + chevron reads unambiguously as
 // "tap for options", same as any other dropdown-style control in the form.
-function StartTimeButton({ value, onChange }) {
+function StartTimeButton({ value, onPick }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="relative">
@@ -9011,7 +9019,7 @@ function StartTimeButton({ value, onChange }) {
             <button
               key={h}
               onClick={() => {
-                onChange(`${String(h).padStart(2, "0")}:00`);
+                onPick(`${String(h).padStart(2, "0")}:00`);
                 setOpen(false);
               }}
               className={`text-xs font-mono2 font-semibold rounded-lg py-1.5 ${
