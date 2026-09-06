@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
-  Plus, X, Users, Clock, Trophy, Shuffle, ChevronLeft, ChevronRight,
+  Plus, X, Users, Clock, Trophy, Shuffle, ChevronLeft, ChevronRight, ChevronDown,
   RotateCcw, Share2, BarChart3, Settings2, Check, Coffee,
   ArrowLeft, Trash2, CalendarDays, ChevronRightCircle, ClipboardList, Link2, Eye, ListOrdered,
   LogOut, Lock, UserCircle2, Shield, Wallet, Handshake, TrendingUp, TrendingDown,
@@ -8254,12 +8254,18 @@ function SetupScreen(props) {
       {/* EVENT NAME */}
       {/* PLAY DATE + TIME (moved to the top — the event name template below is built from these) */}
       <Section icon={CalendarDays} title="Tanggal & Jam Bermain" subtitle="opsional">
-        <DateInputField value={playDate} onChange={(e) => setPlayDate(e.target.value)} />
+        <div className="flex gap-2">
+          <div className="flex-1 min-w-0">
+            <DateInputField value={playDate} onChange={(e) => setPlayDate(e.target.value)} />
+          </div>
+          <div className="w-28 shrink-0">
+            <StartTimeButton value={startTime} onChange={setStartTime} />
+          </div>
+        </div>
         <p className="text-[11px] text-slate-500 mt-2 mb-2">Kosongkan untuk menggunakan tanggal hari ini.</p>
         <TimeRangeBar
           startTime={startTime}
           endTime={endTime}
-          onStartChange={setStartTime}
           onEndChange={setEndTime}
           durationLabel={startTime && endTime ? formatDurationMinutes(totalMinutes) : null}
         />
@@ -8694,18 +8700,19 @@ function CurrencyInput({ value, onChange, className }) {
 // state lives in a ref (not React state) so dragging doesn't re-trigger
 // re-renders on every pixel of movement, only committing a change once the
 // snapped value actually differs from before.
-function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, durationLabel }) {
+function TimeRangeBar({ startTime, endTime, onEndChange, durationLabel }) {
   const trackRef = useRef(null);
   const draggingRef = useRef(false);
-  const [pickerOpen, setPickerOpen] = useState(false);
   const MIN_HOURS = 1;
   const MAX_HOURS = 6;
+  const DEFAULT_HOURS = 2; // most sessions run about 2 hours — used whenever Start/End aren't set yet, rather than letting the wrap-around math silently fall back to the 6h max
 
   const timeToMinutes = (t) => {
     const [h, m] = (t || "00:00").split(":").map(Number);
     return (h || 0) * 60 + (m || 0);
   };
   const currentDurationHours = (() => {
+    if (!startTime || !endTime) return DEFAULT_HOURS;
     const startMins = timeToMinutes(startTime);
     let endMins = timeToMinutes(endTime);
     if (endMins <= startMins) endMins += 24 * 60; // wraps past midnight
@@ -8716,7 +8723,7 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
   // End is always derived from Start + Duration, so day-wrap ("plays past
   // midnight") is just plain modulo arithmetic here — no separate absolute
   // position on some extended 24h+ scale needed, since the bar itself only
-  // ever represents 1–8 hours of DURATION, not a specific clock position.
+  // ever represents 1–6 hours of DURATION, not a specific clock position.
   const computeEnd = (startHHMM, hours) => {
     const startMins = timeToMinutes(startHHMM);
     const endMinsRaw = startMins + hours * 60;
@@ -8729,21 +8736,13 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
 
   const { wraps: endWraps } = computeEnd(startTime, currentDurationHours);
 
-  // At the minimum duration (1h), this used to map to position 0% —
-  // exactly where the Start anchor also sits — so both handles and their
-  // floating time labels landed right on top of each other. Reserving a
-  // fixed minimum offset keeps the duration handle visually separated from
-  // Start at every value, not just conveniently far apart at the high end.
-  const MIN_VISUAL_PCT = 20;
-  const durationPct =
-    MIN_VISUAL_PCT + ((currentDurationHours - MIN_HOURS) / (MAX_HOURS - MIN_HOURS)) * (100 - MIN_VISUAL_PCT);
+  const durationPct = ((currentDurationHours - MIN_HOURS) / (MAX_HOURS - MIN_HOURS)) * 100;
 
   const posToHours = (clientX) => {
     if (!trackRef.current) return MIN_HOURS;
     const rect = trackRef.current.getBoundingClientRect();
-    const rawPct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) * 100;
-    const adjustedPct = Math.max(0, (rawPct - MIN_VISUAL_PCT) / (100 - MIN_VISUAL_PCT));
-    return Math.round(adjustedPct * (MAX_HOURS - MIN_HOURS)) + MIN_HOURS;
+    const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    return Math.round(pct * (MAX_HOURS - MIN_HOURS)) + MIN_HOURS;
   };
 
   useEffect(() => {
@@ -8774,89 +8773,38 @@ function TimeRangeBar({ startTime, endTime, onStartChange, onEndChange, duration
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startTime, currentDurationHours]);
 
-  const handleHourPick = (hh) => {
-    const newStart = `${String(hh).padStart(2, "0")}:00`;
-    onStartChange(newStart);
-    const { endTime: newEnd } = computeEnd(newStart, currentDurationHours);
-    onEndChange(newEnd);
-    setPickerOpen(false);
-  };
-
   return (
-    <div>
-      <div className="flex items-center gap-4">
-        <div className="flex-1 pt-16 pb-2 relative">
-          {/* START anchor — tapping opens an hour picker; visually this
-              always sits at the far left, since the bar itself represents
-              DURATION (1–8h) rather than an absolute position in the day.
-              Splitting "when" (tap to pick) from "how long" (drag) is what
-              lets the drag range stay small enough that every stop gets
-              generous, easy-to-hit spacing — no scrolling, same bar length
-              as before. */}
-          <button
-            onClick={() => setPickerOpen((v) => !v)}
-            className="absolute -top-1 left-0 flex flex-col items-start gap-1 z-20"
+    <div className="flex items-center gap-4">
+      <div className="flex-1 pt-8 pb-2 relative">
+        <div ref={trackRef} className="relative h-1.5 bg-slate-800 rounded-full">
+          <div className="absolute h-1.5 bg-lime-400 rounded-full" style={{ left: 0, width: `${durationPct}%` }} />
+          <div
+            onPointerDown={() => (draggingRef.current = true)}
+            onTouchStart={() => (draggingRef.current = true)}
+            className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 touch-none cursor-grab active:cursor-grabbing"
+            style={{ left: `${durationPct}%` }}
           >
-            <span className="text-xs font-mono2 font-semibold text-slate-100 whitespace-nowrap bg-slate-800 border border-lime-300/50 rounded px-1.5 py-0.5">
-              {startTime}
+            <span className="absolute -top-8 left-1/2 -translate-x-1/2 text-xs font-mono2 font-semibold text-slate-100 whitespace-nowrap bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5">
+              {computeEnd(startTime, currentDurationHours).endTime}
+              {endWraps && <span className="text-cyan-300 ml-0.5">+1</span>}
             </span>
-            <div className="w-6 h-6 rounded-full bg-slate-700 border-2 border-lime-300 shadow-[0_0_0_4px_rgba(190,242,100,0.15)]" />
-          </button>
-
-          <div ref={trackRef} className="relative h-1.5 bg-slate-800 rounded-full mx-3">
-            <div className="absolute h-1.5 bg-lime-400 rounded-full" style={{ left: 0, width: `${durationPct}%` }} />
-            <div
-              onPointerDown={() => (draggingRef.current = true)}
-              onTouchStart={() => (draggingRef.current = true)}
-              className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 touch-none cursor-grab active:cursor-grabbing z-10"
-              style={{ left: `${durationPct}%` }}
-            >
-              {/* Pushed higher than Start's label (-top-14 vs -top-1) —
-                  the two used to sit at the same height and only avoided
-                  overlapping by relying on enough horizontal gap between
-                  the handles, which broke down at the minimum duration
-                  where they're closest together. Staggering the heights
-                  means they can never collide regardless of spacing. */}
-              <span className="absolute -top-14 left-1/2 -translate-x-1/2 text-xs font-mono2 font-semibold text-slate-100 whitespace-nowrap bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5">
-                {computeEnd(startTime, currentDurationHours).endTime}
-                {endWraps && <span className="text-cyan-300 ml-0.5">+1</span>}
-              </span>
-              <div className="w-6 h-6 rounded-full bg-lime-300 border-2 border-slate-950 shadow-[0_0_0_4px_rgba(190,242,100,0.25)]" />
-            </div>
+            <div className="w-6 h-6 rounded-full bg-lime-300 border-2 border-slate-950 shadow-[0_0_0_4px_rgba(190,242,100,0.25)]" />
           </div>
         </div>
-        {durationLabel && (
-          <div className="flex items-center gap-3 shrink-0 pl-1">
-            <div className="w-px h-9 bg-slate-700" />
-            <div className="flex flex-col leading-tight">
-              <span className="text-xs font-semibold text-cyan-300 whitespace-nowrap">Durasi Sesi</span>
-              <span className="text-xs font-semibold text-cyan-300 whitespace-nowrap">{durationLabel}</span>
-            </div>
-          </div>
-        )}
+        <p className="text-[10px] text-slate-600 mt-2">Geser buat atur durasi sesi</p>
       </div>
-
-      {pickerOpen && (
-        <div className="mt-2 p-2 bg-slate-900 border border-slate-700 rounded-xl grid grid-cols-6 gap-1 max-h-40 overflow-y-auto">
-          {Array.from({ length: 24 }, (_, h) => h).map((h) => (
-            <button
-              key={h}
-              onClick={() => handleHourPick(h)}
-              className={`text-xs font-mono2 font-semibold rounded-lg py-1.5 ${
-                timeToMinutes(startTime) === h * 60
-                  ? "bg-lime-300 text-slate-950"
-                  : "bg-slate-800 text-slate-300"
-              }`}
-            >
-              {String(h).padStart(2, "0")}
-            </button>
-          ))}
+      {durationLabel && (
+        <div className="flex items-center gap-3 shrink-0 pl-1">
+          <div className="w-px h-9 bg-slate-700" />
+          <div className="flex flex-col leading-tight">
+            <span className="text-xs font-semibold text-cyan-300 whitespace-nowrap">Durasi Sesi</span>
+            <span className="text-xs font-semibold text-cyan-300 whitespace-nowrap">{durationLabel}</span>
+          </div>
         </div>
       )}
     </div>
   );
 }
-
 
 // Native <input type="date"> renders with the browser's own pill-shaped
 // chrome on iOS/Android that ignores most of our styling, making it look
@@ -9033,6 +8981,48 @@ function StatsCountToggle({ excluded, onToggle }) {
         Bisa diubah kapan saja, termasuk setelah acara selesai — data pertandingan tidak akan
         terhapus.
       </p>
+    </div>
+  );
+}
+
+// A clearly BUTTON-shaped control for picking the start hour — deliberately
+// NOT styled like a slider handle (no circle, no sitting on a track line),
+// since that shape reads as "drag me" and confused people into not knowing
+// whether the left dot on the old combined bar was meant to be tapped or
+// dragged. Rounded rectangle + clock icon + chevron reads unambiguously as
+// "tap for options", same as any other dropdown-style control in the form.
+function StartTimeButton({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm flex items-center justify-between gap-2"
+      >
+        <span className="flex items-center gap-2 text-slate-100 font-mono2">
+          <Clock size={16} className="text-lime-300 shrink-0" />
+          {value}
+        </span>
+        <ChevronDown size={16} className={`text-slate-500 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="absolute z-20 mt-1 right-0 w-56 p-2 bg-slate-900 border border-slate-700 rounded-xl grid grid-cols-6 gap-1 max-h-40 overflow-y-auto shadow-xl">
+          {Array.from({ length: 24 }, (_, h) => h).map((h) => (
+            <button
+              key={h}
+              onClick={() => {
+                onChange(`${String(h).padStart(2, "0")}:00`);
+                setOpen(false);
+              }}
+              className={`text-xs font-mono2 font-semibold rounded-lg py-1.5 ${
+                value === `${String(h).padStart(2, "0")}:00` ? "bg-lime-300 text-slate-950" : "bg-slate-800 text-slate-300"
+              }`}
+            >
+              {String(h).padStart(2, "0")}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
