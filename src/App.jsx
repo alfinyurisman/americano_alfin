@@ -8790,23 +8790,27 @@ function TimeRangeBar({ startTime, endTime, onEndChange, durationLabel }) {
   return (
     <div className="flex items-center gap-4">
       <div className="flex-1 py-3 relative">
-        {/* mx-5 keeps the pill from overflowing the box at the extremes,
-            while staying small enough that the bar still reads as starting
-            close to the box's left content edge rather than visibly
-            indented from it. */}
-        <div ref={trackRef} className="relative h-1.5 bg-slate-800 rounded-full mx-5">
+        {/* No margin here — the track's 0% position needs to align with the
+            box's own left content edge (same as "Durasi Sesi" text above
+            it), not sit visibly indented from it. The pill itself is kept
+            from overflowing separately below, via clamp() on its own
+            position rather than shrinking the whole track's usable range. */}
+        <div ref={trackRef} className="relative h-1.5 bg-slate-800 rounded-full">
           <div className="absolute h-1.5 bg-lime-400 rounded-full" style={{ left: 0, width: `${durationPct}%` }} />
           {/* Pill sits directly ON the track (matching the reference) instead
               of a small circle with its time label floating above — that
               floating label needed extra vertical padding just to have room
               to render, which is what made the surrounding box taller than
               it needed to be. Kept snug (minimal padding) so it doesn't eat
-              up much of the track's own visual space. */}
+              up much of the track's own visual space. clamp() keeps ONLY
+              this pill — not the fill/track itself — from rendering past
+              the box's edge at the min/max duration, where its center
+              would otherwise land right at 0% or 100%. */}
           <div
             onPointerDown={() => (draggingRef.current = true)}
             onTouchStart={() => (draggingRef.current = true)}
             className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 touch-none cursor-grab active:cursor-grabbing bg-slate-800 border-2 border-slate-600 rounded-full px-2 py-0.5"
-            style={{ left: `${durationPct}%` }}
+            style={{ left: `clamp(24px, ${durationPct}%, calc(100% - 24px))` }}
           >
             <span className="text-xs font-mono2 font-semibold text-slate-100 whitespace-nowrap">
               {computeEnd(startTime, currentDurationHours).endTime}
