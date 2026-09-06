@@ -8823,7 +8823,7 @@ function TimeRangeBar({ startTime, endTime, onEndChange, durationLabel }) {
         <div className="flex items-center gap-3 shrink-0 pl-1">
           <div className="w-2 h-2 rounded-full bg-lime-300 shrink-0" />
           <div className="w-px h-9 bg-slate-700" />
-          <span className="text-sm font-bold text-lime-300 whitespace-nowrap">— {durationLabel}</span>
+          <span className="text-sm font-bold text-cyan-300 whitespace-nowrap">{durationLabel}</span>
         </div>
       )}
     </div>
