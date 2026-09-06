@@ -8786,23 +8786,27 @@ function TimeRangeBar({ startTime, endTime, onEndChange, durationLabel }) {
 
   return (
     <div className="flex items-center gap-4">
-      <div className="flex-1 pt-8 pb-2 relative">
+      <div className="flex-1 py-3 relative">
         <div ref={trackRef} className="relative h-1.5 bg-slate-800 rounded-full">
           <div className="absolute h-1.5 bg-lime-400 rounded-full" style={{ left: 0, width: `${durationPct}%` }} />
+          {/* Pill sits directly ON the track (matching the reference) instead
+              of a small circle with its time label floating above — that
+              floating label needed extra vertical padding just to have room
+              to render, which is what made the surrounding box taller than
+              it needed to be. */}
           <div
             onPointerDown={() => (draggingRef.current = true)}
             onTouchStart={() => (draggingRef.current = true)}
-            className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 touch-none cursor-grab active:cursor-grabbing"
+            className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 touch-none cursor-grab active:cursor-grabbing bg-slate-800 border-2 border-slate-600 rounded-full px-3 py-1"
             style={{ left: `${durationPct}%` }}
           >
-            <span className="absolute -top-8 left-1/2 -translate-x-1/2 text-xs font-mono2 font-semibold text-slate-100 whitespace-nowrap bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5">
+            <span className="text-xs font-mono2 font-semibold text-slate-100 whitespace-nowrap">
               {computeEnd(startTime, currentDurationHours).endTime}
               {endWraps && <span className="text-cyan-300 ml-0.5">+1</span>}
             </span>
-            <div className="w-6 h-6 rounded-full bg-lime-300 border-2 border-slate-950 shadow-[0_0_0_4px_rgba(190,242,100,0.25)]" />
           </div>
         </div>
-        <p className="text-[10px] text-slate-600 mt-2">Geser buat atur durasi sesi</p>
+        <p className="text-[10px] text-slate-600 mt-3">Geser buat atur durasi sesi</p>
       </div>
       {durationLabel && (
         <div className="flex items-center gap-3 shrink-0 pl-1">
