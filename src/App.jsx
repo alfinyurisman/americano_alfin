@@ -2891,6 +2891,7 @@ function AmericanoPadel() {
   const [paymentInfo, setPaymentInfo] = useState([]); // [{platform, number}] max 2
   const [paidStatus, setPaidStatus] = useState({}); // { [playerId]: true } — missing/false = belum bayar
   const [loggedMatchKeys, setLoggedMatchKeys] = useState([]); // "rIdx-cIdx" keys already recorded into Partner Synergy logs, so re-syncs/multiple viewers don't double-count
+  const [loggedScoreValues, setLoggedScoreValues] = useState({}); // "rIdx-cIdx" -> "a-b" string of the score last seen for that match — lets a LATER edit to an already-complete score be detected and logged as a correction, separate from loggedMatchKeys' one-time Partner Synergy purpose
   const [selectedPartner, setSelectedPartner] = useState(null); // { accountId, name } — which partner's detail screen is open
   const [selectedFriend, setSelectedFriend] = useState(null); // which friend's profile screen is open
   const [courtStages, setCourtStages] = useState([]); // [{id, rounds, courts}] — empty = simple single-court-count mode
@@ -2921,6 +2922,8 @@ function AmericanoPadel() {
     playersRef.current = players;
   }, [players]);
   const [nameInput, setNameInput] = useState("");
+  const [pendingDuplicateAdd, setPendingDuplicateAdd] = useState(null); // {name} | null -- triggers DuplicateNameConfirmModal
+  const [pendingDuplicateApproval, setPendingDuplicateApproval] = useState(null); // {reqId, name} | null
   const [bulkInput, setBulkInput] = useState("");
   const [courts, setCourts] = useState(2);
   const [mode, setMode] = useState("duration"); // duration | rounds
@@ -3130,6 +3133,7 @@ function AmericanoPadel() {
       // The current round hasn't been played at all yet — safe to fully
       // regenerate its composition using the corrected ranking, same as if
       // it were being generated fresh right now.
+      const oldLatestRoundSnapshot = formatCourtsForLog(latestRound.courts, playerMap);
       const gen = generateMexicanoRoundBatch(ids, courts, {
         ...newEngine,
         rankingSnapshot: replayed.rankingSnapshot,
@@ -3149,15 +3153,16 @@ function AmericanoPadel() {
         opp: gen.opp,
         usableCourts: gen.usableCourts,
       };
+      setEngine(newEngine);
+      persist({ engine: newEngine });
+      logActivity(
+        `Koreksi skor Ronde ${currentRound + 1} (Mexicano) — klasemen dihitung ulang, Ronde ${latestRoundIdx + 1} disusun ulang pakai klasemen terkoreksi. Susunan SEBELUM diganti: [${oldLatestRoundSnapshot}]`
+      );
+    } else {
+      setEngine(newEngine);
+      persist({ engine: newEngine });
+      logActivity(`Koreksi skor Ronde ${currentRound + 1} (Mexicano) — klasemen dihitung ulang`);
     }
-
-    setEngine(newEngine);
-    persist({ engine: newEngine });
-    logActivity(
-      `Koreksi skor Ronde ${currentRound + 1} (Mexicano) — klasemen dihitung ulang${
-        latestUntouched ? `, Ronde ${latestRoundIdx + 1} disusun ulang pakai klasemen terkoreksi` : ""
-      }`
-    );
 
     setTimeout(() => {
       isReplayingMexicanoHistory.current = false;
@@ -3346,6 +3351,7 @@ function AmericanoPadel() {
     ];
     setHostInvitations(newInvitations);
     persist({ hostInvitations: newInvitations });
+    logActivity(`Undang teman: ${friend.username}`);
 
     const theirList = await loadLobbyIndex(friend.accountId);
     const alreadyListed = theirList.some((e) => e.id === activeId);
@@ -3370,9 +3376,11 @@ function AmericanoPadel() {
 
   // Host cancels an invitation that hasn't been accepted/declined yet.
   const handleCancelInvitation = async (accountId) => {
+    const cancelledUsername = hostInvitations.find((i) => i.accountId === accountId)?.username || accountId;
     const newInvitations = hostInvitations.filter((i) => i.accountId !== accountId);
     setHostInvitations(newInvitations);
     persist({ hostInvitations: newInvitations });
+    logActivity(`Batalkan undangan: ${cancelledUsername}`);
     const theirList = await loadLobbyIndex(accountId);
     await saveLobbyIndex(accountId, theirList.filter((e) => e.id !== activeId));
   };
@@ -3416,6 +3424,27 @@ function AmericanoPadel() {
       // manually delete the redundant guest entry via Kelola Pertandingan
       // instead — a deliberate action instead of an automatic guess.
       const already = (data.players || []).some((p) => p.accountId === currentUser.accountId);
+      // This path (accepting an invitation the host sent BEFORE the event
+      // started) has no synchronous host oversight at accept-time the way
+      // handleApproveRequest does — the host isn't watching a button click
+      // happen. If the invitation sits unanswered until after the event's
+      // already started and the host has since added someone else under
+      // this same name (a guest entry, since a real duplicate account
+      // can't share their accountId), accepting late would silently create
+      // exactly that duplicate with zero warning. Surfacing it to the
+      // PERSON ACCEPTING — the only one actually present at this moment —
+      // is the only place left this can still be caught.
+      const nameDup =
+        !already &&
+        (data.players || []).some(
+          (p) => p.name.trim().toLowerCase() === currentUser.username.trim().toLowerCase()
+        );
+      if (nameDup) {
+        const proceed = window.confirm(
+          `Ada peserta bernama "${currentUser.username}" yang UDAH ADA di acara ini (mungkin ditambahkan manual oleh host sebelum kamu terima undangan ini). Kalau itu KAMU, batalkan ini dan minta host hapus entri lama itu. Cuma lanjutkan kalau kamu YAKIN itu orang lain yang kebetulan namanya sama.`
+        );
+        if (!proceed) return;
+      }
       const newPlayers = already
         ? data.players || []
         : [
@@ -3436,10 +3465,22 @@ function AmericanoPadel() {
           (readBack.players || []).some((p) => p.accountId === currentUser.accountId) &&
           !(readBack.hostInvitations || []).some((i) => i.accountId === currentUser.accountId)
       );
+      if (!already) {
+        await logActivityToSession(
+          sessionId,
+          currentUser.displayName || currentUser.username,
+          `Terima undangan gabung: ${currentUser.username}`
+        );
+      }
     } else {
       await saveAndVerify(
         { ...data, hostInvitations: newInvitations, updatedAt: Date.now() },
         (readBack) => !(readBack.hostInvitations || []).some((i) => i.accountId === currentUser.accountId)
+      );
+      await logActivityToSession(
+        sessionId,
+        currentUser.displayName || currentUser.username,
+        `Tolak undangan gabung: ${currentUser.username}`
       );
     }
 
@@ -3746,6 +3787,7 @@ function AmericanoPadel() {
         paymentInfo,
         paidStatus,
         loggedMatchKeys,
+        loggedScoreValues,
         courtStages,
         playDate,
         excludeFromStats,
@@ -3823,7 +3865,7 @@ function AmericanoPadel() {
       }
       return savePromise;
     },
-    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, loggedMatchKeys, courtStages, playDate, excludeFromStats, activityLog, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, endTime, scoreFormat, sportType, gameFormat, teamFormat, fixedPairs, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
+    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, loggedMatchKeys, loggedScoreValues, courtStages, playDate, excludeFromStats, activityLog, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, endTime, scoreFormat, sportType, gameFormat, teamFormat, fixedPairs, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
   );
 
   // Partner Synergy Index: whenever a specific match's score newly becomes
@@ -3896,6 +3938,54 @@ function AmericanoPadel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scores, engine, activeId]);
 
+  // Catches a score being CHANGED after it was already complete — e.g. a
+  // typo corrected, or a result edited for any reason. loggedMatchKeys
+  // above deliberately never re-fires once a key is logged (so Partner
+  // Synergy career stats aren't double-counted), which meant an edit to an
+  // already-scored match updated the stored score with NO trace in the
+  // activity log at all — confirmed from an exported event log where the
+  // log said one result but the actually-stored score was the reverse.
+  // This tracks the last-seen value per match independently and logs
+  // specifically the cases loggedMatchKeys' one-time design misses.
+  useEffect(() => {
+    if (!engine || !activeId) return;
+    const playersById = {};
+    players.forEach((p) => (playersById[p.id] = p));
+    const nextValues = { ...loggedScoreValues };
+    let changed = false;
+
+    engine.roundsData.forEach((rd, rIdx) => {
+      rd.courts.forEach((match, cIdx) => {
+        const key = `${rIdx}-${cIdx}`;
+        const s = scores[key];
+        if (!isMatchScoreComplete(s)) return;
+        const ab = matchAB(s);
+        const valueStr = `${ab.a}-${ab.b}`;
+        const prevValue = loggedScoreValues[key];
+        if (prevValue === undefined) {
+          // First time this match's score is seen complete — the "Skor
+          // lengkap" log above already covers this moment, just start
+          // tracking its value from here so a LATER change can be caught.
+          nextValues[key] = valueStr;
+          changed = true;
+          return;
+        }
+        if (prevValue !== valueStr) {
+          const n1 = match.team1.map((id) => playersById[id]?.name || id).join("+");
+          const n2 = match.team2.map((id) => playersById[id]?.name || id).join("+");
+          logActivity(
+            `Skor DIUBAH — Ronde ${rIdx + 1} Lap.${cIdx + 1}: ${n1} vs ${n2} = ${prevValue} → ${valueStr}`
+          );
+          nextValues[key] = valueStr;
+          changed = true;
+        }
+      });
+    });
+
+    if (changed) setLoggedScoreValues(nextValues);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scores, engine, activeId]);
+
   // Retries persist() a few times with short delays. Exists specifically
   // for the moment right after creating a brand-new event: activeId gets
   // set via setActiveId(), but React state updates aren't synchronous, so
@@ -3937,30 +4027,30 @@ function AmericanoPadel() {
     return false;
   };
 
-  const addPlayerFromInput = () => {
-    const name = nameInput.trim();
-    if (!name) return;
-    const dup = players.some((p) => p.name.trim().toLowerCase() === name.toLowerCase());
-    if (dup) {
-      const confirmed = window.confirm(
-        `"${name}" sudah ada di daftar. Tetap tambahkan sebagai orang yang berbeda? (Kalau maksudnya orang yang SAMA, batalkan ini — dia udah ada.)`
-      );
-      if (!confirmed) return;
-    }
+  const commitAddPlayer = (name, wasDup) => {
     const newId = uid();
     setPlayers((p) => {
       const next = [...p, { id: newId, name }];
       persistWithRetry({ players: next }, newId).then((ok) => {
         if (!ok) {
-          alert(
-            `Gagal menyimpan "${name}" — coba cek koneksi lalu tambahkan lagi.`
-          );
+          alert(`Gagal menyimpan "${name}" — coba cek koneksi lalu tambahkan lagi.`);
         }
       });
       return next;
     });
-    if (activeId) logActivity(`Tambah pemain: ${name}${dup ? " (nama sama dengan yang sudah ada)" : ""}`);
+    if (activeId) logActivity(`Tambah pemain: ${name}${wasDup ? " (nama sama dengan yang sudah ada)" : ""}`);
     setNameInput("");
+  };
+
+  const addPlayerFromInput = () => {
+    const name = nameInput.trim();
+    if (!name) return;
+    const dup = players.some((p) => p.name.trim().toLowerCase() === name.toLowerCase());
+    if (dup) {
+      setPendingDuplicateAdd({ name });
+      return;
+    }
+    commitAddPlayer(name, false);
   };
 
   const addBulk = () => {
@@ -4092,6 +4182,7 @@ function AmericanoPadel() {
     }
     setPlayers(newPlayers);
     persist({ hostPlaying: next, players: newPlayers });
+    logActivity(next ? "Host ikut main" : "Host keluar dari daftar main");
   };
 
 
@@ -4166,8 +4257,10 @@ function AmericanoPadel() {
           scores: {},
           fixedPairs,
           hostInvitations: [],
+          pendingRequests: [],
         });
         setHostInvitations([]);
+        setPendingRequests([]);
         logActivity(
           `Generate Ronde 1 — Mexicano Fixed Partner (${fixedTeams.length} pasangan tetap, ${courts} lapangan)`
         );
@@ -4207,8 +4300,10 @@ function AmericanoPadel() {
         currentRound: 0,
         scores: {},
         hostInvitations: [],
+        pendingRequests: [],
       });
       setHostInvitations([]);
+      setPendingRequests([]);
       logActivity(`Generate Ronde 1 — Mexicano (${ids.length} pemain, ${courts} lapangan)`);
       return;
     }
@@ -4240,6 +4335,7 @@ function AmericanoPadel() {
         scores: {},
         fixedPairs,
         hostInvitations: [],
+        pendingRequests: [],
       });
       setHostInvitations([]);
       logActivity(
@@ -4297,13 +4393,14 @@ function AmericanoPadel() {
     setScores({});
     setStatus("active");
     setScreen("session");
-    // Once the event has actually started, a still-pending invitation
-    // serves no purpose — whoever it was for either already made it into
-    // the roster some other way (added manually, joined via link) or
-    // simply isn't playing this time. Leaving it dangling is what let the
-    // "accept a stale invitation after already being added as a guest"
-    // duplicate-entry bug happen in the first place, so clear the slate
-    // here rather than relying only on the accept-time guest-matching fix.
+    // Once the event has actually started, a still-pending invitation OR
+    // join request serves no purpose — whoever it was for either already
+    // made it into the roster some other way (added manually, joined via
+    // link earlier) or simply isn't playing this time. Leaving either kind
+    // dangling is what let the "approve a stale request/invitation after
+    // already being added as a guest" duplicate-entry bug happen in the
+    // first place, so clear the slate here rather than relying only on the
+    // accept-time guest-matching fix.
     persist({
       status: "active",
       players: arrivedPlayers,
@@ -4312,8 +4409,10 @@ function AmericanoPadel() {
       currentRound: 0,
       scores: {},
       hostInvitations: [],
+      pendingRequests: [],
     });
     setHostInvitations([]);
+    setPendingRequests([]);
     logActivity(`Generate jadwal awal (${ids.length} pemain, ${courts} lapangan, ${computedRounds} ronde)`);
   };
 
@@ -4365,6 +4464,7 @@ function AmericanoPadel() {
           alert("Ronde ini sudah lengkap diisi skor semua — tidak ada lagi yang bisa di-reshuffle.");
           return;
         }
+        const oldRoundSnapshot = formatCourtsForLog(latestRound.courts, playerMap);
         const newRoundsData = [...engine.roundsData];
         newRoundsData[latestRoundIdx] = { ...latestRound, courts: result.courts };
         const newEngine = { ...engine, roundsData: newRoundsData };
@@ -4383,7 +4483,7 @@ function AmericanoPadel() {
         setScores(newScores);
         persist({ engine: newEngine, scores: newScores });
         logActivity(
-          `Reshuffle Ronde ${latestRoundIdx + 1} (Mexicano) — ${result.scoredCount} match yang sudah diskor tetap, ${result.newUnscoredCount} match sisanya diacak ulang`
+          `Reshuffle Ronde ${latestRoundIdx + 1} (Mexicano) — ${result.scoredCount} match yang sudah diskor tetap, ${result.newUnscoredCount} match sisanya diacak ulang. Susunan SEBELUM diacak: [${oldRoundSnapshot}]`
         );
       } catch (e) {
         console.error("handleReshuffleMatches (Mexicano) failed:", e);
@@ -4586,6 +4686,13 @@ function AmericanoPadel() {
       return false;
     }
     const activeIds = players.filter((p) => p.arrived !== false).map((p) => p.id);
+    const deletedRoundSnapshot = formatCourtsForLog(engine.roundsData[roundIdx].courts, playerMap);
+    const oldFutureRoundsSnapshotDel = regenerateRest
+      ? engine.roundsData
+          .slice(roundIdx + 1)
+          .map((r, i) => `Ronde ${roundIdx + 2 + i} [${formatCourtsForLog(r.courts, playerMap)}]`)
+          .join(" || ")
+      : "";
 
     let newRoundsData;
     let newScores;
@@ -4659,6 +4766,8 @@ function AmericanoPadel() {
     logActivity(
       `Hapus Ronde ${roundIdx + 1} (sisa ${newRoundsData.length} ronde)${
         regenerateRest ? " + sesuaikan ronde sisanya" : " (ronde lain tidak diubah)"
+      }. Ronde yang dihapus: [${deletedRoundSnapshot}]${
+        regenerateRest ? `. Ronde setelahnya SEBELUM disusun ulang: ${oldFutureRoundsSnapshotDel || "(belum ada)"}` : ""
       }`
     );
     return true;
@@ -4705,6 +4814,13 @@ function AmericanoPadel() {
   };
 
   const handleAdjustScheduleInner = async (newPlayers, newCourtsInput) => {
+    // Computed once, used in every log message below — a court-count change
+    // used to get silently folded into whatever player-change message fired
+    // alongside it (or missed entirely if it was the ONLY thing that
+    // changed), rather than being called out explicitly.
+    const courtsChangedNote =
+      newCourtsInput && newCourtsInput !== courts ? ` — jumlah lapangan ${courts} → ${newCourtsInput}` : "";
+
     if (engine?.mexicano) {
       const newCourts = newCourtsInput || courts;
 
@@ -4780,6 +4896,7 @@ function AmericanoPadel() {
         return;
       }
 
+      const oldLatestRoundSnapshotMex = formatCourtsForLog(latestRound.courts, playerMap);
       const newRoundsData = [...engine.roundsData];
       newRoundsData[latestRoundIdx] = { ...latestRound, courts: result.courts };
       const newEngine = { ...engine, roundsData: newRoundsData };
@@ -4807,9 +4924,10 @@ function AmericanoPadel() {
       setScores(newScores);
       persist({ engine: newEngine, players: newPlayers, playerMap: newMap, courts: newCourts, scores: newScores });
       logActivity(
-        batchAlreadyStarted
+        (batchAlreadyStarted
           ? `Sesuaikan Ronde ${latestRoundIdx + 1} (Mexicano) — ${removedIds.length} pemain dikeluarkan, ${result.scoredCount} match yang sudah diskor tetap, ${result.newUnscoredCount} match sisanya disusun ulang`
-          : `Susun ulang Ronde ${latestRoundIdx + 1} (Mexicano) — belum ada match yang diskor, jadi seluruh ${result.newUnscoredCount} match disusun ulang pakai roster terbaru`
+          : `Susun ulang Ronde ${latestRoundIdx + 1} (Mexicano) — belum ada match yang diskor, jadi seluruh ${result.newUnscoredCount} match disusun ulang pakai roster terbaru`) +
+          `. Susunan SEBELUM diganti: [${oldLatestRoundSnapshotMex}]`
       );
       return;
     }
@@ -4843,6 +4961,14 @@ function AmericanoPadel() {
 
     const lockedRounds = engine.roundsData.slice(0, splitIdx);
     const remainingRoundsCount = engine.roundsData.length - splitIdx;
+    // Snapshot of every unscored round's pairing as it stood RIGHT BEFORE
+    // this adjustment regenerates them — the only remaining record of what
+    // was actually shown on screen, since the regenerated version below
+    // replaces these outright rather than appending to them.
+    const oldUnscoredRoundsSnapshot = engine.roundsData
+      .slice(splitIdx)
+      .map((rd, i) => `Ronde ${splitIdx + i + 1} [${formatCourtsForLog(rd.courts, playerMap)}]`)
+      .join(" || ");
 
     // Only players marked as arrived (default true) actually get scheduled
     // into upcoming rounds — anyone marked "belum datang" stays listed but
@@ -4874,6 +5000,10 @@ function AmericanoPadel() {
         );
         return;
       }
+      const oldUnscoredRoundsSnapshotFP = engine.roundsData
+        .slice(splitIdx)
+        .map((rd, i) => `Ronde ${splitIdx + i + 1} [${formatCourtsForLog(rd.courts, playerMap)}]`)
+        .join(" || ");
       const teamSeed = replayFixedPartnerSeed(lockedRounds, fixedTeams);
       const freshPart = generateFixedPartnerSchedule(fixedTeams, newCourts, remainingRoundsCount, teamSeed, splitIdx);
       const newRoundsData = [...lockedRounds, ...freshPart.roundsData];
@@ -4909,6 +5039,25 @@ function AmericanoPadel() {
         );
         return false;
       }
+      const oldActiveIdsFP = new Set(playersRef.current.filter((p) => p.arrived !== false).map((p) => p.id));
+      const newActiveIdsFP = new Set(activePlayers.map((p) => p.id));
+      const addedFP = newPlayers.filter((p) => !playersRef.current.some((op) => op.id === p.id)).map((p) => p.name);
+      const removedFP = playersRef.current.filter((p) => !newPlayers.some((np) => np.id === p.id)).map((p) => p.name);
+      const arrivedOnFP = [...newActiveIdsFP]
+        .filter((id) => !oldActiveIdsFP.has(id) && !addedFP.includes(playerMap[id]))
+        .map((id) => playerMap[id]);
+      const arrivedOffFP = [...oldActiveIdsFP]
+        .filter((id) => !newActiveIdsFP.has(id) && !removedFP.includes(playerMap[id]))
+        .map((id) => playerMap[id]);
+      const partsFP = [
+        addedFP.length ? `+ tambah: ${addedFP.join(", ")}` : null,
+        removedFP.length ? `- hapus: ${removedFP.join(", ")}` : null,
+        arrivedOnFP.length ? `hadir: ${arrivedOnFP.join(", ")}` : null,
+        arrivedOffFP.length ? `tidak hadir: ${arrivedOffFP.join(", ")}` : null,
+      ].filter(Boolean);
+      logActivity(
+        `Sesuaikan jadwal (Fixed Partner)${courtsChangedNote}${partsFP.length ? " — " + partsFP.join("; ") : ""}. Susunan SEBELUM diubah: ${oldUnscoredRoundsSnapshotFP || "(belum ada)"}`
+      );
       return true;
     }
 
@@ -5121,6 +5270,29 @@ function AmericanoPadel() {
       alert(
         "Perubahan pemain/jadwal kelihatannya BELUM tersimpan ke server (koneksi mungkin bermasalah). Coba lakukan lagi, dan pastikan koneksi internet stabil sebelum pindah layar."
       );
+    } else {
+      const oldPlayersSnapshot = playersRef.current;
+      const oldActiveIdsA = new Set(oldPlayersSnapshot.filter((p) => p.arrived !== false).map((p) => p.id));
+      const newActiveIdsA = new Set(activePlayers.map((p) => p.id));
+      const added = newPlayers.filter((p) => !oldPlayersSnapshot.some((op) => op.id === p.id)).map((p) => p.name);
+      const removed = oldPlayersSnapshot.filter((p) => !newPlayers.some((np) => np.id === p.id)).map((p) => p.name);
+      const addedIds = new Set(newPlayers.filter((p) => !oldPlayersSnapshot.some((op) => op.id === p.id)).map((p) => p.id));
+      const removedIds = new Set(oldPlayersSnapshot.filter((p) => !newPlayers.some((np) => np.id === p.id)).map((p) => p.id));
+      const arrivedOn = [...newActiveIdsA]
+        .filter((id) => !oldActiveIdsA.has(id) && !addedIds.has(id))
+        .map((id) => map[id]);
+      const arrivedOff = [...oldActiveIdsA]
+        .filter((id) => !newActiveIdsA.has(id) && !removedIds.has(id))
+        .map((id) => map[id]);
+      const parts = [
+        added.length ? `+ tambah: ${added.join(", ")}` : null,
+        removed.length ? `- hapus: ${removed.join(", ")}` : null,
+        arrivedOn.length ? `hadir: ${arrivedOn.join(", ")}` : null,
+        arrivedOff.length ? `tidak hadir: ${arrivedOff.join(", ")}` : null,
+      ].filter(Boolean);
+      logActivity(
+        `Sesuaikan Ronde ${splitIdx + 1} (Americano)${courtsChangedNote}${parts.length ? " — " + parts.join("; ") : ""} — ${freshPart.roundsData.length} ronde ke depan disusun ulang. Susunan SEBELUM diubah: ${oldUnscoredRoundsSnapshot || "(belum ada)"}`
+      );
     }
     return saved;
   };
@@ -5313,6 +5485,19 @@ function AmericanoPadel() {
       changedDescParts.push(`(+ ${otherCourtChanges.length} penyesuaian di lapangan lain)`);
     }
     const changedDesc = changedDescParts.join(", ");
+    // Full "before" text for every court actually being touched (the one
+    // directly edited, plus any others affected by a cross-court swap) —
+    // changedDesc above already says who swapped with whom, but this keeps
+    // the exact match as it stood right before the edit, not just the diff.
+    const changedCourtIdxs = [courtIdx, ...(otherCourtChanges?.map((oc) => oc.courtIdx) || [])];
+    const beforeMatchText = changedCourtIdxs
+      .map((ci) => {
+        const c = rd.courts[ci];
+        return `Lap.${ci + 1}: ${c.team1.map((id) => playerMap[id] || id).join("+")} vs ${c.team2
+          .map((id) => playerMap[id] || id)
+          .join("+")}`;
+      })
+      .join(" | ");
     // What we'll check for in the read-back: this exact round's courts now
     // match the intended new lineup, confirming the write we intended to
     // make is genuinely the one sitting in storage.
@@ -5383,7 +5568,7 @@ function AmericanoPadel() {
         return;
       }
       logActivity(
-        `Edit pemain Ronde ${roundIdx + 1} Match ${courtIdx + 1} (Mexicano): ${changedDesc} — catatan main & partner/lawan disesuaikan buat ronde berikutnya`
+        `Edit pemain Ronde ${roundIdx + 1} Match ${courtIdx + 1} (Mexicano): ${changedDesc} — catatan main & partner/lawan disesuaikan buat ronde berikutnya. Sebelum diedit: [${beforeMatchText}]`
       );
       return;
     }
@@ -5407,7 +5592,7 @@ function AmericanoPadel() {
         return;
       }
       logActivity(
-        `Edit pemain Ronde ${roundIdx + 1} Lap.${courtIdx + 1}: ${changedDesc} (ronde lain tidak diubah)`
+        `Edit pemain Ronde ${roundIdx + 1} Lap.${courtIdx + 1}: ${changedDesc} (ronde lain tidak diubah). Sebelum diedit: [${beforeMatchText}]`
       );
     } else {
       const lockedRounds = [...engine.roundsData.slice(0, roundIdx), editedRound];
@@ -5416,6 +5601,13 @@ function AmericanoPadel() {
       const seed = replayRoundsIntoSeed(lockedRounds, activeIds);
       seed.debugTrace = (engine.debugTrace || []).slice(0, roundIdx);
       const remainingCount = engine.roundsData.length - (roundIdx + 1);
+      // Snapshot of every round AFTER this one, as it stood right before
+      // being regenerated — "sesuaikan ronde sisanya" replaces all of them,
+      // not just the one match actually being edited.
+      const oldFutureRoundsSnapshot = engine.roundsData
+        .slice(roundIdx + 1)
+        .map((r, i) => `Ronde ${roundIdx + 2 + i} [${formatCourtsForLog(r.courts, playerMap)}]`)
+        .join(" || ");
       const freshPart = generateSchedule(activeIds, courts, remainingCount, seed, roundIdx + 1);
       const newRoundsData = [...lockedRounds, ...freshPart.roundsData];
       const newEngine = {
@@ -5445,7 +5637,7 @@ function AmericanoPadel() {
         return;
       }
       logActivity(
-        `Edit pemain Ronde ${roundIdx + 1} Lap.${courtIdx + 1}: ${changedDesc} + sesuaikan ronde sisanya`
+        `Edit pemain Ronde ${roundIdx + 1} Lap.${courtIdx + 1}: ${changedDesc} + sesuaikan ronde sisanya. Sebelum diedit: [${beforeMatchText}]. Ronde setelahnya SEBELUM disusun ulang: ${oldFutureRoundsSnapshot || "(belum ada)"}`
       );
     }
   };
@@ -5485,6 +5677,8 @@ function AmericanoPadel() {
       }
     }
     persist({ paymentPersonId: playerId, paymentInfo: newPaymentInfo });
+    const targetName = playerId ? players.find((p) => p.id === playerId)?.name || playerId : null;
+    logActivity(targetName ? `Set penanggung jawab pembayaran: ${targetName}` : "Hapus penanggung jawab pembayaran");
   };
 
   // The designated payment person can edit their own payment details; the
@@ -5516,6 +5710,36 @@ function AmericanoPadel() {
   // still end up reverted by a last-write-wins collision if the session is
   // open in more than one tab/device around the same time — this check
   // catches that case directly against the log's own content.
+  // logActivity only ever writes to activeId — the session THIS component
+  // instance currently has open. That's fine for host-side actions (they're
+  // always acting on activeId), but handleRespondInvitation runs from the
+  // INVITEE's Lobby, responding to a DIFFERENT session they aren't
+  // necessarily viewing. This reads that session fresh, patches in one log
+  // line, and writes just that back — same non-stale-overwrite reasoning
+  // as logActivity itself, just parameterized by session id and actor name
+  // instead of assuming activeId/currentUser.
+  const logActivityToSession = async (sessionId, who, message) => {
+    const latest = await loadSessionData(sessionId);
+    if (!latest) return;
+    const next = [...(latest.activityLog || []), { ts: Date.now(), who, message }].slice(-300);
+    await saveSessionData(sessionId, { ...latest, activityLog: next, updatedAt: Date.now() });
+  };
+
+  // Renders a round's match compositions as readable text for the activity
+  // log — e.g. "Lap.1: Alfin+Budi vs Citra+Dedi | Lap.2: ...". Used
+  // wherever an UNSCORED round's pairing is about to be overwritten
+  // (reshuffle, roster adjustment, manual edit) so there's a record of what
+  // was actually shown on screen before it changed, not just a note that
+  // *something* changed.
+  const formatCourtsForLog = (courtsArr, nameMap) =>
+    courtsArr
+      .map((c, i) => {
+        const t1 = c.team1.map((id) => nameMap[id] || id).join("+");
+        const t2 = c.team2.map((id) => nameMap[id] || id).join("+");
+        return `Lap.${i + 1}: ${t1} vs ${t2}`;
+      })
+      .join(" | ");
+
   const logActivity = useCallback(
     (message, options) => {
       const who = currentUser?.displayName || currentUser?.username || "?";
@@ -5571,6 +5795,9 @@ function AmericanoPadel() {
     setAdminFee(newAdminFee);
     setBallCost(newBallCost);
     persist({ courtCost: newCourtCost, adminFee: newAdminFee, ballCost: newBallCost });
+    logActivity(
+      `Update biaya — lapangan: Rp${newCourtCost || 0}, admin: Rp${newAdminFee || 0}, bola: Rp${newBallCost || 0}`
+    );
   };
 
   // Host/co-host-only checklist marking who's already paid their split bill
@@ -5581,10 +5808,8 @@ function AmericanoPadel() {
     persist({ paidStatus: newPaidStatus });
   };
 
-  const handleApproveRequest = (reqId) => {
-    const req = pendingRequests.find((r) => r.id === reqId);
-    if (!req) return;
-    const newPending = pendingRequests.filter((r) => r.id !== reqId);
+  const commitApproveRequest = (req) => {
+    const newPending = pendingRequests.filter((r) => r.id !== req.id);
     // Same safety check already used in handleRespondInvitation and
     // handleJoinViaLink: if this person is somehow already in the roster
     // (e.g. they accepted a direct invitation separately, or opened the
@@ -5614,12 +5839,34 @@ function AmericanoPadel() {
       pendingRequests: newPending,
       hostInvitations: newInvitations,
     });
+    logActivity(`Approve permintaan gabung: ${req.name}${alreadyPlayer ? " (sudah jadi peserta, request dibersihkan)" : ""}`);
+  };
+
+  const handleApproveRequest = (reqId) => {
+    const req = pendingRequests.find((r) => r.id === reqId);
+    if (!req) return;
+    // This path used to add straight through with no name check at all —
+    // unlike the manual "Tambah Pemain" flow, which warns if the name
+    // already exists. Someone joining via link/request with a name that
+    // happens to match an existing player (a different real person, or a
+    // mistaken duplicate account) went in completely silently. Surfacing
+    // the same warning here — the host is actively looking at this
+    // decision anyway, clicking Approve — catches it at the one moment
+    // it's still easy to fix.
+    const dup = players.some((p) => p.name.trim().toLowerCase() === req.name.trim().toLowerCase());
+    if (dup) {
+      setPendingDuplicateApproval({ reqId, name: req.name });
+      return;
+    }
+    commitApproveRequest(req);
   };
 
   const handleRejectRequest = (reqId) => {
+    const req = pendingRequests.find((r) => r.id === reqId);
     const newPending = pendingRequests.filter((r) => r.id !== reqId);
     setPendingRequests(newPending);
     persist({ pendingRequests: newPending });
+    if (req) logActivity(`Tolak permintaan gabung: ${req.name}`);
   };
 
   // Owner-only: grant/revoke co-host (same edit access as host) to a
@@ -5627,11 +5874,12 @@ function AmericanoPadel() {
   // (i.e. have an accountId) can be made co-host.
   const handleToggleCoHost = (accountId) => {
     if (!accountId) return;
-    const next = coHostIds.includes(accountId)
-      ? coHostIds.filter((id) => id !== accountId)
-      : [...coHostIds, accountId];
+    const wasCoHost = coHostIds.includes(accountId);
+    const next = wasCoHost ? coHostIds.filter((id) => id !== accountId) : [...coHostIds, accountId];
     setCoHostIds(next);
     persist({ coHostIds: next });
+    const targetName = players.find((p) => p.accountId === accountId)?.name || accountId;
+    logActivity(`${wasCoHost ? "Cabut" : "Jadikan"} co-host: ${targetName}`);
   };
 
   const resetSetupForm = () => {
@@ -5665,6 +5913,7 @@ function AmericanoPadel() {
     setPaymentInfo([]);
     setPaidStatus({});
     setLoggedMatchKeys([]);
+    setLoggedScoreValues({});
     setPlayDate("");
     setExcludeFromStats(false);
     setActivityLog([]);
@@ -5723,6 +5972,7 @@ function AmericanoPadel() {
     setPaymentInfo(data.paymentInfo || []);
     setPaidStatus(data.paidStatus || {});
     setLoggedMatchKeys(data.loggedMatchKeys || []);
+    setLoggedScoreValues(data.loggedScoreValues || {});
     setPlayDate(data.playDate || "");
     setExcludeFromStats(!!data.excludeFromStats);
     setActivityLog(data.activityLog || []);
@@ -6161,6 +6411,27 @@ function AmericanoPadel() {
             clearJoinParam();
             setScreen("lobby");
           }}
+        />
+      )}
+      {pendingDuplicateAdd && (
+        <DuplicateNameConfirmModal
+          name={pendingDuplicateAdd.name}
+          onConfirm={() => {
+            commitAddPlayer(pendingDuplicateAdd.name, true);
+            setPendingDuplicateAdd(null);
+          }}
+          onCancel={() => setPendingDuplicateAdd(null)}
+        />
+      )}
+      {pendingDuplicateApproval && (
+        <DuplicateNameConfirmModal
+          name={pendingDuplicateApproval.name}
+          onConfirm={() => {
+            const req = pendingRequests.find((r) => r.id === pendingDuplicateApproval.reqId);
+            if (req) commitApproveRequest(req);
+            setPendingDuplicateApproval(null);
+          }}
+          onCancel={() => setPendingDuplicateApproval(null)}
         />
       )}
       {screen === "lobby" && (
@@ -11274,6 +11545,36 @@ function DeleteRoundModal({ roundNumber, onConfirm, onClose }) {
   );
 }
 
+
+// Replaces window.confirm() for the "this name already exists" situation —
+// a native confirm() always puts OK as the easy, muscle-memory click, which
+// is exactly the wrong default here: accidentally confirming creates a
+// real duplicate roster entry, while accidentally cancelling just means
+// clicking again. Cancel is the large, prominent button; adding anyway is
+// smaller and secondary, so the safe outcome is also the easy one.
+function DuplicateNameConfirmModal({ name, onConfirm, onCancel }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="w-full sm:max-w-sm bg-slate-900 border border-slate-700 rounded-t-3xl sm:rounded-3xl p-6">
+        <h2 className="font-display text-2xl text-slate-50 mb-2">Nama sudah ada</h2>
+        <p className="text-sm text-slate-300 mb-5">
+          <span className="font-semibold text-slate-100">"{name}"</span> sudah ada di daftar peserta.
+          Kalau maksudnya orang yang SAMA, batalkan ini — dia udah ada. Cuma lanjutkan kalau ini
+          BENERAN orang lain yang kebetulan namanya sama.
+        </p>
+        <button
+          onClick={onCancel}
+          className="w-full py-3.5 rounded-xl font-bold text-slate-950 bg-lime-300 mb-2"
+        >
+          Batalkan
+        </button>
+        <button onClick={onConfirm} className="w-full py-2 rounded-xl text-xs text-slate-500">
+          Ya, ini orang lain — tambahkan tetap
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function JoinConfirmModal({ eventData, onConfirm, onCancel }) {
   const [submitting, setSubmitting] = useState(false);
