@@ -6400,6 +6400,7 @@ function AmericanoPadel() {
       {joinConfirmPreview && (
         <JoinConfirmModal
           eventData={joinConfirmPreview.data}
+          me={joinConfirmPreview.me}
           onConfirm={async () => {
             const { id, me } = joinConfirmPreview;
             setJoinConfirmPreview(null);
@@ -6410,6 +6411,17 @@ function AmericanoPadel() {
             setJoinConfirmPreview(null);
             clearJoinParam();
             setScreen("lobby");
+          }}
+          onNotMe={() => {
+            // Deliberately does NOT call clearJoinParam() — pendingJoinId
+            // stays set, so once the right person logs in on this same
+            // device, handleAuthenticated sees it's still pending and
+            // routes straight back into this same join confirmation for
+            // THEM, instead of losing the link they came in on.
+            setJoinConfirmPreview(null);
+            forgetLogin();
+            setCurrentUser(null);
+            setLobby([]);
           }}
         />
       )}
@@ -11576,7 +11588,7 @@ function DuplicateNameConfirmModal({ name, onConfirm, onCancel }) {
   );
 }
 
-function JoinConfirmModal({ eventData, onConfirm, onCancel }) {
+function JoinConfirmModal({ eventData, me, onConfirm, onCancel, onNotMe }) {
   const [submitting, setSubmitting] = useState(false);
   const gameFormatLabel = eventData.gameFormat === "mexicano" ? "Mexicano" : "Americano";
   const teamFormatLabel = eventData.teamFormat === "fixed" ? "Fixed Partner" : "Rotating";
@@ -11597,6 +11609,26 @@ function JoinConfirmModal({ eventData, onConfirm, onCancel }) {
           </span>
         </div>
         <h2 className="font-display text-3xl text-slate-50 mb-3">{eventData.name || "Sesi Padel"}</h2>
+        {/* Shown especially for anyone joining from a shared/borrowed
+            device where a PREVIOUS person's login got remembered — without
+            this, the join request silently goes through under whoever's
+            account happens to still be signed in, with no checkpoint to
+            notice it's the wrong person. */}
+        {me && (
+          <div className="flex items-center justify-between gap-3 bg-slate-800/60 border border-slate-700 rounded-xl px-3 py-2.5 mb-4">
+            <div className="min-w-0">
+              <p className="text-[10px] text-slate-500 uppercase tracking-wide">Gabung sebagai</p>
+              <p className="text-sm font-semibold text-slate-100 truncate">
+                {me.displayName || me.username}
+              </p>
+            </div>
+            {onNotMe && (
+              <button onClick={onNotMe} className="text-xs font-semibold text-cyan-300 shrink-0">
+                Bukan saya
+              </button>
+            )}
+          </div>
+        )}
         <div className="space-y-2 mb-4 text-sm">
           <div className="flex items-center justify-between text-slate-300">
             <span className="text-slate-500">Host</span>
