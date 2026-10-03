@@ -1783,6 +1783,26 @@ function forgetLogin() {
   window.storage?.delete(REMEMBER_STORAGE_KEY, false)?.catch(() => {});
 }
 
+// Catches not just an identical name, but one name being a PREFIX of the
+// other ("Hasan" vs "Hasanul") — confirmed from a real event where exactly
+// this happened: a player joined via their account as "Hasan", the host
+// later typed "Hasanul" as a guest thinking it was still unfilled, and for
+// several minutes both were simultaneously active as if they were two
+// different people (even paired together in the same match) before the
+// host noticed and removed the original. An exact-match check alone can't
+// catch this since the strings genuinely differ. A minimum length on the
+// shorter name avoids flagging short names that just happen to prefix a
+// longer, unrelated one (e.g. "Al" inside "Alex").
+function isSimilarName(a, b) {
+  const la = (a || "").trim().toLowerCase();
+  const lb = (b || "").trim().toLowerCase();
+  if (!la || !lb) return false;
+  if (la === lb) return true;
+  const shorter = la.length <= lb.length ? la : lb;
+  const longer = la.length <= lb.length ? lb : la;
+  return shorter.length >= 3 && longer.startsWith(shorter);
+}
+
 function uid() {
   return Math.random().toString(36).slice(2, 10);
 }
@@ -3434,11 +3454,7 @@ function AmericanoPadel() {
       // exactly that duplicate with zero warning. Surfacing it to the
       // PERSON ACCEPTING — the only one actually present at this moment —
       // is the only place left this can still be caught.
-      const nameDup =
-        !already &&
-        (data.players || []).some(
-          (p) => p.name.trim().toLowerCase() === currentUser.username.trim().toLowerCase()
-        );
+      const nameDup = !already && (data.players || []).some((p) => isSimilarName(p.name, currentUser.username));
       if (nameDup) {
         const proceed = window.confirm(
           `Ada peserta bernama "${currentUser.username}" yang UDAH ADA di acara ini (mungkin ditambahkan manual oleh host sebelum kamu terima undangan ini). Kalau itu KAMU, batalkan ini dan minta host hapus entri lama itu. Cuma lanjutkan kalau kamu YAKIN itu orang lain yang kebetulan namanya sama.`
@@ -4045,7 +4061,7 @@ function AmericanoPadel() {
   const addPlayerFromInput = () => {
     const name = nameInput.trim();
     if (!name) return;
-    const dup = players.some((p) => p.name.trim().toLowerCase() === name.toLowerCase());
+    const dup = players.some((p) => isSimilarName(p.name, name));
     if (dup) {
       setPendingDuplicateAdd({ name });
       return;
@@ -5853,7 +5869,7 @@ function AmericanoPadel() {
     // the same warning here — the host is actively looking at this
     // decision anyway, clicking Approve — catches it at the one moment
     // it's still easy to fix.
-    const dup = players.some((p) => p.name.trim().toLowerCase() === req.name.trim().toLowerCase());
+    const dup = players.some((p) => isSimilarName(p.name, req.name));
     if (dup) {
       setPendingDuplicateApproval({ reqId, name: req.name });
       return;
@@ -10990,6 +11006,7 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, gameForm
   const [nameInput, setNameInput] = useState("");
   const [courtsValue, setCourtsValue] = useState(courts);
   const [saving, setSaving] = useState(false);
+  const [pendingDuplicateName, setPendingDuplicateName] = useState(null); // string | null
   const isFixedPartner = teamFormat === "fixed";
 
   const lockedCount = React.useMemo(() => {
@@ -11020,12 +11037,10 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, gameForm
   const addManual = () => {
     const name = nameInput.trim();
     if (!name) return;
-    const dup = roster.some((p) => p.name.trim().toLowerCase() === name.toLowerCase());
+    const dup = roster.some((p) => isSimilarName(p.name, name));
     if (dup) {
-      const confirmed = window.confirm(
-        `"${name}" sudah ada di daftar. Tetap tambahkan sebagai orang yang berbeda? (Kalau maksudnya orang yang SAMA, batalkan ini — dia udah ada, cukup toggle kehadirannya kalau perlu.)`
-      );
-      if (!confirmed) return;
+      setPendingDuplicateName(name);
+      return;
     }
     setRoster([...roster, { id: uid(), name }]);
     setNameInput("");
@@ -11040,6 +11055,7 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, gameForm
   const maxUsableCourts = Math.max(1, Math.floor(roster.length / 4)) || 1;
 
   return (
+    <>
     <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center" onClick={saving ? undefined : onClose}>
       <div
         className="bg-slate-950 border border-slate-800 rounded-t-3xl sm:rounded-3xl w-full sm:max-w-sm max-h-[85vh] overflow-y-auto p-5"
@@ -11170,6 +11186,18 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, gameForm
         </div>
       </div>
     </div>
+    {pendingDuplicateName && (
+      <DuplicateNameConfirmModal
+        name={pendingDuplicateName}
+        onConfirm={() => {
+          setRoster([...roster, { id: uid(), name: pendingDuplicateName }]);
+          setNameInput("");
+          setPendingDuplicateName(null);
+        }}
+        onCancel={() => setPendingDuplicateName(null)}
+      />
+    )}
+    </>
   );
 }
 
@@ -11568,11 +11596,12 @@ function DuplicateNameConfirmModal({ name, onConfirm, onCancel }) {
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm">
       <div className="w-full sm:max-w-sm bg-slate-900 border border-slate-700 rounded-t-3xl sm:rounded-3xl p-6">
-        <h2 className="font-display text-2xl text-slate-50 mb-2">Nama sudah ada</h2>
+        <h2 className="font-display text-2xl text-slate-50 mb-2">Nama mirip sudah ada</h2>
         <p className="text-sm text-slate-300 mb-5">
-          <span className="font-semibold text-slate-100">"{name}"</span> sudah ada di daftar peserta.
-          Kalau maksudnya orang yang SAMA, batalkan ini — dia udah ada. Cuma lanjutkan kalau ini
-          BENERAN orang lain yang kebetulan namanya sama.
+          Ada peserta dengan nama <span className="font-semibold text-slate-100">"{name}"</span> atau
+          mirip itu yang udah ada di daftar. Kalau maksudnya orang yang SAMA (cuma beda cara nulis,
+          misal "Hasan" vs "Hasanul"), batalkan ini — dia udah ada. Cuma lanjutkan kalau ini BENERAN
+          orang lain yang kebetulan namanya mirip.
         </p>
         <button
           onClick={onCancel}
