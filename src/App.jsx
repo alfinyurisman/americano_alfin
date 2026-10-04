@@ -2938,6 +2938,12 @@ function AmericanoPadel() {
   // prior toggle yet, silently reverting it). Reading playersRef.current
   // instead guarantees the freshest value regardless of render timing.
   const playersRef = useRef([]);
+  // Some mobile keyboards fire the Enter keydown event twice for a single
+  // press (an IME/composition quirk), which could submit the same typed
+  // name as two separate "add player" calls in a row. This guards against
+  // that — and against an impatient double-tap on the + button — by
+  // ignoring a second call that lands within the same short window.
+  const lastAddPlayerCallRef = useRef(0);
   useEffect(() => {
     playersRef.current = players;
   }, [players]);
@@ -3363,7 +3369,13 @@ function AmericanoPadel() {
   const handleInviteFriendAsPlayer = async (friend) => {
     const alreadyPlayer = players.some((p) => p.accountId === friend.accountId);
     const alreadyInvited = hostInvitations.some((i) => i.accountId === friend.accountId);
-    if (alreadyPlayer || alreadyInvited || !activeId) return;
+    // Account-based joining (invite friends, invite link, join requests)
+    // is a waiting-room-only thing — once matches have started, adding
+    // someone is manual-guest-only (see ManagePlayersModal). Checked here
+    // explicitly rather than just relying on the waiting room UI not being
+    // shown anymore, so the rule holds even if this ever gets called from
+    // somewhere else.
+    if (alreadyPlayer || alreadyInvited || !activeId || status !== "waiting") return;
 
     const newInvitations = [
       ...hostInvitations,
@@ -3432,6 +3444,18 @@ function AmericanoPadel() {
       }
       return false;
     };
+
+    // hostInvitations already gets wiped the moment the match starts (same
+    // reasoning as pendingRequests), so this is mainly a second layer of
+    // protection for an invitation that somehow survives past that point —
+    // accepting it late should still be refused, not silently let through.
+    if (accept && data.status && data.status !== "waiting") {
+      alert("Acara ini udah dimulai — undangan ini udah nggak berlaku lagi. Minta host tambahkan kamu manual kalau masih mau gabung.");
+      const newList = (await loadLobbyIndex(currentUser.accountId)).filter((e) => e.id !== sessionId);
+      await saveLobbyIndex(currentUser.accountId, newList);
+      setLobby(newList.sort((a, b) => sortDateValue(b) - sortDateValue(a)));
+      return;
+    }
 
     if (accept) {
       // Deliberately matches by accountId ONLY, not by name. Auto-merging
@@ -4059,6 +4083,9 @@ function AmericanoPadel() {
   };
 
   const addPlayerFromInput = () => {
+    const now = Date.now();
+    if (now - lastAddPlayerCallRef.current < 400) return;
+    lastAddPlayerCallRef.current = now;
     const name = nameInput.trim();
     if (!name) return;
     const dup = players.some((p) => isSimilarName(p.name, name));
@@ -4185,6 +4212,12 @@ function AmericanoPadel() {
   // their accountId so it's identifiable); turning it off removes just that
   // auto-added entry, leaving any manually-typed names untouched.
   const handleToggleHostPlaying = () => {
+    // Deliberately NOT restricted to waiting-room-only like inviting a
+    // friend is — the host adding THEMSELVES is a direct, self-aware action
+    // (they always know whether they're already in the roster), not the
+    // same invited-account-vs-manual-guest ambiguity that caused the
+    // Hasan/Hasanul duplicate. Staying available mid-match matters too: a
+    // common real case is someone dropping out and the host stepping in.
     const next = !hostPlaying;
     setHostPlaying(next);
     let newPlayers;
@@ -5861,6 +5894,14 @@ function AmericanoPadel() {
   const handleApproveRequest = (reqId) => {
     const req = pendingRequests.find((r) => r.id === reqId);
     if (!req) return;
+    // pendingRequests already gets wiped the moment the match starts, so
+    // this should rarely have anything to catch in practice — but checking
+    // explicitly here too means the waiting-room-only rule holds even if
+    // that clearing step is ever missed somewhere.
+    if (status !== "waiting") {
+      alert("Pertandingan udah dimulai — permintaan gabung via akun nggak bisa lagi di-approve. Tambahkan secara manual lewat Kelola Pertandingan kalau perlu.");
+      return;
+    }
     // This path used to add straight through with no name check at all —
     // unlike the manual "Tambah Pemain" flow, which warns if the name
     // already exists. Someone joining via link/request with a name that
@@ -11007,6 +11048,7 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, gameForm
   const [courtsValue, setCourtsValue] = useState(courts);
   const [saving, setSaving] = useState(false);
   const [pendingDuplicateName, setPendingDuplicateName] = useState(null); // string | null
+  const lastAddManualCallRef = useRef(0); // same double-fire guard as addPlayerFromInput, local to this modal
   const isFixedPartner = teamFormat === "fixed";
 
   const lockedCount = React.useMemo(() => {
@@ -11035,6 +11077,9 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, gameForm
   const removePlayer = (id) => setRoster(roster.filter((p) => p.id !== id));
 
   const addManual = () => {
+    const now = Date.now();
+    if (now - lastAddManualCallRef.current < 400) return;
+    lastAddManualCallRef.current = now;
     const name = nameInput.trim();
     if (!name) return;
     const dup = roster.some((p) => isSimilarName(p.name, name));
@@ -11046,12 +11091,6 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, gameForm
     setNameInput("");
   };
 
-  const addFriend = (f) => {
-    if (roster.some((p) => p.accountId === f.accountId)) return;
-    setRoster([...roster, { id: uid(), name: f.username, accountId: f.accountId }]);
-  };
-
-  const availableFriends = friends.filter((f) => !roster.some((p) => p.accountId === f.accountId));
   const maxUsableCourts = Math.max(1, Math.floor(roster.length / 4)) || 1;
 
   return (
@@ -11117,25 +11156,6 @@ function ManagePlayersModal({ players, friends, engine, scores, courts, gameForm
                 <Plus size={16} strokeWidth={3} />
               </button>
             </div>
-
-            {availableFriends.length > 0 && (
-              <div className="mb-4">
-                <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-1.5">
-                  Tambah dari teman
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {availableFriends.map((f) => (
-                    <button
-                      key={f.accountId}
-                      onClick={() => addFriend(f)}
-                      className="px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-900 border border-slate-700 text-slate-300"
-                    >
-                      + {f.username}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
 
             <div className="text-[10px] text-slate-500 uppercase tracking-wide mb-1.5">
               Daftar pemain ({roster.length})
