@@ -32,7 +32,16 @@ function shuffleArray(arr) {
   return a;
 }
 
-function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset = 0) {
+// fixedFirstRoundCourts: optional array of {courtIdx, team1, team2} — courts
+// that MUST appear exactly as given, at their original index, in round 0 of
+// THIS generation call. Exists specifically for regenerating a round that
+// was only PARTIALLY scored before a roster adjustment: the already-played,
+// already-scored court(s) must stay exactly as they were (same players,
+// same result), while only the remaining court(s) in that same round get
+// freshly decided — instead of the whole round being discarded and
+// reshuffled, which used to silently lose an in-progress court's result and
+// its fairness history.
+function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset = 0, fixedFirstRoundCourts = []) {
   const n = playerIds.length;
   const usableCourts = Math.max(0, Math.min(courtsInput, Math.floor(n / 4)));
   const capacity = usableCourts * 4;
@@ -99,7 +108,18 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
 
   for (let r = 0; r < numRounds; r++) {
     const globalR = r + roundOffset;
-    const numResting = n - capacity;
+    // Only round 0 can have fixed courts (a partially-scored round being
+    // regenerated) — every subsequent round is a clean slate as before.
+    const fixedCourtsThisRound = r === 0 ? fixedFirstRoundCourts : [];
+    const fixedPlayerIds = new Set(fixedCourtsThisRound.flatMap((c) => [...c.team1, ...c.team2]));
+    // The pool actually subject to the wait-time-based rest/active selection
+    // excludes anyone already fixed in — they're unconditionally active,
+    // not up for consideration. The capacity still needed FROM that pool is
+    // reduced by however many slots the fixed courts already fill.
+    const poolIds = fixedPlayerIds.size > 0 ? playerIds.filter((id) => !fixedPlayerIds.has(id)) : playerIds;
+    const poolCapacity = capacity - fixedPlayerIds.size;
+    const poolN = poolIds.length;
+    const numResting = poolN - poolCapacity;
     let resting = [];
     let active = [...playerIds];
     const dbg = { round: globalR, waitTimes: {} };
@@ -112,7 +132,7 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
       // comparison the way `sort(() => Math.random()-0.5)` would (which
       // can't reliably split up two candidates who are tied with each other
       // on every factor, like two players who joined at the same time).
-      const shuffledIds = shuffleArray(playerIds);
+      const shuffledIds = shuffleArray(poolIds);
       const sorted = [...shuffledIds].sort((a, b) => {
         const waitA = globalR - lastPlayed[a];
         const waitB = globalR - lastPlayed[b];
@@ -132,7 +152,7 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
       // played yet (that gap always matters, no matter the numbers), and
       // never if the round below is "just played last round" (wait 1) since
       // reusing them back-to-back is never worth it for variety's sake.
-      const cutoffWait = globalR - lastPlayed[sorted[capacity - 1]];
+      const cutoffWait = globalR - lastPlayed[sorted[poolCapacity - 1]];
       let guaranteed = sorted.filter((id) => globalR - lastPlayed[id] > cutoffWait);
       const tier0 = sorted.filter((id) => globalR - lastPlayed[id] === cutoffWait);
       dbg.cutoffWait = cutoffWait;
@@ -155,7 +175,7 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
       // changes. Debt bookkeeping after `active` is finalized guarantees
       // nobody who gets bumped this way waits more than one extra round.
       let clumpEligible = [];
-      if (capacity <= 4 && guaranteed.length >= 3) {
+      if (poolCapacity <= 4 && guaranteed.length >= 3) {
         const topWait = globalR - lastPlayed[guaranteed[0]];
         const tiedAtTop = guaranteed.filter((id) => globalR - lastPlayed[id] === topWait);
         if (tiedAtTop.length >= 3) {
@@ -172,7 +192,7 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
         }
       }
 
-      const neededFromFlex = capacity - guaranteed.length;
+      const neededFromFlex = poolCapacity - guaranteed.length;
       dbg.clumpEligible = [...clumpEligible];
       dbg.guaranteedAfterClump = [...guaranteed];
       dbg.neededFromFlex = neededFromFlex;
@@ -270,6 +290,7 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
         dbg.activeSelection = "trial";
         dbg.activeCost = bestActiveCost;
       }
+      if (fixedPlayerIds.size > 0) active = [...fixedPlayerIds, ...active];
 
       const activeSet = new Set(active);
       resting = playerIds.filter((id) => !activeSet.has(id));
@@ -297,15 +318,22 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
     });
     dbg.activeChosen = [...active];
 
+    // Only the non-fixed players and court slots are subject to the
+    // shuffle/optimize trial search below — fixed courts (an already-played,
+    // already-scored court from a round being regenerated) are placed as-is
+    // at their original index afterward, untouched by this search.
+    const activeForOptimization = fixedPlayerIds.size > 0 ? active.filter((id) => !fixedPlayerIds.has(id)) : active;
+    const remainingCourtSlots = usableCourts - fixedCourtsThisRound.length;
+
     let bestSplits = null;
     let bestCost = Infinity;
     let bestSplitsDebug = null;
-    const trials = active.length <= 8 ? 60 : active.length <= 16 ? 250 : 400;
+    const trials = activeForOptimization.length <= 8 ? 60 : activeForOptimization.length <= 16 ? 250 : 400;
 
     for (let t = 0; t < trials; t++) {
-      const shuffled = shuffleArray(active);
+      const shuffled = shuffleArray(activeForOptimization);
       const groups = [];
-      for (let g = 0; g < usableCourts; g++) {
+      for (let g = 0; g < remainingCourtSlots; g++) {
         groups.push(shuffled.slice(g * 4, g * 4 + 4));
       }
 
@@ -347,10 +375,15 @@ function generateSchedule(playerIds, courtsInput, numRounds, seed, roundOffset =
     }
     dbg.teamSplit = bestSplitsDebug;
 
-    const courtsResult = (bestSplits || []).map((split) => ({
-      team1: split.t1,
-      team2: split.t2,
-    }));
+    const newlyOptimized = (bestSplits || []).map((split) => ({ team1: split.t1, team2: split.t2 }));
+    const courtsResult = new Array(usableCourts);
+    fixedCourtsThisRound.forEach((c) => {
+      courtsResult[c.courtIdx] = { team1: c.team1, team2: c.team2 };
+    });
+    let nextOptimizedIdx = 0;
+    for (let ci = 0; ci < usableCourts; ci++) {
+      if (!courtsResult[ci]) courtsResult[ci] = newlyOptimized[nextOptimizedIdx++];
+    }
 
     courtsResult.forEach(({ team1, team2 }) => {
       const [a, b] = team1;
@@ -2336,6 +2369,35 @@ function AuthScreen({ onAuthenticated }) {
 }
 
 
+// Single source of truth for "is this tennis match finished, and who won" —
+// used everywhere that needs it (live scoring UI, winner highlighting,
+// recap/export) so both scoring modes are handled consistently.
+// race: first to raceTarget games wins, however many games that takes.
+// fixedRounds: always play exactly roundsTarget games first (never stopping
+// early even once one side has clearly won); if that ends tied, one more
+// decider game is played and whoever wins it wins overall.
+function tennisMatchStatus(gamesA, gamesB, mode, raceTarget, roundsTarget, tiebreak) {
+  if (mode === "fixedRounds") {
+    const target = roundsTarget || 4;
+    const isEven = target % 2 === 0;
+    const tiebreakOn = isEven && tiebreak !== false; // odd targets never need it
+    const played = gamesA + gamesB;
+    if (played < target) return { finished: false, needsDecider: false };
+    if (played === target) {
+      if (gamesA === gamesB) {
+        if (tiebreakOn) return { finished: false, needsDecider: true };
+        return { finished: true, winner: null, tied: true }; // draw — tiebreak off
+      }
+      return { finished: true, winner: gamesA > gamesB ? "team1" : "team2" };
+    }
+    // played === target + 1: the decider game has been played
+    return { finished: true, winner: gamesA > gamesB ? "team1" : "team2" };
+  }
+  if (gamesA >= raceTarget) return { finished: true, winner: "team1" };
+  if (gamesB >= raceTarget) return { finished: true, winner: "team2" };
+  return { finished: false, needsDecider: false };
+}
+
 function matchAB(s) {
   if (!s) return null;
   if (s.format === "tennis") {
@@ -2981,6 +3043,19 @@ function AmericanoPadel() {
   const [fixedPairs, setFixedPairs] = useState([]); // [[playerIdA, playerIdB], ...] — only used when teamFormat === "fixed"
   const [pointTarget, setPointTarget] = useState(21);
   const [tennisTarget, setTennisTarget] = useState(4); // race to N games
+  // "race" (default, unchanged): first to tennisTarget games wins, however
+  // many games that takes. "fixedRounds": always play exactly
+  // tennisRoundsTarget games first; only if that ends tied (evenly split)
+  // is one more decider game played. tennisRoundsTarget is always even —
+  // a tie is only possible, and only needs resolving, when the fixed count
+  // splits evenly in half.
+  const [tennisMode, setTennisMode] = useState("race"); // race | fixedRounds
+  const [tennisRoundsTarget, setTennisRoundsTarget] = useState(4);
+  // Only meaningful when tennisRoundsTarget is even — an odd count can
+  // never end tied, so there's nothing to ask about. When even and this is
+  // true, a tied result plays one extra decider game; when false, a tied
+  // result just stays a tie (no winner declared).
+  const [tennisTiebreak, setTennisTiebreak] = useState(true);
   const [ended, setEnded] = useState(false);
 
   // Session state (post-generate)
@@ -3234,6 +3309,9 @@ function AmericanoPadel() {
           teamFormat: resolveGameAndTeamFormat(data.gameFormat ? data : entry).teamFormat,
           scoreFormat: data.scoreFormat || entry.scoreFormat || "points",
           tennisTarget: data.tennisTarget || entry.tennisTarget || 4,
+          tennisMode: data.tennisMode || entry.tennisMode || "race",
+          tennisRoundsTarget: data.tennisRoundsTarget || entry.tennisRoundsTarget || 4,
+          tennisTiebreak: data.tennisTiebreak ?? entry.tennisTiebreak ?? true,
         };
       })
     );
@@ -3674,6 +3752,9 @@ function AmericanoPadel() {
           teamFormat: current.teamFormat || (current.gameFormat === "fixed_partner" ? "fixed" : "rotating"),
           scoreFormat: current.scoreFormat || "points",
           tennisTarget: current.tennisTarget || 4,
+          tennisMode: current.tennisMode || "race",
+          tennisRoundsTarget: current.tennisRoundsTarget || 4,
+          tennisTiebreak: current.tennisTiebreak ?? true,
         };
         nextList = [entry, ...myList];
         await saveLobbyIndex(account.accountId, nextList);
@@ -3704,6 +3785,9 @@ function AmericanoPadel() {
     setFixedPairs(current.fixedPairs || []);
     setPointTarget(current.pointTarget ?? 21);
     setTennisTarget(current.tennisTarget ?? 4);
+    setTennisMode(current.tennisMode || "race");
+    setTennisRoundsTarget(current.tennisRoundsTarget ?? 4);
+    setTennisTiebreak(current.tennisTiebreak ?? true);
     setMaxParticipants(current.maxParticipants ?? 8);
     setVisibility(current.visibility || "private");
     setHostPlaying(!!current.hostPlaying);
@@ -3779,6 +3863,9 @@ function AmericanoPadel() {
           setFixedPairs(saved.fixedPairs || []);
           setPointTarget(saved.pointTarget ?? 21);
           setTennisTarget(saved.tennisTarget ?? 4);
+          setTennisMode(saved.tennisMode || "race");
+          setTennisRoundsTarget(saved.tennisRoundsTarget ?? 4);
+          setTennisTiebreak(saved.tennisTiebreak ?? true);
           setCourtCost(saved.courtCost ?? "");
           setAdminFee(saved.adminFee ?? "");
           setBallCost(saved.ballCost ?? "");
@@ -3851,6 +3938,9 @@ function AmericanoPadel() {
         fixedPairs,
         pointTarget,
         tennisTarget,
+        tennisMode,
+        tennisRoundsTarget,
+        tennisTiebreak,
         ended,
         engine,
         playerMap,
@@ -3880,6 +3970,9 @@ function AmericanoPadel() {
         teamFormat: snapshot.teamFormat || "rotating",
         scoreFormat: snapshot.scoreFormat || "points",
         tennisTarget: snapshot.tennisTarget || 4,
+        tennisMode: snapshot.tennisMode || "race",
+        tennisRoundsTarget: snapshot.tennisRoundsTarget || 4,
+        tennisTiebreak: snapshot.tennisTiebreak ?? true,
         role: "owner",
       };
       if (currentUser.accountId === theOwnerId) {
@@ -3905,7 +3998,7 @@ function AmericanoPadel() {
       }
       return savePromise;
     },
-    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, loggedMatchKeys, loggedScoreValues, courtStages, playDate, excludeFromStats, activityLog, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, endTime, scoreFormat, sportType, gameFormat, teamFormat, fixedPairs, pointTarget, tennisTarget, ended, engine, playerMap, currentRound, scores]
+    [activeId, currentUser, ownerId, ownerUsername, eventName, status, visibility, hostPlaying, coHostIds, courtCost, adminFee, ballCost, paymentPersonId, paymentInfo, paidStatus, loggedMatchKeys, loggedScoreValues, courtStages, playDate, excludeFromStats, activityLog, maxParticipants, pendingRequests, hostInvitations, players, courts, mode, totalMinutes, minutesPerRound, breakMinutes, manualRounds, startTime, endTime, scoreFormat, sportType, gameFormat, teamFormat, fixedPairs, pointTarget, tennisTarget, tennisMode, tennisRoundsTarget, tennisTiebreak, ended, engine, playerMap, currentRound, scores]
   );
 
   // Partner Synergy Index: whenever a specific match's score newly becomes
@@ -4766,13 +4859,39 @@ function AmericanoPadel() {
       const newDebugTrace = (engine.debugTrace || []).filter((_, i) => i !== roundIdx);
       newEngine = { ...engine, roundsData: newRoundsData, ...rebuilt, debugTrace: newDebugTrace };
     } else {
-      const lockedRounds = engine.roundsData.slice(0, roundIdx);
+      // Verify which rounds BEFORE the deleted one are ACTUALLY fully
+      // scored, rather than assuming all of them qualify just because
+      // they're positioned earlier — same robust detection as the other
+      // regeneration paths, since there's no guarantee scoring happened
+      // strictly in round order.
+      let splitIdx = 0;
+      for (let rIdx = 0; rIdx < roundIdx; rIdx++) {
+        const rd = engine.roundsData[rIdx];
+        const allScored = rd.courts.every((_, cIdx) => isMatchScoreComplete(scores[`${rIdx}-${cIdx}`]));
+        if (allScored) splitIdx = rIdx + 1;
+      }
+      const lockedRounds = engine.roundsData.slice(0, splitIdx);
+      // The boundary round (still before the deleted one) may itself have
+      // some court(s) already scored — preserve those exactly rather than
+      // discarding them into the regeneration.
+      const boundaryRound = splitIdx < roundIdx ? engine.roundsData[splitIdx] : null;
+      const fixedCourtsForBoundary = boundaryRound
+        ? boundaryRound.courts
+            .map((c, cIdx) => ({ c, cIdx }))
+            .filter(({ cIdx }) => isMatchScoreComplete(scores[`${splitIdx}-${cIdx}`]))
+            .map(({ c, cIdx }) => ({ courtIdx: cIdx, team1: c.team1, team2: c.team2 }))
+        : [];
       const seed = replayRoundsIntoSeed(lockedRounds, activeIds);
-      seed.debugTrace = (engine.debugTrace || []).slice(0, roundIdx);
-      const remainingCount = engine.roundsData.length - 1 - roundIdx;
+      seed.debugTrace = (engine.debugTrace || []).slice(0, splitIdx);
+      // The deleted round itself is gone, plus everything from splitIdx up
+      // to (not including) it was already counted in lockedRounds, so the
+      // fresh portion covers from splitIdx through the end, minus the one
+      // deleted round.
+      const remainingCount = engine.roundsData.length - 1 - splitIdx;
+      const fixedForFirstRound = fixedCourtsForBoundary.filter((c) => c.courtIdx < courts);
       const freshPart =
         remainingCount > 0
-          ? generateSchedule(activeIds, courts, remainingCount, seed, roundIdx)
+          ? generateSchedule(activeIds, courts, remainingCount, seed, splitIdx, fixedForFirstRound)
           : { roundsData: [], playCount: seed.playCount, restCount: seed.restCount, partner: seed.partner, opp: seed.opp, usableCourts: 0, lastPlayed: seed.lastPlayed, skipDebt: seed.skipDebt, debugTrace: seed.debugTrace, consecutivePlays: seed.consecutivePlays };
       newRoundsData = [...lockedRounds, ...freshPart.roundsData];
       newEngine = {
@@ -4787,10 +4906,14 @@ function AmericanoPadel() {
       consecutivePlays: freshPart.consecutivePlays,
         debugTrace: freshPart.debugTrace,
       };
+      const fixedCourtIdxsAtBoundary = new Set(fixedCourtsForBoundary.map((c) => c.courtIdx));
       newScores = {};
       Object.keys(scores).forEach((key) => {
-        const rIdx = parseInt(key.split("-")[0], 10);
-        if (rIdx < roundIdx) newScores[key] = scores[key];
+        const [rStr, cStr] = key.split("-");
+        const rIdx = parseInt(rStr, 10);
+        if (rIdx < splitIdx || (rIdx === splitIdx && fixedCourtIdxsAtBoundary.has(parseInt(cStr, 10)))) {
+          newScores[key] = scores[key];
+        }
       });
     }
 
@@ -5010,6 +5133,20 @@ function AmericanoPadel() {
 
     const lockedRounds = engine.roundsData.slice(0, splitIdx);
     const remainingRoundsCount = engine.roundsData.length - splitIdx;
+    // The round AT splitIdx is the first one that ISN'T fully scored — but
+    // with multiple courts, it may still have SOME court(s) already played
+    // and scored. Those must be preserved exactly as they were (same
+    // players, same result) rather than swept into the regeneration along
+    // with the genuinely-still-open courts. This is exactly the gap that
+    // used to silently discard an in-progress court's result and its
+    // fairness-history contribution on any roster adjustment mid-round.
+    const boundaryRound = engine.roundsData[splitIdx];
+    const fixedCourtsForBoundary = boundaryRound
+      ? boundaryRound.courts
+          .map((c, cIdx) => ({ c, cIdx }))
+          .filter(({ cIdx }) => isMatchScoreComplete(scores[`${splitIdx}-${cIdx}`]))
+          .map(({ c, cIdx }) => ({ courtIdx: cIdx, team1: c.team1, team2: c.team2 }))
+      : [];
     // Snapshot of every unscored round's pairing as it stood RIGHT BEFORE
     // this adjustment regenerates them — the only remaining record of what
     // was actually shown on screen, since the regenerated version below
@@ -5218,8 +5355,16 @@ function AmericanoPadel() {
       let allRounds = [];
       let lastPart = null;
       let stageOffset = splitIdx;
-      stageSegments.forEach((seg) => {
-        const part = generateSchedule(ids, seg.courts, seg.rounds, stageSeed, stageOffset);
+      stageSegments.forEach((seg, segIdx) => {
+        // Only the very first segment's first round corresponds to the
+        // actual boundary round (splitIdx) — later segments start further
+        // in and have nothing to do with the partially-scored round. Safety
+        // filter in case this segment's own court count is smaller than
+        // where the fixed court originally sat (can't place it past the
+        // last valid index).
+        const fixedForThisSegment =
+          segIdx === 0 ? fixedCourtsForBoundary.filter((c) => c.courtIdx < seg.courts) : [];
+        const part = generateSchedule(ids, seg.courts, seg.rounds, stageSeed, stageOffset, fixedForThisSegment);
         allRounds = [...allRounds, ...part.roundsData];
         stageOffset += seg.rounds;
         stageSeed = {
@@ -5236,7 +5381,8 @@ function AmericanoPadel() {
       });
       freshPart = { ...lastPart, roundsData: allRounds };
     } else {
-      freshPart = generateSchedule(ids, newCourts, remainingRoundsCount, seed, splitIdx);
+      const fixedForFirstRound = fixedCourtsForBoundary.filter((c) => c.courtIdx < newCourts);
+      freshPart = generateSchedule(ids, newCourts, remainingRoundsCount, seed, splitIdx, fixedForFirstRound);
     }
 
     const newRoundsData = [...lockedRounds, ...freshPart.roundsData];
@@ -5253,12 +5399,20 @@ function AmericanoPadel() {
       debugTrace: freshPart.debugTrace,
     };
 
-    // Keep scores for locked (already-complete) rounds; drop everything else
-    // since those matchups no longer exist in the new schedule.
+    // Keep scores for locked (already-complete) rounds, AND for any court
+    // within the boundary round that was individually fixed (already played
+    // and scored before this adjustment) — only the genuinely-still-open
+    // courts/rounds lose their (nonexistent) score. Previously this kept
+    // ONLY fully-locked rounds, silently discarding an in-progress court's
+    // real result the moment any roster adjustment touched that round.
+    const fixedCourtIdxsAtBoundary = new Set(fixedCourtsForBoundary.map((c) => c.courtIdx));
     const newScores = {};
     Object.keys(scores).forEach((key) => {
-      const rIdx = parseInt(key.split("-")[0], 10);
-      if (rIdx < splitIdx) newScores[key] = scores[key];
+      const [rStr, cStr] = key.split("-");
+      const rIdx = parseInt(rStr, 10);
+      if (rIdx < splitIdx || (rIdx === splitIdx && fixedCourtIdxsAtBoundary.has(parseInt(cStr, 10)))) {
+        newScores[key] = scores[key];
+      }
     });
 
     const newCurrentRound = Math.max(0, Math.min(splitIdx, newRoundsData.length - 1));
@@ -5644,12 +5798,35 @@ function AmericanoPadel() {
         `Edit pemain Ronde ${roundIdx + 1} Lap.${courtIdx + 1}: ${changedDesc} (ronde lain tidak diubah). Sebelum diedit: [${beforeMatchText}]`
       );
     } else {
-      const lockedRounds = [...engine.roundsData.slice(0, roundIdx), editedRound];
+      // Verify which rounds up to and including this edit are ACTUALLY
+      // fully scored, rather than assuming everything before roundIdx
+      // qualifies — editing doesn't guarantee that holds (e.g. an earlier
+      // round could itself still be partially open). Mirrors the same
+      // robust detection used for roster adjustments.
+      let splitIdx = 0;
+      for (let rIdx = 0; rIdx <= roundIdx; rIdx++) {
+        const rd = rIdx === roundIdx ? editedRound : engine.roundsData[rIdx];
+        const allScored = rd.courts.every((_, cIdx) => isMatchScoreComplete(scores[`${rIdx}-${cIdx}`]));
+        if (allScored) splitIdx = rIdx + 1;
+      }
+      const lockedRounds = engine.roundsData
+        .slice(0, splitIdx)
+        .map((rd, rIdx) => (rIdx === roundIdx ? editedRound : rd));
+      // The boundary round may itself have some court(s) already scored
+      // (multi-court case) — preserve those exactly, same as the roster-
+      // adjustment fix, instead of discarding them into the regeneration.
+      const boundaryRound = splitIdx === roundIdx ? editedRound : engine.roundsData[splitIdx];
+      const fixedCourtsForBoundary = boundaryRound
+        ? boundaryRound.courts
+            .map((c, cIdx) => ({ c, cIdx }))
+            .filter(({ cIdx }) => isMatchScoreComplete(scores[`${splitIdx}-${cIdx}`]))
+            .map(({ c, cIdx }) => ({ courtIdx: cIdx, team1: c.team1, team2: c.team2 }))
+        : [];
       const activePlayers = players.filter((p) => p.arrived !== false);
       const activeIds = activePlayers.map((p) => p.id);
       const seed = replayRoundsIntoSeed(lockedRounds, activeIds);
-      seed.debugTrace = (engine.debugTrace || []).slice(0, roundIdx);
-      const remainingCount = engine.roundsData.length - (roundIdx + 1);
+      seed.debugTrace = (engine.debugTrace || []).slice(0, splitIdx);
+      const remainingCount = engine.roundsData.length - splitIdx;
       // Snapshot of every round AFTER this one, as it stood right before
       // being regenerated — "sesuaikan ronde sisanya" replaces all of them,
       // not just the one match actually being edited.
@@ -5657,7 +5834,8 @@ function AmericanoPadel() {
         .slice(roundIdx + 1)
         .map((r, i) => `Ronde ${roundIdx + 2 + i} [${formatCourtsForLog(r.courts, playerMap)}]`)
         .join(" || ");
-      const freshPart = generateSchedule(activeIds, courts, remainingCount, seed, roundIdx + 1);
+      const fixedForFirstRound = fixedCourtsForBoundary.filter((c) => c.courtIdx < courts);
+      const freshPart = generateSchedule(activeIds, courts, remainingCount, seed, splitIdx, fixedForFirstRound);
       const newRoundsData = [...lockedRounds, ...freshPart.roundsData];
       const newEngine = {
         roundsData: newRoundsData,
@@ -5671,10 +5849,14 @@ function AmericanoPadel() {
       consecutivePlays: freshPart.consecutivePlays,
         debugTrace: freshPart.debugTrace,
       };
+      const fixedCourtIdxsAtBoundary = new Set(fixedCourtsForBoundary.map((c) => c.courtIdx));
       const newScores = {};
       Object.keys(scores).forEach((key) => {
-        const rIdx = parseInt(key.split("-")[0], 10);
-        if (rIdx <= roundIdx) newScores[key] = scores[key];
+        const [rStr, cStr] = key.split("-");
+        const rIdx = parseInt(rStr, 10);
+        if (rIdx < splitIdx || (rIdx === splitIdx && fixedCourtIdxsAtBoundary.has(parseInt(cStr, 10)))) {
+          newScores[key] = scores[key];
+        }
       });
       setEngine(newEngine);
       setScores(newScores);
@@ -6016,6 +6198,9 @@ function AmericanoPadel() {
     setFixedPairs(data.fixedPairs || []);
     setPointTarget(data.pointTarget ?? 21);
     setTennisTarget(data.tennisTarget ?? 4);
+    setTennisMode(data.tennisMode || "race");
+    setTennisRoundsTarget(data.tennisRoundsTarget ?? 4);
+    setTennisTiebreak(data.tennisTiebreak ?? true);
     setMaxParticipants(data.maxParticipants ?? 8);
     setPendingRequests(data.pendingRequests || []);
     setHostInvitations(data.hostInvitations || []);
@@ -6638,6 +6823,12 @@ function AmericanoPadel() {
           setPointTarget={setPointTarget}
           tennisTarget={tennisTarget}
           setTennisTarget={setTennisTarget}
+          tennisMode={tennisMode}
+          setTennisMode={setTennisMode}
+          tennisRoundsTarget={tennisRoundsTarget}
+          setTennisRoundsTarget={setTennisRoundsTarget}
+          tennisTiebreak={tennisTiebreak}
+          setTennisTiebreak={setTennisTiebreak}
           maxParticipants={maxParticipants}
           setMaxParticipants={setMaxParticipants}
           visibility={visibility}
@@ -6727,6 +6918,9 @@ function AmericanoPadel() {
           scoreFormat={scoreFormat}
           pointTarget={pointTarget}
           tennisTarget={tennisTarget}
+          tennisMode={tennisMode}
+          tennisRoundsTarget={tennisRoundsTarget}
+          tennisTiebreak={tennisTiebreak}
           incrementTennisPoint={incrementTennisPoint}
           resetTennisMatch={resetTennisMatch}
           setTennisGamesDirect={setTennisGamesDirect}
@@ -6805,6 +6999,9 @@ function AmericanoPadel() {
           scoreFormat={scoreFormat}
           pointTarget={pointTarget}
           tennisTarget={tennisTarget}
+          tennisMode={tennisMode}
+          tennisRoundsTarget={tennisRoundsTarget}
+          tennisTiebreak={tennisTiebreak}
           activityLog={activityLog}
           players={players}
           gameFormat={gameFormat}
@@ -7480,7 +7677,9 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
                       )}
                       <span className="text-[8.5px] text-lime-300 text-center leading-tight whitespace-nowrap">
                         {ev.scoreFormat === "tennis"
-                          ? `Race to ${ev.tennisTarget || 4}`
+                          ? ev.tennisMode === "fixedRounds"
+                            ? `Fixed ${ev.tennisRoundsTarget || 4}`
+                            : `Race to ${ev.tennisTarget || 4}`
                           : "Total Poin"}
                       </span>
                       <span className="text-[8.5px] text-cyan-300 text-center leading-tight whitespace-nowrap">
@@ -7759,6 +7958,9 @@ function AllMatchesScreen({ onBackToLobby }) {
         scoreFormat: full.scoreFormat,
         pointTarget: full.pointTarget,
         tennisTarget: full.tennisTarget,
+        tennisMode: full.tennisMode,
+        tennisRoundsTarget: full.tennisRoundsTarget,
+        tennisTiebreak: full.tennisTiebreak,
         players: full.players,
         playerMap: full.playerMap,
         engine: full.engine,
@@ -8544,6 +8746,9 @@ function SetupScreen(props) {
     gameFormat, setGameFormat,
     teamFormat, setTeamFormat,
     tennisTarget, setTennisTarget,
+    tennisMode, setTennisMode,
+    tennisRoundsTarget, setTennisRoundsTarget,
+    tennisTiebreak, setTennisTiebreak,
     maxParticipants, setMaxParticipants,
     visibility, setVisibility,
     courtCost, setCourtCost, adminFee, setAdminFee, ballCost, setBallCost,
@@ -8703,10 +8908,11 @@ function SetupScreen(props) {
         {sportType === "tenis" ? (
           <div className="mb-4">
             <div className="w-full py-2.5 rounded-xl text-sm font-semibold text-center bg-lime-300 text-slate-950">
-              Race to {tennisTarget} Game
+              {tennisMode === "fixedRounds" ? `Fixed ${tennisRoundsTarget} Game` : `Race to ${tennisTarget} Game`}
             </div>
             <p className="text-[11px] text-slate-500 mt-2">
-              Karena jenis olahraganya Tenis, format skor otomatis pakai Race to X Game.
+              Karena jenis olahraganya Tenis, format skor pakai sistem game (bukan total poin) — pilih
+              mode di bawah.
             </p>
           </div>
         ) : (
@@ -8715,7 +8921,7 @@ function SetupScreen(props) {
               Total Poin
             </ModeTab>
             <ModeTab active={scoreFormat === "tennis"} onClick={() => setScoreFormat("tennis")}>
-              Race to {tennisTarget} Game
+              {tennisMode === "fixedRounds" ? `Fixed ${tennisRoundsTarget} Game` : `Race to ${tennisTarget} Game`}
             </ModeTab>
           </div>
         )}
@@ -8779,56 +8985,119 @@ function SetupScreen(props) {
           <div className="space-y-3">
             <p className="text-xs text-slate-500">
               Skor dicatat seperti tenis (0 – 15 – 30 – 40 – Deuce) lalu terakumulasi jadi game.
-              Match selesai setelah salah satu tim mencapai jumlah game ini.
             </p>
-            <div className="flex flex-wrap gap-2">
-              {[4, 6].map((v) => (
-                <button
-                  key={v}
-                  onClick={() => setTennisTarget(v)}
-                  className={`px-4 py-2 rounded-xl text-sm font-semibold border ${
-                    tennisTarget === v
-                      ? "bg-lime-300 text-slate-950 border-lime-300"
-                      : "bg-slate-900 text-slate-300 border-slate-700"
-                  }`}
-                >
-                  Race to {v} game
-                </button>
-              ))}
-              {(() => {
-                const isCustomActive = ![4, 6].includes(tennisTarget);
-                if (!editingCustomGame && !isCustomActive) {
-                  return (
+            <div className="flex gap-2">
+              <button
+                onClick={() => setTennisMode("race")}
+                className={`flex-1 px-3 py-2 rounded-xl text-sm font-semibold border ${
+                  tennisMode === "race"
+                    ? "bg-lime-300 text-slate-950 border-lime-300"
+                    : "bg-slate-900 text-slate-300 border-slate-700"
+                }`}
+              >
+                Race to X
+              </button>
+              <button
+                onClick={() => setTennisMode("fixedRounds")}
+                className={`flex-1 px-3 py-2 rounded-xl text-sm font-semibold border ${
+                  tennisMode === "fixedRounds"
+                    ? "bg-lime-300 text-slate-950 border-lime-300"
+                    : "bg-slate-900 text-slate-300 border-slate-700"
+                }`}
+              >
+                Fixed X Games
+              </button>
+            </div>
+
+            {tennisMode === "race" ? (
+              <>
+                <p className="text-xs text-slate-500">
+                  Match selesai begitu salah satu tim duluan mencapai jumlah game ini.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {[4, 6].map((v) => (
                     <button
-                      onClick={() => setEditingCustomGame(true)}
-                      className="px-4 py-2 rounded-xl text-sm font-semibold border bg-slate-900 text-slate-300 border-slate-700"
+                      key={v}
+                      onClick={() => setTennisTarget(v)}
+                      className={`px-4 py-2 rounded-xl text-sm font-semibold border ${
+                        tennisTarget === v
+                          ? "bg-lime-300 text-slate-950 border-lime-300"
+                          : "bg-slate-900 text-slate-300 border-slate-700"
+                      }`}
                     >
-                      Race to X Game
+                      Race to {v} game
                     </button>
-                  );
-                }
-                return (
-                  <label
-                    className={`flex items-center gap-1 px-4 py-2 rounded-xl text-sm font-semibold border cursor-text ${
-                      isCustomActive
-                        ? "bg-lime-300 text-slate-950 border-lime-300"
-                        : "bg-slate-900 text-slate-300 border-slate-700"
-                    }`}
-                  >
-                    Race to
+                  ))}
+                  {(() => {
+                    const isCustomActive = ![4, 6].includes(tennisTarget);
+                    if (!editingCustomGame && !isCustomActive) {
+                      return (
+                        <button
+                          onClick={() => setEditingCustomGame(true)}
+                          className="px-4 py-2 rounded-xl text-sm font-semibold border bg-slate-900 text-slate-300 border-slate-700"
+                        >
+                          Race to X Game
+                        </button>
+                      );
+                    }
+                    return (
+                      <label
+                        className={`flex items-center gap-1 px-4 py-2 rounded-xl text-sm font-semibold border cursor-text ${
+                          isCustomActive
+                            ? "bg-lime-300 text-slate-950 border-lime-300"
+                            : "bg-slate-900 text-slate-300 border-slate-700"
+                        }`}
+                      >
+                        Race to
+                        <input
+                          autoFocus={editingCustomGame}
+                          type="number"
+                          value={tennisTarget}
+                          onChange={(e) => setTennisTarget(Number(e.target.value))}
+                          onBlur={() => setEditingCustomGame(false)}
+                          className="w-10 bg-transparent text-center font-mono2 focus:outline-none"
+                        />
+                        Game
+                      </label>
+                    );
+                  })()}
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-xs text-slate-500">
+                  Selalu main {tennisRoundsTarget} game penuh (nggak berhenti lebih awal meski udah
+                  unggul). {tennisRoundsTarget % 2 === 0
+                    ? "Kalau hasil akhirnya seri, bisa lanjut 1 game penentuan (atur di bawah)."
+                    : "Jumlah ganjil jadi hasilnya selalu nentuin pemenang, nggak akan seri."}
+                </p>
+                <div className="flex flex-wrap gap-2 items-center">
+                  <label className="flex items-center gap-1 px-4 py-2 rounded-xl text-sm font-semibold border cursor-text bg-lime-300 text-slate-950 border-lime-300">
+                    Fixed
                     <input
-                      autoFocus={editingCustomGame}
                       type="number"
-                      value={tennisTarget}
-                      onChange={(e) => setTennisTarget(Number(e.target.value))}
-                      onBlur={() => setEditingCustomGame(false)}
+                      min={1}
+                      value={tennisRoundsTarget}
+                      onChange={(e) => setTennisRoundsTarget(Math.max(1, Number(e.target.value)))}
                       className="w-10 bg-transparent text-center font-mono2 focus:outline-none"
                     />
-                    Game
+                    Games
                   </label>
-                );
-              })()}
-            </div>
+                </div>
+                {tennisRoundsTarget % 2 === 0 && (
+                  <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={tennisTiebreak}
+                      onChange={(e) => setTennisTiebreak(e.target.checked)}
+                      className="w-4 h-4 accent-lime-300"
+                    />
+                    Main game penentuan kalau hasilnya seri ({tennisRoundsTarget / 2}-
+                    {tennisRoundsTarget / 2})
+                  </label>
+                )}
+              </>
+            )}
           </div>
         )}
       </Section>
@@ -9220,7 +9489,7 @@ function TimeRangeBar({ startTime, endTime, onEndChange, durationLabel }) {
 // hand off a complete, self-contained snapshot for debugging/analysis.
 function buildSessionExport({
   eventName, activeId, createdAt, playDate, courts, mode, scoreFormat,
-  pointTarget, tennisTarget, players, playerMap, engine, scores,
+  pointTarget, tennisTarget, tennisMode, tennisRoundsTarget, tennisTiebreak, players, playerMap, engine, scores,
   activityLog, ended, excludeFromStats,
 }) {
   return {
@@ -9235,6 +9504,9 @@ function buildSessionExport({
       scoreFormat,
       pointTarget,
       tennisTarget,
+      tennisMode,
+      tennisRoundsTarget,
+      tennisTiebreak,
       ended: !!ended,
       excludeFromStats: !!excludeFromStats,
     },
@@ -10171,6 +10443,7 @@ function SessionScreen(props) {
   const {
     eventName, isOwner, canManage, engine, playerMap, currentRound, goRound, goToRound,
     scores, setScore, setPointsPair, resetPointsScore, scoreFormat, pointTarget, tennisTarget,
+    tennisMode, tennisRoundsTarget, tennisTiebreak,
     incrementTennisPoint, resetTennisMatch, setTennisGamesDirect,
     ended, hasSplitBill, onEndEvent, onReshuffle, allMatchesScored, players, onAddManualMatch, onAddAutoRound, onDeleteRound,
     friends, onAdjustSchedule, courts, onToggleArrival, onEditMatchPlayers,
@@ -10200,9 +10473,8 @@ function SessionScreen(props) {
   function winnerOf(s) {
     if (!s) return null;
     if (scoreFormat === "tennis") {
-      if ((s.gamesA || 0) >= tennisTarget) return "team1";
-      if ((s.gamesB || 0) >= tennisTarget) return "team2";
-      return null;
+      const status = tennisMatchStatus(s.gamesA || 0, s.gamesB || 0, tennisMode, tennisTarget, tennisRoundsTarget, tennisTiebreak);
+      return status.finished ? status.winner : null;
     }
     const a = s.a !== undefined && s.a !== "" ? Number(s.a) : null;
     const b = s.b !== undefined && s.b !== "" ? Number(s.b) : null;
@@ -10257,7 +10529,11 @@ function SessionScreen(props) {
           <div className="flex flex-wrap items-center gap-2">
             <Chip tone="amber">
               <Trophy size={11} />
-              {scoreFormat === "tennis" ? `Race to ${tennisTarget} game` : `${pointTarget} Poin`}
+              {scoreFormat === "tennis"
+                ? tennisMode === "fixedRounds"
+                  ? `Fixed ${tennisRoundsTarget} game`
+                  : `Race to ${tennisTarget} game`
+                : `${pointTarget} Poin`}
             </Chip>
             {ended && <Chip tone="lime">Acara selesai</Chip>}
           </div>
@@ -10428,6 +10704,9 @@ function SessionScreen(props) {
                 <TennisScoreTracker
                   s={s}
                   target={tennisTarget}
+                  mode={tennisMode}
+                  roundsTarget={tennisRoundsTarget}
+                  tiebreak={tennisTiebreak}
                   readOnly={!canManage}
                   onPoint={(side) => incrementTennisPoint(cIdx, side)}
                   onReset={() => resetTennisMatch(cIdx)}
@@ -10481,6 +10760,8 @@ function SessionScreen(props) {
           team2={round.courts[scoreModal].team2.map((id) => playerMap[id])}
           s={scores[`${currentRound}-${scoreModal}`] || {}}
           target={tennisTarget}
+          tennisScoringMode={tennisMode}
+          roundsTarget={tennisRoundsTarget}
           mode="tennis"
           onPick={(side, n) => setTennisGamesDirect(scoreModal, side, n)}
           onReset={() => resetTennisMatch(scoreModal)}
@@ -10812,9 +11093,13 @@ function PointsScorePicker({ valueA, valueB, target, onPick, team1Label, team2La
   );
 }
 
-function ScoreModal({ roundLabel, team1, team2, s, target, mode = "points", onPick, onReset, onClose }) {
+function ScoreModal({ roundLabel, team1, team2, s, target, tennisScoringMode = "race", roundsTarget, mode = "points", onPick, onReset, onClose }) {
   const valueA = mode === "tennis" ? s.gamesA || 0 : s.a;
   const valueB = mode === "tennis" ? s.gamesB || 0 : s.b;
+  // In fixedRounds mode the highest either side can reach is roundsTarget
+  // itself (e.g. a clean 4-0), even though a tiebreak-decided result tops
+  // out lower (e.g. 3-2) — so the picker's range uses roundsTarget here.
+  const pickerTarget = mode === "tennis" && tennisScoringMode === "fixedRounds" ? roundsTarget : target;
   return (
     <div
       className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center"
@@ -10834,15 +11119,16 @@ function ScoreModal({ roundLabel, team1, team2, s, target, mode = "points", onPi
         </div>
         {mode === "tennis" && (
           <p className="text-[11px] text-slate-500 -mt-2 mb-4">
-            Pilih jumlah game akhir (race to {target}). Progres poin per game (0/15/30/40) ikut
-            direset ke 0-0.
+            Pilih jumlah game akhir
+            {tennisScoringMode === "fixedRounds" ? ` (fixed ${roundsTarget} game)` : ` (race to ${target})`}.
+            Progres poin per game (0/15/30/40) ikut direset ke 0-0.
           </p>
         )}
 
         <PointsScorePicker
           valueA={valueA}
           valueB={valueB}
-          target={target}
+          target={pickerTarget}
           onPick={onPick}
           team1Label={team1.join(" - ")}
           team2Label={team2.join(" - ")}
@@ -11643,7 +11929,9 @@ function JoinConfirmModal({ eventData, me, onConfirm, onCancel, onNotMe }) {
   const teamFormatLabel = eventData.teamFormat === "fixed" ? "Fixed Partner" : "Rotating";
   const scoreLabel =
     eventData.scoreFormat === "tennis"
-      ? `Race to ${eventData.tennisTarget || 4} Game`
+      ? eventData.tennisMode === "fixedRounds"
+        ? `Fixed ${eventData.tennisRoundsTarget || 4} Game`
+        : `Race to ${eventData.tennisTarget || 4} Game`
       : `Total Poin (target ${eventData.pointTarget || 21})`;
   const arrivedPlayers = (eventData.players || []).filter((p) => p.arrived !== false);
   const playerCount = arrivedPlayers.length;
@@ -11878,19 +12166,20 @@ function tennisPointLabels(pointsA, pointsB) {
   return { a: labels[Math.min(pointsA, 3)], b: labels[Math.min(pointsB, 3)] };
 }
 
-function TennisScoreTracker({ s, target, onPoint, onReset, readOnly }) {
+function TennisScoreTracker({ s, target, mode = "race", roundsTarget, tiebreak, onPoint, onReset, readOnly }) {
   const gamesA = s.gamesA || 0;
   const gamesB = s.gamesB || 0;
   const pointsA = s.pointsA || 0;
   const pointsB = s.pointsB || 0;
-  const finished = gamesA >= target || gamesB >= target;
+  const status = tennisMatchStatus(gamesA, gamesB, mode, target, roundsTarget, tiebreak);
+  const finished = status.finished;
   const labels = tennisPointLabels(pointsA, pointsB);
 
   return (
     <div className="border-t border-slate-800">
       <div className="flex items-center justify-center py-3">
         {finished ? (
-          <div className="font-display text-xl text-cyan-300">SELESAI</div>
+          <div className="font-display text-xl text-cyan-300">{status.tied ? "SERI" : "SELESAI"}</div>
         ) : (
           <div className="font-mono2 text-lg text-slate-300">
             {labels.a} – {labels.b}
@@ -11924,7 +12213,8 @@ function TennisScoreTracker({ s, target, onPoint, onReset, readOnly }) {
       )}
       {!readOnly && (
         <p className="px-4 pb-3 text-[11px] text-slate-500">
-          Tap angka skor di atas buat langsung pilih jumlah game akhir (race to {target}).
+          Tap angka skor di atas buat langsung pilih jumlah game akhir
+          {mode === "fixedRounds" ? ` (fixed ${roundsTarget} game${status.needsDecider ? " + 1 penentuan" : ""})` : ` (race to ${target})`}.
         </p>
       )}
     </div>
@@ -12451,7 +12741,7 @@ function SplitBillScreen({
 // RECAP SCREEN (all scored matches, for monitoring rotation fairness)
 // ---------------------------------------------------------------------------
 
-function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, engine, playerMap, scores, scoreFormat, pointTarget, tennisTarget, activityLog, players, gameFormat, teamFormat, fixedPairs, ended, hasSplitBill, canManage, isOwner, currentUser, excludeFromStats, onToggleExcludeFromStats, onNav, onBackToLobby }) {
+function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, engine, playerMap, scores, scoreFormat, pointTarget, tennisTarget, tennisMode, tennisRoundsTarget, tennisTiebreak, activityLog, players, gameFormat, teamFormat, fixedPairs, ended, hasSplitBill, canManage, isOwner, currentUser, excludeFromStats, onToggleExcludeFromStats, onNav, onBackToLobby }) {
   const [filterId, setFilterId] = useState("all");
 
   const teamNameByPlayer = React.useMemo(
@@ -12591,6 +12881,9 @@ function RecapScreen({ eventName, activeId, createdAt, playDate, courts, mode, e
               scoreFormat={scoreFormat}
               pointTarget={pointTarget}
               tennisTarget={tennisTarget}
+              tennisMode={tennisMode}
+              tennisRoundsTarget={tennisRoundsTarget}
+              tennisTiebreak={tennisTiebreak}
               players={players}
               playerMap={playerMap}
               engine={engine}
@@ -13126,9 +13419,8 @@ function ViewOnlyApp({ sessionId }) {
   function winnerOf(s) {
     if (!s) return null;
     if (data.scoreFormat === "tennis") {
-      if ((s.gamesA || 0) >= data.tennisTarget) return "team1";
-      if ((s.gamesB || 0) >= data.tennisTarget) return "team2";
-      return null;
+      const status = tennisMatchStatus(s.gamesA || 0, s.gamesB || 0, data.tennisMode, data.tennisTarget, data.tennisRoundsTarget, data.tennisTiebreak);
+      return status.finished ? status.winner : null;
     }
     const a = s.a !== undefined && s.a !== "" ? Number(s.a) : null;
     const b = s.b !== undefined && s.b !== "" ? Number(s.b) : null;
@@ -13209,7 +13501,7 @@ function ViewOnlyApp({ sessionId }) {
                       />
                     </div>
                     {data.scoreFormat === "tennis" && (
-                      <TennisScoreTracker s={s} target={data.tennisTarget} readOnly />
+                      <TennisScoreTracker s={s} target={data.tennisTarget} mode={data.tennisMode} roundsTarget={data.tennisRoundsTarget} tiebreak={data.tennisTiebreak} readOnly />
                     )}
                   </div>
                 );
