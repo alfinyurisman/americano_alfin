@@ -5815,13 +5815,23 @@ function AmericanoPadel() {
       // The boundary round may itself have some court(s) already scored
       // (multi-court case) — preserve those exactly, same as the roster-
       // adjustment fix, instead of discarding them into the regeneration.
+      // BUT when the boundary round is the exact round just manually
+      // edited, ALL its courts must be preserved verbatim — the just-made
+      // edit isn't "scored" yet, so filtering by score here would discard
+      // the user's own edit and silently regenerate a random pairing in
+      // its place (confirmed from a real case: the edit never showed up in
+      // the activity log at all, only a misleading "connection issue"
+      // alert, because the save-verification correctly noticed the saved
+      // round didn't match what the user had just set).
       const boundaryRound = splitIdx === roundIdx ? editedRound : engine.roundsData[splitIdx];
-      const fixedCourtsForBoundary = boundaryRound
-        ? boundaryRound.courts
+      const fixedCourtsForBoundary = !boundaryRound
+        ? []
+        : splitIdx === roundIdx
+        ? boundaryRound.courts.map((c, cIdx) => ({ courtIdx: cIdx, team1: c.team1, team2: c.team2 }))
+        : boundaryRound.courts
             .map((c, cIdx) => ({ c, cIdx }))
             .filter(({ cIdx }) => isMatchScoreComplete(scores[`${splitIdx}-${cIdx}`]))
-            .map(({ c, cIdx }) => ({ courtIdx: cIdx, team1: c.team1, team2: c.team2 }))
-        : [];
+            .map(({ c, cIdx }) => ({ courtIdx: cIdx, team1: c.team1, team2: c.team2 }));
       const activePlayers = players.filter((p) => p.arrived !== false);
       const activeIds = activePlayers.map((p) => p.id);
       const seed = replayRoundsIntoSeed(lockedRounds, activeIds);
