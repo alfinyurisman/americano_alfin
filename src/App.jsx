@@ -3012,12 +3012,13 @@ function AmericanoPadel() {
   const [nameInput, setNameInput] = useState("");
   const [pendingDuplicateAdd, setPendingDuplicateAdd] = useState(null); // {name} | null -- triggers DuplicateNameConfirmModal
   const [pendingDuplicateApproval, setPendingDuplicateApproval] = useState(null); // {reqId, name} | null
+  const [pendingReshuffleChoice, setPendingReshuffleChoice] = useState(null); // boundary round index, or null when not showing
   const [bulkInput, setBulkInput] = useState("");
-  const [courts, setCourts] = useState(2);
+  const [courts, setCourts] = useState(1);
   const [mode, setMode] = useState("duration"); // duration | rounds
   const [totalMinutes, setTotalMinutes] = useState(120);
   const [minutesPerRound, setMinutesPerRound] = useState(7);
-  const [breakMinutes, setBreakMinutes] = useState(0);
+  const [breakMinutes, setBreakMinutes] = useState(1);
   const [manualRounds, setManualRounds] = useState(8);
   const [startTime, setStartTime] = useState("19:00");
   const [endTime, setEndTime] = useState("21:00"); // used to auto-compute totalMinutes and suggest an event name template
@@ -3767,11 +3768,11 @@ function AmericanoPadel() {
 
     setEventName(current.name || "Sesi Padel");
     setPlayers(current.players || []);
-    setCourts(current.courts || 2);
+    setCourts(current.courts || 1);
     setMode(current.mode || "duration");
     setTotalMinutes(current.totalMinutes ?? 120);
     setMinutesPerRound(current.minutesPerRound ?? 7);
-    setBreakMinutes(current.breakMinutes ?? 0);
+    setBreakMinutes(current.breakMinutes ?? 1);
     setManualRounds(current.manualRounds ?? 8);
     setStartTime(current.startTime || "19:00");
     setEndTime(current.endTime || "21:00");
@@ -4645,12 +4646,25 @@ function AmericanoPadel() {
       alert("Semua ronde sudah lengkap diisi skor — tidak ada lagi yang bisa di-reshuffle.");
       return;
     }
-    if (
-      !window.confirm(
-        "Acak ulang sisa jadwal? Ronde yang SUDAH lengkap diisi skor tetap disimpan apa adanya — cuma ronde yang BELUM diisi skornya yang bakal diacak ulang."
-      )
-    )
-      return;
+    // Whether the round currently being played (unscored) is itself part of
+    // what gets shuffled is a real choice, not a given — a host who's mid-
+    // match often wants to leave THAT one alone and only shake up what's
+    // still ahead. Asking this up front via a dedicated modal instead of a
+    // single yes/no confirm. The round actually "being played" is the
+    // oldest one that isn't fully scored yet — NOT whatever round the host
+    // happens to be viewing right now (they may have paged ahead to peek at
+    // upcoming rounds while an earlier one is still genuinely in progress).
+    let boundaryIdx = 0;
+    for (let rIdx = 0; rIdx < engine.roundsData.length; rIdx++) {
+      const rd = engine.roundsData[rIdx];
+      const allScoredHere = rd.courts.every((_, cIdx) => isMatchScoreComplete(scores[`${rIdx}-${cIdx}`]));
+      if (allScoredHere) boundaryIdx = rIdx + 1;
+    }
+    setPendingReshuffleChoice(boundaryIdx);
+  };
+
+  const runReshuffle = async (preserveCurrentRound) => {
+    setPendingReshuffleChoice(null);
     try {
       // Awaited on purpose: this used to fire-and-forget, so clicking
       // Reshuffle rapidly several times in a row (easy to do when hunting
@@ -4659,8 +4673,14 @@ function AmericanoPadel() {
       // different snapshot — whichever finished last would silently win,
       // occasionally producing a result that looked like it ignored a
       // change (e.g. a just-deleted player) made moments before.
-      const saved = await handleAdjustScheduleInner(players);
-      if (saved) logActivity("Reshuffle sisa jadwal (ronde yang sudah lengkap skornya tetap disimpan)");
+      const saved = await handleAdjustScheduleInner(players, undefined, preserveCurrentRound);
+      if (saved) {
+        logActivity(
+          preserveCurrentRound
+            ? "Reshuffle sisa jadwal (ronde yang sedang berjalan TIDAK ikut diacak, ronde setelahnya diacak ulang)"
+            : "Reshuffle sisa jadwal (ronde yang sudah lengkap skornya tetap disimpan)"
+        );
+      }
     } catch (e) {
       console.error("handleReshuffleMatches failed:", e);
       alert(
@@ -4985,7 +5005,7 @@ function AmericanoPadel() {
     }
   };
 
-  const handleAdjustScheduleInner = async (newPlayers, newCourtsInput) => {
+  const handleAdjustScheduleInner = async (newPlayers, newCourtsInput, preserveCurrentRound) => {
     // Computed once, used in every log message below — a court-count change
     // used to get silently folded into whatever player-change message fired
     // alongside it (or missed entirely if it was the ONLY thing that
@@ -5141,12 +5161,23 @@ function AmericanoPadel() {
     // used to silently discard an in-progress court's result and its
     // fairness-history contribution on any roster adjustment mid-round.
     const boundaryRound = engine.roundsData[splitIdx];
-    const fixedCourtsForBoundary = boundaryRound
-      ? boundaryRound.courts
+    // preserveCurrentRound (from the reshuffle flow's "don't touch the
+    // live match" choice) means: keep the WHOLE boundary round's
+    // composition exactly as it is, not just whatever court(s) happen to
+    // already be scored. boundaryRound — the oldest round that isn't fully
+    // scored yet — is what "currently being played" means in real life,
+    // regardless of which round the user happens to be VIEWING on screen
+    // (they may have paged ahead to preview upcoming rounds while an
+    // earlier round is still genuinely in progress; comparing against
+    // currentRound here would protect the wrong one).
+    const fixedCourtsForBoundary = !boundaryRound
+      ? []
+      : preserveCurrentRound
+      ? boundaryRound.courts.map((c, cIdx) => ({ courtIdx: cIdx, team1: c.team1, team2: c.team2 }))
+      : boundaryRound.courts
           .map((c, cIdx) => ({ c, cIdx }))
           .filter(({ cIdx }) => isMatchScoreComplete(scores[`${splitIdx}-${cIdx}`]))
-          .map(({ c, cIdx }) => ({ courtIdx: cIdx, team1: c.team1, team2: c.team2 }))
-      : [];
+          .map(({ c, cIdx }) => ({ courtIdx: cIdx, team1: c.team1, team2: c.team2 }));
     // Snapshot of every unscored round's pairing as it stood RIGHT BEFORE
     // this adjustment regenerates them — the only remaining record of what
     // was actually shown on screen, since the regenerated version below
@@ -6135,11 +6166,11 @@ function AmericanoPadel() {
     setPlayers([]);
     setNameInput("");
     setBulkInput("");
-    setCourts(2);
+    setCourts(1);
     setMode("duration");
     setTotalMinutes(120);
     setMinutesPerRound(7);
-    setBreakMinutes(0);
+    setBreakMinutes(1);
     setManualRounds(8);
     setStartTime("19:00");
     setEndTime("21:00");
@@ -6190,11 +6221,11 @@ function AmericanoPadel() {
     if (!data) return;
     setEventName(data.name || "Sesi Padel");
     setPlayers(data.players || []);
-    setCourts(data.courts || 2);
+    setCourts(data.courts || 1);
     setMode(data.mode || "duration");
     setTotalMinutes(data.totalMinutes ?? 120);
     setMinutesPerRound(data.minutesPerRound ?? 7);
-    setBreakMinutes(data.breakMinutes ?? 0);
+    setBreakMinutes(data.breakMinutes ?? 1);
     setManualRounds(data.manualRounds ?? 8);
     setStartTime(data.startTime || "19:00");
     setEndTime(data.endTime || "21:00");
@@ -6696,6 +6727,14 @@ function AmericanoPadel() {
             setPendingDuplicateApproval(null);
           }}
           onCancel={() => setPendingDuplicateApproval(null)}
+        />
+      )}
+      {pendingReshuffleChoice !== null && (
+        <ReshuffleChoiceModal
+          currentRoundLabel={`Ronde ${pendingReshuffleChoice + 1}`}
+          onChooseInclude={() => runReshuffle(false)}
+          onChooseExclude={() => runReshuffle(true)}
+          onCancel={() => setPendingReshuffleChoice(null)}
         />
       )}
       {screen === "lobby" && (
@@ -11948,6 +11987,41 @@ function DeleteRoundModal({ roundNumber, onConfirm, onClose }) {
 // real duplicate roster entry, while accidentally cancelling just means
 // clicking again. Cancel is the large, prominent button; adding anyway is
 // smaller and secondary, so the safe outcome is also the easy one.
+// Offers the choice of whether the round currently being played (still
+// unscored) should be included in a reshuffle, or left untouched while only
+// the rounds ahead of it get shaken up.
+function ReshuffleChoiceModal({ currentRoundLabel, onChooseInclude, onChooseExclude, onCancel }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onCancel}>
+      <div
+        className="w-full sm:max-w-sm bg-slate-900 border border-slate-700 rounded-t-3xl sm:rounded-3xl p-6"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="font-display text-2xl text-slate-50 mb-2">Acak Ulang Jadwal</h2>
+        <p className="text-sm text-slate-300 mb-5">
+          {currentRoundLabel} masih berjalan (belum diisi skor). Mau ikut diacak juga, atau
+          dibiarkan seperti sekarang dan cuma ronde setelahnya yang diacak ulang?
+        </p>
+        <button
+          onClick={onChooseExclude}
+          className="w-full py-3.5 rounded-xl font-bold text-slate-950 bg-lime-300 mb-2"
+        >
+          Jangan acak {currentRoundLabel} — mulai dari ronde berikutnya
+        </button>
+        <button
+          onClick={onChooseInclude}
+          className="w-full py-3.5 rounded-xl font-semibold text-slate-200 bg-slate-800 border border-slate-700 mb-2"
+        >
+          Ikut acak {currentRoundLabel} juga
+        </button>
+        <button onClick={onCancel} className="w-full py-2 rounded-xl text-xs text-slate-500">
+          Batal
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function DuplicateNameConfirmModal({ name, onConfirm, onCancel }) {
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm">
