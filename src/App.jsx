@@ -8770,6 +8770,7 @@ function SetupScreen(props) {
   const [creating, setCreating] = useState(false);
   const [editingCustomPoint, setEditingCustomPoint] = useState(false);
   const [editingCustomGame, setEditingCustomGame] = useState(false);
+  const [editingCustomFixedGame, setEditingCustomFixedGame] = useState(false);
 
   return (
     <div className="pb-10">
@@ -8918,7 +8919,7 @@ function SetupScreen(props) {
         {sportType === "tenis" ? (
           <div className="mb-4">
             <div className="w-full py-2.5 rounded-xl text-sm font-semibold text-center bg-lime-300 text-slate-950">
-              {tennisMode === "fixedRounds" ? `Fixed ${tennisRoundsTarget} Game` : `Race to ${tennisTarget} Game`}
+              Tennis Point
             </div>
             <p className="text-[11px] text-slate-500 mt-2">
               Karena jenis olahraganya Tenis, format skor pakai sistem game (bukan total poin) — pilih
@@ -8931,7 +8932,7 @@ function SetupScreen(props) {
               Total Poin
             </ModeTab>
             <ModeTab active={scoreFormat === "tennis"} onClick={() => setScoreFormat("tennis")}>
-              {tennisMode === "fixedRounds" ? `Fixed ${tennisRoundsTarget} Game` : `Race to ${tennisTarget} Game`}
+              Tennis Point
             </ModeTab>
           </div>
         )}
@@ -8980,6 +8981,7 @@ function SetupScreen(props) {
                     <input
                       autoFocus={editingCustomPoint}
                       type="number"
+                      inputMode="numeric"
                       value={pointTarget}
                       onChange={(e) => setPointTarget(Number(e.target.value))}
                       onBlur={() => setEditingCustomPoint(false)}
@@ -9046,7 +9048,7 @@ function SetupScreen(props) {
                           onClick={() => setEditingCustomGame(true)}
                           className="px-4 py-2 rounded-xl text-sm font-semibold border bg-slate-900 text-slate-300 border-slate-700"
                         >
-                          Race to X Game
+                          Custom: X Game
                         </button>
                       );
                     }
@@ -9062,6 +9064,7 @@ function SetupScreen(props) {
                         <input
                           autoFocus={editingCustomGame}
                           type="number"
+                          inputMode="numeric"
                           value={tennisTarget}
                           onChange={(e) => setTennisTarget(Number(e.target.value))}
                           onBlur={() => setEditingCustomGame(false)}
@@ -9082,17 +9085,54 @@ function SetupScreen(props) {
                     : "Jumlah ganjil jadi hasilnya selalu nentuin pemenang, nggak akan seri."}
                 </p>
                 <div className="flex flex-wrap gap-2 items-center">
-                  <label className="flex items-center gap-1 px-4 py-2 rounded-xl text-sm font-semibold border cursor-text bg-lime-300 text-slate-950 border-lime-300">
-                    Fixed
-                    <input
-                      type="number"
-                      min={1}
-                      value={tennisRoundsTarget}
-                      onChange={(e) => setTennisRoundsTarget(Math.max(1, Number(e.target.value)))}
-                      className="w-10 bg-transparent text-center font-mono2 focus:outline-none"
-                    />
-                    Games
-                  </label>
+                  {[4, 6].map((v) => (
+                    <button
+                      key={v}
+                      onClick={() => setTennisRoundsTarget(v)}
+                      className={`px-4 py-2 rounded-xl text-sm font-semibold border ${
+                        tennisRoundsTarget === v
+                          ? "bg-lime-300 text-slate-950 border-lime-300"
+                          : "bg-slate-900 text-slate-300 border-slate-700"
+                      }`}
+                    >
+                      Fixed {v} Games
+                    </button>
+                  ))}
+                  {(() => {
+                    const isCustomActive = ![4, 6].includes(tennisRoundsTarget);
+                    if (!editingCustomFixedGame && !isCustomActive) {
+                      return (
+                        <button
+                          onClick={() => setEditingCustomFixedGame(true)}
+                          className="px-4 py-2 rounded-xl text-sm font-semibold border bg-slate-900 text-slate-300 border-slate-700"
+                        >
+                          Custom: X Games
+                        </button>
+                      );
+                    }
+                    return (
+                      <label
+                        className={`flex items-center gap-1 px-4 py-2 rounded-xl text-sm font-semibold border cursor-text ${
+                          isCustomActive
+                            ? "bg-lime-300 text-slate-950 border-lime-300"
+                            : "bg-slate-900 text-slate-300 border-slate-700"
+                        }`}
+                      >
+                        Fixed
+                        <input
+                          autoFocus={editingCustomFixedGame}
+                          type="number"
+                          inputMode="numeric"
+                          min={1}
+                          value={tennisRoundsTarget}
+                          onChange={(e) => setTennisRoundsTarget(Math.max(1, Number(e.target.value)))}
+                          onBlur={() => setEditingCustomFixedGame(false)}
+                          className="w-10 bg-transparent text-center font-mono2 focus:outline-none"
+                        />
+                        Games
+                      </label>
+                    );
+                  })()}
                 </div>
                 {tennisRoundsTarget % 2 === 0 && (
                   <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
