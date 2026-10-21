@@ -1761,8 +1761,6 @@ async function purgeOldDeletedMatches() {
 // fast synchronous path for the callers that need one, and the boot-time
 // check additionally falls back to window.storage if localStorage comes
 // up empty, before concluding the person really needs to log in again.
-const REMEMBER_STORAGE_KEY = "remember-login";
-
 function rememberLogin(account) {
   const payload = { accountId: account.accountId, username: account.username };
   try {
@@ -1770,8 +1768,6 @@ function rememberLogin(account) {
   } catch (e) {
     /* no-op */
   }
-  // Fire-and-forget — this is a resilience backup, not on the critical path.
-  window.storage?.set(REMEMBER_STORAGE_KEY, JSON.stringify(payload), false)?.catch(() => {});
 }
 
 function loadRememberedLogin() {
@@ -1783,28 +1779,11 @@ function loadRememberedLogin() {
   }
 }
 
-// Only used at boot, where an async fallback is affordable — if localStorage
-// lost the marker, check the durable backup before giving up.
+// Kept as an async function since callers await it, but it's now a thin
+// wrapper around the plain localStorage read — see loadRememberedLogin's
+// removed shared-storage fallback above for why that fallback had to go.
 async function loadRememberedLoginWithFallback() {
-  const fromLocal = loadRememberedLogin();
-  if (fromLocal) return fromLocal;
-  try {
-    const res = await window.storage?.get(REMEMBER_STORAGE_KEY, false);
-    if (res?.value) {
-      const parsed = JSON.parse(res.value);
-      // Re-seed localStorage so subsequent (synchronous) checks this
-      // session don't need to fall back again.
-      try {
-        localStorage.setItem(REMEMBER_KEY, res.value);
-      } catch (e) {
-        /* no-op */
-      }
-      return parsed;
-    }
-  } catch (e) {
-    /* no-op */
-  }
-  return null;
+  return loadRememberedLogin();
 }
 
 function forgetLogin() {
@@ -1813,7 +1792,6 @@ function forgetLogin() {
   } catch (e) {
     /* no-op */
   }
-  window.storage?.delete(REMEMBER_STORAGE_KEY, false)?.catch(() => {});
 }
 
 // Catches not just an identical name, but one name being a PREFIX of the
