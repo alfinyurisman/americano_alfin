@@ -1712,6 +1712,84 @@ async function syncAllMatchesRegistryEntry(snapshot) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// AUTO-END STALE EVENTS
+// ---------------------------------------------------------------------------
+// An event that's already started but has had NO change of any kind (scores,
+// players, settings, even an activity-log line — every write bumps
+// updatedAt) for more than 24 hours is treated as abandoned and marked
+// finished, exactly as if the host had pressed "Selesaikan Acara". Events
+// still in the waiting room are deliberately left alone: they have no
+// matches to finish, and a host may legitimately set one up days ahead.
+const STALE_EVENT_MS = 24 * 60 * 60 * 1000;
+
+function isStaleActiveSession(data) {
+  if (!data || data.ended || data.deleted) return false;
+  const status = data.status || (data.engine ? "active" : "waiting");
+  if (status !== "active" || !data.engine) return false;
+  const last = Number(data.updatedAt);
+  // No usable timestamp = can't prove it's stale, so leave it alone.
+  if (!Number.isFinite(last) || last <= 0) return false;
+  return Date.now() - last > STALE_EVENT_MS;
+}
+
+async function doAutoEndStaleSession(sessionId) {
+  try {
+    // Re-read right before writing and re-check staleness: the copy the
+    // caller looked at may be a moment old, and if anyone touched the event
+    // in between, it's no longer stale and must not be ended.
+    const latest = await loadSessionData(sessionId);
+    if (!isStaleActiveSession(latest)) return latest;
+    const now = Date.now();
+    const next = {
+      ...latest,
+      ended: true,
+      activityLog: [
+        ...(latest.activityLog || []),
+        {
+          ts: now,
+          who: "Sistem",
+          message: "Acara otomatis diselesaikan — tidak ada perubahan apapun lebih dari 24 jam",
+        },
+      ].slice(-300),
+      updatedAt: now,
+    };
+    const saved = await saveSessionData(sessionId, next);
+    if (!saved) return null;
+    // Keep the admin registry's ended flag in step with the session itself.
+    await syncAllMatchesRegistryEntry(next);
+    return next;
+  } catch (e) {
+    console.error("autoEndStaleSession failed:", e);
+    return null;
+  }
+}
+
+// Serialized on purpose: a lobby refresh looks at every event in parallel,
+// and each auto-end does a read-modify-write on the shared admin registry —
+// run concurrently, those would overwrite one another's updates.
+let autoEndChain = Promise.resolve();
+function autoEndStaleSession(sessionId) {
+  const run = autoEndChain.then(() => doAutoEndStaleSession(sessionId));
+  autoEndChain = run.catch(() => {});
+  return run;
+}
+
+// Split-bill payment progress for a lobby card. Same definition the Split
+// Bill screen itself uses ("X/Y sudah bayar" over the whole roster), so the
+// lobby and the screen it opens can never disagree.
+function paymentProgressOf(data) {
+  const totalCost =
+    (Number(data.courtCost) || 0) + (Number(data.adminFee) || 0) + (Number(data.ballCost) || 0);
+  const roster = data.players || [];
+  const paid = data.paidStatus || {};
+  return {
+    hasSplitBill: totalCost > 0,
+    payerCount: roster.length,
+    paidCount: roster.filter((p) => paid[p.id]).length,
+  };
+}
+
 async function removeFromAllMatchesRegistry(id) {
   const list = await loadAllMatchesRegistry();
   const next = list.filter((e) => e.id !== id);
@@ -3269,10 +3347,17 @@ function AmericanoPadel() {
     const list = await loadLobbyIndex(accountId);
     const refreshed = await Promise.all(
       list.map(async (entry) => {
-        const data = await loadSessionData(entry.id);
+        let data = await loadSessionData(entry.id);
         if (!data) return entry;
+        // Abandoned for 24h+ with zero changes → finish it now, so it shows
+        // up as "Sudah Selesai" instead of lingering as "Berjalan" forever.
+        if (isStaleActiveSession(data)) {
+          const result = await autoEndStaleSession(entry.id);
+          if (result) data = result;
+        }
         return {
           ...entry,
+          ...paymentProgressOf(data),
           name: data.name || entry.name,
           playerCount: (data.players || []).length,
           courts: data.courts,
@@ -3734,6 +3819,7 @@ function AmericanoPadel() {
           tennisMode: current.tennisMode || "race",
           tennisRoundsTarget: current.tennisRoundsTarget || 4,
           tennisTiebreak: current.tennisTiebreak ?? true,
+          ...paymentProgressOf(current),
         };
         nextList = [entry, ...myList];
         await saveLobbyIndex(account.accountId, nextList);
@@ -3952,6 +4038,7 @@ function AmericanoPadel() {
         tennisMode: snapshot.tennisMode || "race",
         tennisRoundsTarget: snapshot.tennisRoundsTarget || 4,
         tennisTiebreak: snapshot.tennisTiebreak ?? true,
+        ...paymentProgressOf(snapshot),
         role: "owner",
       };
       if (currentUser.accountId === theOwnerId) {
@@ -7735,6 +7822,16 @@ function LobbyScreen({ lobby, onCreateNew, onOpen, onDelete, onLeave, onDiscover
                         <Clock size={11} /> Menunggu
                       </Chip>
                     )}
+                    {ev.ended && ev.hasSplitBill && ev.payerCount > 0 &&
+                      (ev.paidCount >= ev.payerCount ? (
+                        <Chip tone="lime">
+                          <Check size={11} strokeWidth={3} /> Semua sudah bayar
+                        </Chip>
+                      ) : (
+                        <Chip tone="amber">
+                          <Wallet size={11} /> {ev.paidCount}/{ev.payerCount} sudah bayar
+                        </Chip>
+                      ))}
                   </div>
                 </button>
                 {isOwnerEntry ? (
